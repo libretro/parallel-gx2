@@ -46,6 +46,8 @@
 # counting semaphore before) and the shader cache's async writer likewise.
 # The IOSU kernel every IPC passes through - message queues, timers, device
 # handles, the command pool, the replies - and each core's IPC buffers.
+# The semaphores the idle cores wait on their run queue with, and the H.264
+# decoder, the IOSU services and the Vulkan pipeline cache (Semaphore.h).
 #
 # The waits on the way from loading a title to its first frame sleep until
 # what they wait for has happened (LatteGpuWake, ThreadStartedFlag), not by
@@ -145,7 +147,7 @@ for f in src/Cemu/Logging/CemuLogging.cpp src/Cemu/Logging/LogFileSink.h \
 	src/input/api/Controller.cpp src/input/api/Controller.h src/input/api/ControllerState.h \
 	src/util/helpers/RcuCell.h src/Cafe/IOSU/legacy/iosu_ioctl.cpp \
 	src/Cafe/IOSU/kernel/iosu_kernel.cpp src/Cafe/OS/libs/coreinit/coreinit_IPC.cpp \
-	src/util/helpers/IndexFreeList.h; do
+	src/util/helpers/IndexFreeList.h src/util/helpers/Semaphore.h; do
 	if pp $f | grep -qE 'std::[a-z_]*mutex|std::(shared|unique|scoped)_lock|lock_guard|condition_variable|sleep_for|FSpinlock'; then
 		echo "$f: takes a lock or sleeps again"; fail=1
 	fi

@@ -62,6 +62,10 @@
 //  - RetroArch's audio thread, pulling from an empty ring, sleeps until the
 //    producer's next block (ending as it arrives, not on a fixed millisecond),
 //    a stop, or its bound;
+//  - the semaphores the idle cores, the H.264 decoder and the IOSU services
+//    wait on count right with producers and consumers on several threads,
+//    wake their waiters (an idle core on its run queue's count), time out,
+//    and the state flag hands a state back and forth between two threads;
 //  - the audio ring hands out whole frames in place, across the wrap, for 2 and
 //    6 channels, and streams intact between a producer and a consumer thread.
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompilerWorkQueue.h"
@@ -80,6 +84,7 @@
 #include "util/helpers/ClaimTicket.h"
 #include "Cemu/nex/nexWait.h"
 #include "util/helpers/RcuCell.h"
+#include "util/helpers/Semaphore.h"
 #include "Cafe/HW/Espresso/PPCTimerClock.h"
 #include <set>
 #include "libretro.h"
@@ -1469,6 +1474,111 @@ static void TestAudioFeedWait()
 	}
 }
 
+// --- Semaphore.h ------------------------------------------------------------
+
+static void TestSemaphores()
+{
+	using namespace std::chrono;
+	{
+		// four producers, three consumers, every count taken once
+		CounterSemaphore sem;
+		std::atomic<int> taken{0};
+		std::vector<std::thread> threads;
+		for (int c = 0; c < 3; c++)
+			threads.emplace_back([&] {
+				while (taken.fetch_add(1) < 4 * 20000)
+					sem.decrementWithWait();
+			});
+		for (int p = 0; p < 4; p++)
+			threads.emplace_back([&] {
+				for (int i = 0; i < 20000; i++)
+					sem.increment();
+			});
+		for (auto& t : threads)
+			t.join();
+		CHECK(sem.isZero());
+	}
+	{
+		// an idle core on its run queue's count: woken by the increment
+		CounterSemaphore sem;
+		std::atomic<bool> woke{false};
+		std::thread core([&] {
+			sem.waitUntilNonZero();
+			woke = true;
+		});
+		std::this_thread::sleep_for(milliseconds(10));
+		CHECK(!woke.load());
+		sem.increment();
+		core.join();
+		CHECK(woke.load());
+		// and the one waiting for it to empty, by the decrement
+		std::thread drain([&] { sem.waitUntilZero(); });
+		sem.decrement();
+		drain.join();
+		CHECK(sem.isZero());
+	}
+	{
+		// timeouts: back at the deadline with nothing, at once with something
+		CounterSemaphore sem;
+		auto start = steady_clock::now();
+		CHECK(!sem.decrementWithWaitAndTimeout(20));
+		CHECK(steady_clock::now() - start >= milliseconds(18));
+		std::thread t([&] {
+			std::this_thread::sleep_for(milliseconds(3));
+			sem.increment();
+		});
+		start = steady_clock::now();
+		CHECK(sem.decrementWithWaitAndTimeout(30000));
+		CHECK(steady_clock::now() - start < seconds(10));
+		t.join();
+		CHECK(sem.isZero());
+	}
+	{
+		Semaphore sem;
+		CHECK(!sem.try_wait());
+		std::atomic<int> got{0};
+		std::vector<std::thread> threads;
+		for (int c = 0; c < 2; c++)
+			threads.emplace_back([&] {
+				for (int i = 0; i < 10000; i++)
+				{
+					sem.wait();
+					got++;
+				}
+			});
+		for (int i = 0; i < 20000; i++)
+			sem.notify();
+		for (auto& t : threads)
+			t.join();
+		CHECK(got.load() == 20000 && !sem.try_wait());
+		sem.notify();
+		sem.reset();
+		CHECK(!sem.try_wait());
+	}
+	{
+		// a state handed back and forth: each side waits for its turn
+		enum class Turn { A, B };
+		StateSemaphore<Turn> turn(Turn::A);
+		int shared = 0;
+		std::thread b([&] {
+			for (int i = 0; i < 5000; i++)
+			{
+				turn.waitUntilValue(Turn::B);
+				shared++;
+				turn.setValue(Turn::A, Turn::B);
+			}
+		});
+		for (int i = 0; i < 5000; i++)
+		{
+			turn.waitUntilValue(Turn::A);
+			shared++;
+			turn.setValue(Turn::B, Turn::A);
+		}
+		b.join();
+		CHECK(shared == 10000 && turn.hasState(Turn::A));
+	}
+}
+
 int main()
 {
 	TestWorkQueueStream();
@@ -1492,6 +1602,7 @@ int main()
 	TestClaimTicket();
 	TestNexWait();
 	TestRcuCell();
+	TestSemaphores();
 	TestAudioRingSpans(2);
 	TestAudioRingSpans(6);
 	TestAudioRingThreads();

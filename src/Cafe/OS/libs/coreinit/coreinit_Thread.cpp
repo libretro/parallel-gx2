@@ -11,6 +11,7 @@
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 
 #include "util/helpers/Semaphore.h"
+#include "util/helpers/EventWake.h"
 #include "util/helpers/MpscQueue.h"
 #include "util/Fiber/Fiber.h"
 
@@ -1671,15 +1672,16 @@ namespace coreinit
 		// count is still climbing is spinning in the idle loop, and one whose
 		// counts stand still is inside a guest thread that has not come back.
 		std::atomic_bool joinsFinished{false};
-		std::thread joinWatchdog([&joinsFinished]() {
+		EventWake joinsFinishedWake;
+		std::thread joinWatchdog([&joinsFinished, &joinsFinishedWake]() {
 			uint64 lastIdleLoops[Espresso::CORE_COUNT] = {};
 			uint64 lastTimeslices[Espresso::CORE_COUNT] = {};
 			bool dumpedThreads = false;
 			for (int elapsed = 2; !joinsFinished.load(std::memory_order_acquire); elapsed += 2)
 			{
-				for (int i = 0; i < 20 && !joinsFinished.load(std::memory_order_acquire); i++)
-					std::this_thread::sleep_for(std::chrono::milliseconds(100));
-				if (joinsFinished.load(std::memory_order_acquire))
+				// two seconds between samples, but gone the moment the joins are
+				if (joinsFinishedWake.WaitUntil([&joinsFinished] { return joinsFinished.load(std::memory_order_acquire); },
+						std::chrono::steady_clock::now() + std::chrono::seconds(2)))
 					break;
 				bool anyFrozen = false;
 				for (size_t c = 0; c < Espresso::CORE_COUNT; c++)
@@ -1741,6 +1743,7 @@ namespace coreinit
 			cemuLog_log(LogType::Force, "OSSchedulerEnd: core {} joined", idx);
 		}
 		joinsFinished.store(true, std::memory_order_release);
+		joinsFinishedWake.Notify();
 		joinWatchdog.join();
 		sSchedulerThreads.clear();
 		g_schedulerThreadHandles.clear();

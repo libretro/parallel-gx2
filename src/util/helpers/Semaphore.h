@@ -1,49 +1,51 @@
 #pragma once
 
-#include <mutex>
-#include <condition_variable>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+
+#include "util/helpers/EventWake.h"
+
+// The counting semaphores and the state flag the emulator's host threads wait
+// on, without a lock (a mutex and a condition variable each before): the
+// count is an atomic, taken with a compare-exchange, and a waiter sleeps on
+// an eventcount every change notifies - which costs an atomic increment when
+// nobody is asleep. The idle cores wait on their run queue's count here.
 
 class Semaphore
 {
 public:
-	void notify() 
+	void notify()
 	{
-		std::lock_guard lock(m_mutex);
-		++m_count;
-		m_condition.notify_one();
+		m_count.fetch_add(1, std::memory_order_release);
+		m_wake.Notify();
 	}
 
-	void wait() 
+	void wait()
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_count == 0)
+		while (!try_wait())
+			m_wake.WaitUntil([this] { return m_count.load(std::memory_order_acquire) != 0; });
+	}
+
+	bool try_wait()
+	{
+		uint64_t count = m_count.load(std::memory_order_acquire);
+		while (count != 0)
 		{
-			m_condition.wait(lock);
+			if (m_count.compare_exchange_weak(count, count - 1, std::memory_order_acquire, std::memory_order_acquire))
+				return true;
 		}
-
-		--m_count;
-	}
-
-	bool try_wait() 
-	{
-		std::lock_guard lock(m_mutex);
-		if (m_count == 0)
-			return false;
-
-		--m_count;
-		return true;
+		return false;
 	}
 
 	void reset()
 	{
-		std::lock_guard lock(m_mutex);
-		m_count = 0;
+		m_count.store(0, std::memory_order_release);
 	}
 
 private:
-	std::mutex m_mutex;
-	std::condition_variable m_condition;
-	uint64 m_count = 0;
+	std::atomic<uint64_t> m_count{0};
+	EventWake m_wake;
 };
 
 class CounterSemaphore
@@ -51,76 +53,72 @@ class CounterSemaphore
 public:
 	void reset()
 	{
-		std::lock_guard lock(m_mutex);
-		m_count = 0;
+		m_count.store(0, std::memory_order_release);
+		m_wake.Notify();
 	}
 
 	void increment()
 	{
-		std::lock_guard lock(m_mutex);
-		++m_count;
-		if (m_count == 1)
-			m_condition.notify_all();
+		m_count.fetch_add(1, std::memory_order_release);
+		m_wake.Notify();
 	}
 
 	void decrement()
 	{
-		std::lock_guard lock(m_mutex);
-		--m_count;
-		cemu_assert_debug(m_count >= 0);
-		if (m_count == 0)
-			m_condition.notify_all();
+		if (m_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
+			m_wake.Notify(); // for waitUntilZero
 	}
 
 	// decrement only if non-zero
 	// otherwise wait
 	void decrementWithWait()
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_count == 0)
-			m_condition.wait(lock);
-		m_count--;
+		while (!TryDecrement())
+			m_wake.WaitUntil([this] { return m_count.load(std::memory_order_acquire) > 0; });
 	}
 
 	// decrement only if non-zero
-	// otherwise wait
-	// may wake up spuriously
-	bool decrementWithWaitAndTimeout(uint32 ms)
+	// otherwise wait, at most ms milliseconds
+	bool decrementWithWaitAndTimeout(uint32_t ms)
 	{
-		std::unique_lock lock(m_mutex);
-		if (m_count == 0)
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+		while (!TryDecrement())
 		{
-			m_condition.wait_for(lock, std::chrono::milliseconds(ms));
+			if (!m_wake.WaitUntil([this] { return m_count.load(std::memory_order_acquire) > 0; }, deadline))
+				return false;
 		}
-		if (m_count == 0)
-			return false;
-		m_count--;
 		return true;
 	}
 
 	void waitUntilZero()
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_count != 0)
-			m_condition.wait(lock);
+		m_wake.WaitUntil([this] { return m_count.load(std::memory_order_acquire) == 0; });
 	}
 
 	void waitUntilNonZero()
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_count == 0)
-			m_condition.wait(lock);
+		m_wake.WaitUntil([this] { return m_count.load(std::memory_order_acquire) != 0; });
 	}
 
 	bool isZero() const
 	{
-		return m_count == 0;
+		return m_count.load(std::memory_order_acquire) == 0;
 	}
 
 private:
-	std::mutex m_mutex;
-	std::condition_variable m_condition;
-	sint64 m_count = 0;
+	bool TryDecrement()
+	{
+		int64_t count = m_count.load(std::memory_order_acquire);
+		while (count > 0)
+		{
+			if (m_count.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel, std::memory_order_acquire))
+				return true;
+		}
+		return false;
+	}
+
+	std::atomic<int64_t> m_count{0};
+	EventWake m_wake;
 };
 
 template<typename T>
@@ -131,41 +129,39 @@ public:
 
 	T getValue()
 	{
-		std::unique_lock lock(m_mutex);
-		return m_state;
+		return m_state.load(std::memory_order_acquire);
 	}
 
 	bool hasState(T state)
 	{
-		std::unique_lock lock(m_mutex);
-		return m_state == state;
+		return m_state.load(std::memory_order_acquire) == state;
 	}
 
 	void setValue(T newState)
 	{
-		std::unique_lock lock(m_mutex);
-		m_state = newState;
-		m_condition.notify_all();
+		m_state.store(newState, std::memory_order_release);
+		m_wake.Notify();
 	}
 
+	// once the state is expectedValue, from it to newState
 	void setValue(T newState, T expectedValue)
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_state != expectedValue)
-			m_condition.wait(lock);
-		m_state = newState;
-		m_condition.notify_all();
+		for (;;)
+		{
+			T expected = expectedValue;
+			if (m_state.compare_exchange_strong(expected, newState, std::memory_order_acq_rel, std::memory_order_acquire))
+				break;
+			m_wake.WaitUntil([this, expectedValue] { return m_state.load(std::memory_order_acquire) == expectedValue; });
+		}
+		m_wake.Notify();
 	}
 
 	void waitUntilValue(T state)
 	{
-		std::unique_lock lock(m_mutex);
-		while (m_state != state)
-			m_condition.wait(lock);
+		m_wake.WaitUntil([this, state] { return m_state.load(std::memory_order_acquire) == state; });
 	}
 
 private:
-	std::mutex m_mutex;
-	std::condition_variable m_condition;
-	T m_state;
+	std::atomic<T> m_state;
+	EventWake m_wake;
 };
