@@ -82,6 +82,29 @@ private:
 	void _addFileInternal(uint64 name1, uint64 name2, const uint8* fileData, sint32 fileSize, bool noCompression);
 	bool _getFileDataInternal(const FileTableEntry* entry, std::vector<uint8>& dataOut);
 
+	// what the file table holds, kept beside it so that nothing has to scan
+	// the table: the entries by name, where the scan for a free entry starts,
+	// and the space between the entries' data. Built when the file is opened
+	// and kept up to date by every write and delete, under the mutex.
+	void _buildLookup();
+	sint32 _findEntry(uint64 name1, uint64 name2) const;
+	void _indexInsert(sint32 entryIndex);
+	void _indexErase(uint64 name1, uint64 name2);
+	sint32 _takeFreeEntry();
+	uint64 _allocateSpace(uint64 size);
+	void _releaseSpace(uint64 offset, uint64 size);
+
+	struct SpaceGap
+	{
+		uint64 offset;
+		uint64 size;
+	};
+	std::vector<sint32> m_index; // open addressing, linear probing; -1 is empty
+	sint32 m_indexUsed{};
+	sint32 m_freeEntryHint{}; // every entry before it is in use
+	std::vector<SpaceGap> m_gaps; // sorted by offset, none touching
+	uint64 m_dataEnd{}; // where the last entry's data ends
+
 	class FileStream* fileStream{};
 	uint64 dataOffset{};
 	uint32 extraVersion{};

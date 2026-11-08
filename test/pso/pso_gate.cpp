@@ -9,9 +9,10 @@
 //    Vulkan), through rslc as RendererShaderVk hands it GLSL: each module's
 //    SPIR-V instruction count, and the corpus' modules, words and
 //    instructions;
-//  - the file cache the shader and pipeline caches are kept in: the heap
-//    allocations and bytes allocated to read every entry of a cache back,
-//    per entry (Linux; the stream is per platform).
+//  - the file cache the shader and pipeline caches are kept in: the file
+//    table entries looked at to write 1000 entries and to look each of them
+//    up again, and the heap allocations and bytes allocated to read them
+//    back (those on Linux only: the stream is per platform).
 //
 // Timed, reported, never gated (CI machines are shared; times are taken on
 // the developer's machines, docs/SHADER-STUTTER.md): rslc per shader, median,
@@ -37,6 +38,8 @@
 #include "../shaders/shaders_test.cpp"
 
 #include "Cemu/FileCache/FileCache.h"
+
+extern std::atomic<uint64> g_fileCacheProbes;
 
 // --- counting the heap -------------------------------------------------------
 
@@ -146,6 +149,7 @@ static void MeasureFileCache()
 			return;
 		}
 		uint32_t seed = 1;
+		g_fileCacheProbes = 0;
 		for (int i = 0; i < ENTRIES; i++)
 		{
 			std::vector<uint8_t> data(256 + (i * 37) % 4096);
@@ -157,6 +161,7 @@ static void MeasureFileCache()
 			}
 			cache->AddFile({ (uint64)i + 1, 7 }, data.data(), (sint32)data.size());
 		}
+		s_metrics["filecache table entries looked at to write 1000 entries"] = g_fileCacheProbes.load();
 		delete cache;
 	}
 	FileCache* cache = FileCache::Open(path, false, 1);
@@ -170,6 +175,7 @@ static void MeasureFileCache()
 	cache->GetFile({ 1, 7 }, out); // whatever the first read sets up once
 	s_allocs = 0;
 	s_allocBytes = 0;
+	g_fileCacheProbes = 0;
 	s_counting = true;
 	int read = 0;
 	for (int i = 0; i < ENTRIES; i++)
@@ -179,6 +185,7 @@ static void MeasureFileCache()
 			read++;
 	}
 	s_counting = false;
+	s_metrics["filecache table entries looked at to find 1000 entries"] = g_fileCacheProbes.load();
 	delete cache;
 	fs::remove(path, ec);
 	if (read != ENTRIES)

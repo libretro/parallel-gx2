@@ -4,8 +4,10 @@
 corpus instructions 868206
 corpus modules 523
 corpus words 3734858
-filecache.linux allocations per 1000 entries read 4000
-filecache.linux bytes allocated per 1000 entries read 8484596
+filecache table entries looked at to find 1000 entries 1321
+filecache table entries looked at to write 1000 entries 6510
+filecache.linux allocations per 1000 entries read 2008
+filecache.linux bytes allocated per 1000 entries read 4607224
 shader Enhancements/Bayonetta_Contrasty/21e6bc9b0cdbe8d7_00000000000003c9_ps.txt instructions 926
 shader Enhancements/DonkeyKongTropicalFreeze_!AARemoval/10ccf0cc1234d069_00000000000003c9_ps.txt instructions 176
 shader Enhancements/DonkeyKongTropicalFreeze_!AARemoval/bafe6c9c37bfca4d_00000000000003c9_ps.txt instructions 176

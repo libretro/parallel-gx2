@@ -6,6 +6,15 @@
 #include "util/helpers/Deflate.h"
 #include "Common/FileStream.h"
 
+// The shader/PSO gate (test/pso) counts the file table entries a lookup or
+// a write looks at; nothing in the core's own build
+#ifdef FILECACHE_COUNT_PROBES
+std::atomic<uint64> g_fileCacheProbes{0};
+#define FILECACHE_PROBE() g_fileCacheProbes.fetch_add(1, std::memory_order_relaxed)
+#else
+#define FILECACHE_PROBE() ((void)0)
+#endif
+
 struct FileCacheAsyncJob
 {
 	FileCache* fileCache;
@@ -138,6 +147,7 @@ FileCache* FileCache::Create(const fs::path& path, uint32 extraVersion)
 	// write file table
 	fs->SetPosition(fileCache->dataOffset+fileCache->fileTableOffset);
 	fs->writeData(fileCache->fileTableEntries, fileCache->fileTableSize);
+	fileCache->_buildLookup();
 	// done
 	return fileCache;
 }
@@ -234,6 +244,7 @@ FileCache* FileCache::_OpenExisting(const fs::path& path, bool compareExtraVersi
 		delete fileCache;
 		return nullptr;
 	}
+	fileCache->_buildLookup();
 	return fileCache;
 }
 
@@ -261,8 +272,9 @@ FileCache::~FileCache()
 void FileCache::fileCache_updateFiletable(sint32 extraEntriesToAllocate)
 {
 	// recreate file table with bigger size (optional)
-	this->fileTableEntries[0].name1 = FILECACHE_FILETABLE_FREE_NAME;
-	this->fileTableEntries[0].name2 = FILECACHE_FILETABLE_FREE_NAME;
+	// Entry 0 keeps the table's name: the write below finds it by that name,
+	// puts the new table where nothing is (the old one is still in use until
+	// the header points past it) and only then gives the old table's space up
 	sint32 newFileTableEntryCount = this->fileTableEntryCount + extraEntriesToAllocate;
 	this->fileTableEntries = (FileTableEntry*)realloc(this->fileTableEntries, sizeof(FileTableEntry)*newFileTableEntryCount);
 	for (sint32 f = this->fileTableEntryCount; f < newFileTableEntryCount; f++)
@@ -286,6 +298,10 @@ void FileCache::fileCache_updateFiletable(sint32 extraEntriesToAllocate)
 	}
 	this->fileTableOffset = this->fileTableEntries[0].fileOffset;
 	this->fileTableSize = this->fileTableEntries[0].fileSize;
+	// the copy of entry 0 inside the table just written still says where the
+	// old table was
+	fileStream->SetPosition(this->dataOffset + this->fileTableOffset);
+	fileStream->writeData(this->fileTableEntries, sizeof(FileTableEntry));
 	// update header
 	fileStream->SetPosition(0);
 	fileStream->writeU32(FILECACHE_MAGIC_V3);
@@ -376,94 +392,31 @@ void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileDa
 		}
 	}
 	std::unique_lock lock(this->mutex);
-	// find free entry in file table
-	sint32 entryIndex = -1;
-	// scan for already existing entry
-	for (sint32 i = 0; i < this->fileTableEntryCount; i++)
+	// the entry already under this name, else a free one
+	sint32 entryIndex = _findEntry(name1, name2);
+	const bool replacing = entryIndex >= 0;
+	if (!replacing)
 	{
-		if (this->fileTableEntries[i].name1 == name1 && this->fileTableEntries[i].name2 == name2)
+		entryIndex = _takeFreeEntry();
+		if (entryIndex < 0)
 		{
-			entryIndex = i;
-			break;
+			if (name1 == FILECACHE_FILETABLE_NAME1 && name2 == FILECACHE_FILETABLE_NAME2)
+			{
+				cemuLog_log(LogType::Force, "Error in cache file");
+				cemu_assert_debug(false);
+			}
+			// no free entry: a table twice as big (64 entries more at a
+			// time made the writes of a large cache quadratic, and left a
+			// trail of old tables behind in the file)
+			fileCache_updateFiletable(std::max<sint32>(64, this->fileTableEntryCount));
+			entryIndex = _takeFreeEntry();
 		}
 	}
-	if (entryIndex == -1)
-	{
-		while (true)
-		{
-			// if no entry exists, search for empty one
-			for (sint32 i = 0; i < this->fileTableEntryCount; i++)
-			{
-				if (this->fileTableEntries[i].name1 == FILECACHE_FILETABLE_FREE_NAME && this->fileTableEntries[i].name2 == FILECACHE_FILETABLE_FREE_NAME)
-				{
-					entryIndex = i;
-					break;
-				}
-			}
-			if (entryIndex == -1)
-			{
-				if (name1 == FILECACHE_FILETABLE_NAME1 && name2 == FILECACHE_FILETABLE_NAME2)
-				{
-					cemuLog_log(LogType::Force, "Error in cache file");
-					cemu_assert_debug(false);
-				}
-				// no free entry, recreate file table with larger size
-				fileCache_updateFiletable(64);
-				// try again
-				continue;
-			}
-			else
-				break;
-		}
-	}
-	// find free space
-	sint64 currentStartOffset = 0;
-	while (true)
-	{
-		bool hasCollision = false;
-		sint64 currentEndOffset = currentStartOffset + rawSize;
-		FileTableEntry* entry = this->fileTableEntries;
-		FileTableEntry* entryLast = this->fileTableEntries + this->fileTableEntryCount;
-		while (entry < entryLast)
-		{
-			if (entry->name1 == FILECACHE_FILETABLE_FREE_NAME && entry->name2 == FILECACHE_FILETABLE_FREE_NAME)
-			{
-				entry++;
-				continue;
-			}
-			if (currentEndOffset >= (sint64)entry->fileOffset && currentStartOffset < (sint64)(entry->fileOffset + entry->fileSize))
-			{
-				currentStartOffset = entry->fileOffset + entry->fileSize;
-				hasCollision = true;
-				break;
-			}
-			entry++;
-		}
-		// optimized logic to speed up scanning for free offsets
-		// assumes that most of the time entries are stored in direct succession (holds true more often than not)
-		if (hasCollision && (entry + 1) < entryLast)
-		{
-			entry++;
-			while (entry < entryLast)
-			{
-				if (entry->name1 == FILECACHE_FILETABLE_FREE_NAME && entry->name2 == FILECACHE_FILETABLE_FREE_NAME)
-				{
-					entry++;
-					continue;
-				}
-				if (entry->fileOffset == currentStartOffset)
-				{
-					currentStartOffset = entry->fileOffset + entry->fileSize;
-					entry++;
-					continue;
-				}
-				break;
-			}
-		}
-		// retry in case of collision
-		if (hasCollision == false)
-			break;
-	}
+	// the data goes where nothing is: what it replaces stays in use until
+	// the entry points away from it
+	const uint64 replacedOffset = this->fileTableEntries[entryIndex].fileOffset;
+	const uint64 replacedSize = replacing ? this->fileTableEntries[entryIndex].fileSize : 0;
+	const uint64 currentStartOffset = _allocateSpace((uint64)rawSize);
 	// update file table entry
 	this->fileTableEntries[entryIndex].name1 = name1;
 	this->fileTableEntries[entryIndex].name2 = name2;
@@ -473,6 +426,8 @@ void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileDa
 	this->fileTableEntries[entryIndex].extraReserved1 = 0;
 	this->fileTableEntries[entryIndex].extraReserved2 = 0;
 	this->fileTableEntries[entryIndex].extraReserved3 = 0;
+	if (!replacing)
+		_indexInsert(entryIndex);
 	// write file data
 	fileStream->SetPosition(this->dataOffset + currentStartOffset);
 	fileStream->writeData(rawData, rawSize);
@@ -485,6 +440,7 @@ void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileDa
 #ifdef __APPLE__
     fileStream->Flush();
 #endif
+	_releaseSpace(replacedOffset, replacedSize);
 	if (isCompressed)
 		free(rawData);
 }
@@ -510,25 +466,23 @@ bool FileCache::DeleteFile(const FileName&& name)
 	if( name.name1 == FILECACHE_FILETABLE_NAME1 && name.name2 == FILECACHE_FILETABLE_NAME2 )
 		return false; // prevent filetable from being deleted
 	std::unique_lock lock(this->mutex);
-	FileTableEntry* entry = this->fileTableEntries;
-	FileTableEntry* entryLast = this->fileTableEntries+this->fileTableEntryCount;
-	while( entry < entryLast )
-	{
-		if( entry->name1 == name.name1 && entry->name2 == name.name2 )
-		{
-			entry->name1 = FILECACHE_FILETABLE_FREE_NAME;
-			entry->name2 = FILECACHE_FILETABLE_FREE_NAME;
-			entry->fileOffset = 0;
-			entry->fileSize = 0;
-			// store updated entry to file cache
-			size_t entryIndex = entry - this->fileTableEntries;
-			fileStream->SetPosition(this->dataOffset+this->fileTableOffset+(uint64)(sizeof(FileTableEntry)*entryIndex));
-			fileStream->writeData(this->fileTableEntries+entryIndex, sizeof(FileTableEntry));
-			return true;
-		}
-		entry++;
-	}
-	return false;
+	sint32 entryIndex = _findEntry(name.name1, name.name2);
+	if (entryIndex < 0)
+		return false;
+	FileTableEntry* entry = this->fileTableEntries + entryIndex;
+	const uint64 offset = entry->fileOffset;
+	const uint64 size = entry->fileSize;
+	_indexErase(name.name1, name.name2);
+	entry->name1 = FILECACHE_FILETABLE_FREE_NAME;
+	entry->name2 = FILECACHE_FILETABLE_FREE_NAME;
+	entry->fileOffset = 0;
+	entry->fileSize = 0;
+	// store updated entry to file cache
+	fileStream->SetPosition(this->dataOffset+this->fileTableOffset+(uint64)(sizeof(FileTableEntry)*entryIndex));
+	fileStream->writeData(this->fileTableEntries+entryIndex, sizeof(FileTableEntry));
+	_releaseSpace(offset, size);
+	m_freeEntryHint = std::min(m_freeEntryHint, entryIndex);
+	return true;
 }
 
 void FileCache::AddFileAsync(const FileName& name, const uint8* fileData, sint32 fileSize)
@@ -538,20 +492,29 @@ void FileCache::AddFileAsync(const FileName& name, const uint8* fileData, sint32
 
 bool FileCache::_getFileDataInternal(const FileTableEntry* entry, std::vector<uint8>& dataOut)
 {
-	std::vector<uint8> rawData(entry->fileSize);
-
 	fileStream->SetPosition(this->dataOffset + entry->fileOffset);
-	fileStream->readData(rawData.data(), entry->fileSize);
-
 	if ((entry->flags&FileTableEntry::FLAG_COMPRESSED) == 0)
 	{
-		// uncompressed
-		std::swap(rawData, dataOut);
+		// stored as is: read straight into the caller's buffer
+		dataOut.resize(entry->fileSize);
+		if (fileStream->readData(dataOut.data(), entry->fileSize) != entry->fileSize)
+		{
+			dataOut.clear();
+			return false;
+		}
 		return true;
 	}
-	// decompress
-	sint32 uncompressedSize = 0;
-	if (!_uncompressFileData(rawData.data(), rawData.size(), dataOut))
+	// The compressed bytes go into a buffer this thread keeps (a new one
+	// for every entry was an allocation and a free per read) and inflate
+	// from there into the caller's buffer. One that grew for a very large
+	// entry is not kept.
+	thread_local std::vector<uint8> s_compressed;
+	s_compressed.resize(entry->fileSize);
+	bool ok = fileStream->readData(s_compressed.data(), entry->fileSize) == entry->fileSize &&
+		_uncompressFileData(s_compressed.data(), entry->fileSize, dataOut);
+	if (s_compressed.capacity() > 4 * 1024 * 1024)
+		std::vector<uint8>().swap(s_compressed);
+	if (!ok)
 	{
 		dataOut.clear();
 		return false;
@@ -562,22 +525,19 @@ bool FileCache::_getFileDataInternal(const FileTableEntry* entry, std::vector<ui
 bool FileCache::GetFile(const FileName&& name, std::vector<uint8>& dataOut)
 {
 	std::unique_lock lock(this->mutex);
-	FileTableEntry* entry = this->fileTableEntries;
-	FileTableEntry* entryLast = this->fileTableEntries+this->fileTableEntryCount;
-	while( entry < entryLast )
+	sint32 entryIndex = _findEntry(name.name1, name.name2);
+	if (entryIndex < 0)
 	{
-		if( entry->name1 == name.name1 && entry->name2 == name.name2 )
-		{
-			return _getFileDataInternal(entry, dataOut);
-		}
-		entry++;
+		dataOut.clear();
+		return false;
 	}
-	dataOut.clear();
-	return false;
+	return _getFileDataInternal(this->fileTableEntries + entryIndex, dataOut);
 }
 
 bool FileCache::GetFileByIndex(sint32 index, uint64* name1, uint64* name2, std::vector<uint8>& dataOut)
 {
+	// under the lock from the start: a write can grow (and move) the table
+	std::unique_lock lock(this->mutex);
 	if (index < 0 || index >= this->fileTableEntryCount)
 		return false;
 	FileTableEntry* entry = this->fileTableEntries + index;
@@ -591,7 +551,6 @@ bool FileCache::GetFileByIndex(sint32 index, uint64* name1, uint64* name2, std::
 	if (entry->name1 == FILECACHE_FILETABLE_NAME1 && entry->name2 == FILECACHE_FILETABLE_NAME2)
 		return false;
 
-	std::unique_lock lock(this->mutex);
 	if(name1)
 		*name1 = entry->name1;
 	if(name2)
@@ -602,15 +561,200 @@ bool FileCache::GetFileByIndex(sint32 index, uint64* name1, uint64* name2, std::
 bool FileCache::HasFile(const FileName&& name)
 {
 	std::unique_lock lock(this->mutex);
-	FileTableEntry* entry = this->fileTableEntries;
-	FileTableEntry* entryLast = this->fileTableEntries + this->fileTableEntryCount;
-	while (entry < entryLast)
+	return _findEntry(name.name1, name.name2) >= 0;
+}
+
+static inline bool _isFreeEntryName(uint64 name1, uint64 name2)
+{
+	return name1 == FILECACHE_FILETABLE_FREE_NAME && name2 == FILECACHE_FILETABLE_FREE_NAME;
+}
+
+static inline uint64 _entryNameHash(uint64 name1, uint64 name2)
+{
+	// the names are hashes already, but of paths, and some callers number
+	// them instead: mixed so that neither ends up in a run of slots
+	uint64 h = name1 * 0x9E3779B97F4A7C15ull ^ (name2 + 0x632BE59BD9B4E019ull) * 0xC2B2AE3D27D4EB4Full;
+	return h ^ (h >> 29);
+}
+
+void FileCache::_buildLookup()
+{
+	m_index.assign(64, -1);
+	m_indexUsed = 0;
+	m_freeEntryHint = 0;
+	m_gaps.clear();
+	m_dataEnd = 0;
+	// the space in use: every entry's data, and the table itself, where the
+	// header says it is (whatever entry 0 says)
+	std::vector<SpaceGap> used;
+	used.reserve(this->fileTableEntryCount + 1);
+	used.push_back({ this->fileTableOffset, this->fileTableSize });
+	bool hint = false;
+	for (sint32 i = 0; i < this->fileTableEntryCount; i++)
 	{
-		if (entry->name1 == name.name1 && entry->name2 == name.name2)
-			return true;
-		entry++;
+		const FileTableEntry& e = this->fileTableEntries[i];
+		if (_isFreeEntryName(e.name1, e.name2))
+		{
+			if (!hint)
+				m_freeEntryHint = i;
+			hint = true;
+			continue;
+		}
+		// the first of two entries under one name is the one a scan found
+		if (_findEntry(e.name1, e.name2) < 0)
+			_indexInsert(i);
+		used.push_back({ e.fileOffset, e.fileSize });
 	}
-	return false;
+	if (!hint)
+		m_freeEntryHint = this->fileTableEntryCount;
+	std::sort(used.begin(), used.end(), [](const SpaceGap& a, const SpaceGap& b) { return a.offset < b.offset; });
+	for (const SpaceGap& u : used)
+	{
+		if (u.size == 0)
+			continue;
+		if (u.offset > m_dataEnd)
+			m_gaps.push_back({ m_dataEnd, u.offset - m_dataEnd });
+		m_dataEnd = std::max(m_dataEnd, u.offset + u.size);
+	}
+}
+
+sint32 FileCache::_findEntry(uint64 name1, uint64 name2) const
+{
+	if (_isFreeEntryName(name1, name2) || m_index.empty())
+		return -1;
+	const size_t mask = m_index.size() - 1;
+	for (size_t slot = _entryNameHash(name1, name2) & mask;; slot = (slot + 1) & mask)
+	{
+		FILECACHE_PROBE();
+		sint32 i = m_index[slot];
+		if (i < 0)
+			return -1;
+		if (this->fileTableEntries[i].name1 == name1 && this->fileTableEntries[i].name2 == name2)
+			return i;
+	}
+}
+
+void FileCache::_indexInsert(sint32 entryIndex)
+{
+	if ((size_t)(m_indexUsed + 1) * 2 > m_index.size())
+	{
+		// twice the slots, the entries put in again
+		std::vector<sint32> old(m_index.size() * 2, -1);
+		old.swap(m_index);
+		const size_t mask = m_index.size() - 1;
+		for (sint32 i : old)
+		{
+			if (i < 0)
+				continue;
+			size_t slot = _entryNameHash(this->fileTableEntries[i].name1, this->fileTableEntries[i].name2) & mask;
+			while (m_index[slot] >= 0)
+				slot = (slot + 1) & mask;
+			m_index[slot] = i;
+		}
+	}
+	const FileTableEntry& e = this->fileTableEntries[entryIndex];
+	const size_t mask = m_index.size() - 1;
+	size_t slot = _entryNameHash(e.name1, e.name2) & mask;
+	while (m_index[slot] >= 0)
+	{
+		FILECACHE_PROBE();
+		slot = (slot + 1) & mask;
+	}
+	m_index[slot] = entryIndex;
+	m_indexUsed++;
+}
+
+void FileCache::_indexErase(uint64 name1, uint64 name2)
+{
+	const size_t mask = m_index.size() - 1;
+	size_t slot = _entryNameHash(name1, name2) & mask;
+	while (true)
+	{
+		sint32 i = m_index[slot];
+		if (i < 0)
+			return;
+		if (this->fileTableEntries[i].name1 == name1 && this->fileTableEntries[i].name2 == name2)
+			break;
+		slot = (slot + 1) & mask;
+	}
+	// moves back the slots after it that would no longer be found (no
+	// tombstones to pile up)
+	size_t hole = slot;
+	for (size_t next = (hole + 1) & mask; m_index[next] >= 0; next = (next + 1) & mask)
+	{
+		const FileTableEntry& e = this->fileTableEntries[m_index[next]];
+		size_t home = _entryNameHash(e.name1, e.name2) & mask;
+		// it stays if its home is cyclically within (hole, next]
+		bool stays = hole <= next ? (hole < home && home <= next) : (hole < home || home <= next);
+		if (stays)
+			continue;
+		m_index[hole] = m_index[next];
+		hole = next;
+	}
+	m_index[hole] = -1;
+	m_indexUsed--;
+}
+
+sint32 FileCache::_takeFreeEntry()
+{
+	for (sint32 i = m_freeEntryHint; i < this->fileTableEntryCount; i++)
+	{
+		FILECACHE_PROBE();
+		if (_isFreeEntryName(this->fileTableEntries[i].name1, this->fileTableEntries[i].name2))
+		{
+			m_freeEntryHint = i + 1;
+			return i;
+		}
+	}
+	m_freeEntryHint = this->fileTableEntryCount;
+	return -1;
+}
+
+uint64 FileCache::_allocateSpace(uint64 size)
+{
+	if (size == 0)
+		return m_dataEnd;
+	// the first gap it fits in, else the end
+	for (size_t g = 0; g < m_gaps.size(); g++)
+	{
+		FILECACHE_PROBE();
+		if (m_gaps[g].size < size)
+			continue;
+		uint64 offset = m_gaps[g].offset;
+		m_gaps[g].offset += size;
+		m_gaps[g].size -= size;
+		if (m_gaps[g].size == 0)
+			m_gaps.erase(m_gaps.begin() + g);
+		return offset;
+	}
+	uint64 offset = m_dataEnd;
+	m_dataEnd += size;
+	return offset;
+}
+
+void FileCache::_releaseSpace(uint64 offset, uint64 size)
+{
+	if (size == 0)
+		return;
+	auto it = std::lower_bound(m_gaps.begin(), m_gaps.end(), offset, [](const SpaceGap& g, uint64 o) { return g.offset < o; });
+	it = m_gaps.insert(it, { offset, size });
+	// joined with the gaps it touches
+	if (it + 1 != m_gaps.end() && it->offset + it->size == (it + 1)->offset)
+	{
+		it->size += (it + 1)->size;
+		m_gaps.erase(it + 1);
+	}
+	if (it != m_gaps.begin() && (it - 1)->offset + (it - 1)->size == it->offset)
+	{
+		(it - 1)->size += it->size;
+		it = m_gaps.erase(it) - 1;
+	}
+	// a gap the data ends with is no gap
+	if (it->offset + it->size == m_dataEnd)
+	{
+		m_dataEnd = it->offset;
+		m_gaps.erase(it);
+	}
 }
 
 sint32 FileCache::GetMaximumFileIndex()

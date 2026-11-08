@@ -8,7 +8,7 @@ DEP := ../../dependencies
 PACKS := $(DEP)/cemu_graphic_packs
 CXX ?= g++
 CC ?= gcc
-FLAGS := -O2 -g -DHAVE_THREADS -DRSLC_EXTENDED -DRSLC_NO_TEXT -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
+FLAGS := -O2 -g -DHAVE_THREADS -DFILECACHE_COUNT_PROBES -DRSLC_EXTENDED -DRSLC_NO_TEXT -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
 # what the core's precompiled header, which the file cache takes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
 	-include $(SRC)/Common/precompiled.h

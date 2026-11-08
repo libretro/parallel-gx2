@@ -166,12 +166,20 @@ pipelines on lavapipe from a replayed draw sequence, which arrive with M1.
 
 Now (as of `495ded87`):
 
-- `FileCache::_getFileDataInternal` allocates a buffer per entry, reads the
-  compressed entry into it, then allocates the output and inflates into it.
-  Map the cache file once (VFS where the frontend gives one, a native
-  mapping otherwise), inflate from the mapped span straight into the
-  caller's destination, and keep one bounded fallback read for what cannot
-  be mapped.
+- Done: `FileCache` reads an entry stored as is straight into the
+  caller's buffer, and a compressed one into a buffer the reading thread
+  keeps, inflating from there into the caller's: one allocation per entry
+  read, the caller's own (the gate counted two before). Finding an entry by
+  name, a free entry and free space no longer scans the file table (a
+  hashed index, a free-entry hint and a list of gaps, built on open); the
+  gate counts the table entries looked at to write and to find 1000
+  entries (9035857 and 501500 before; 6510 and 1321 now). The table grows
+  by doubling, and its old copy is given up only once the header points
+  past it.
+- Still to do: map the cache file once (VFS where the frontend gives one,
+  a native mapping otherwise) and inflate from the mapped span, with no
+  read buffer at all; read without the cache's mutex (positional reads,
+  the table published RCU).
 - The `VkPipelineCache` blob is read with `std::ifstream` into a vector and
   copied again by the driver. Map it for `vkCreatePipelineCache` and unmap
   after. Saving gets the blob from the driver once per save; save only

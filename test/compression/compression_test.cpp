@@ -10,6 +10,11 @@
 //  - the cache file's async writer (Cemu/FileCache) has every entry four
 //    threads queued written out once it is stopped, starts again after,
 //    and stops at once when given nothing;
+//  - the cache file's layout: entries written, rewritten and deleted read
+//    back after it is closed and opened again, writes after the reopen
+//    land on nothing still in use (the file table included), and the file
+//    reuses the space rewritten and deleted entries leave; and random
+//    writes, rewrites and deletes read back as written;
 //  - the graphic packs compiled in (tools/pack_graphic_packs.c, built here
 //    as the core's build does) unpack to the files they were made from.
 #include <cstdio>
@@ -467,6 +472,161 @@ static void TestFileCacheWriter()
 	std::remove(path);
 }
 
+static std::vector<uint8_t> LayoutData(int i, int version)
+{
+	std::vector<uint8_t> d = Noise(16 + (i * 97 + version * 31) % 2500, (uint32_t)(i * 7 + version));
+	return d;
+}
+
+static long long FileSizeOf(const char* path)
+{
+	FILE* f = std::fopen(path, "rb");
+	if (!f)
+		return -1;
+	std::fseek(f, 0, SEEK_END);
+	long long n = std::ftell(f);
+	std::fclose(f);
+	return n;
+}
+
+static void TestFileCacheLayout()
+{
+	const char* path = "filecache_layout.bin";
+	std::remove(path);
+	constexpr int N = 400;
+	// what each name holds: -1 deleted, else the version written last
+	std::vector<int> version(2 * N + 1, -1);
+	auto verify = [&](FileCache* cache) {
+		bool all = true;
+		int live = 0;
+		for (int i = 1; i <= 2 * N; i++)
+		{
+			std::vector<uint8_t> got;
+			bool has = cache->GetFile({(uint64)i, 3}, got);
+			if (version[i] < 0)
+				all &= !has && !cache->HasFile({(uint64)i, 3});
+			else
+			{
+				all &= has && got == LayoutData(i, version[i]) && cache->HasFile({(uint64)i, 3});
+				live++;
+			}
+		}
+		CHECK(all);
+		CHECK(cache->GetFileCount() == live);
+	};
+	FileCache* cache = FileCache::Create(path, 9);
+	CHECK(cache);
+	if (!cache)
+		return;
+	// stored as written, so the sizes below are known
+	cache->UseCompression(false);
+	for (int i = 1; i <= N; i++)
+	{
+		std::vector<uint8_t> d = LayoutData(i, 0);
+		cache->AddFile({(uint64)i, 3}, d.data(), (sint32)d.size());
+		version[i] = 0;
+	}
+	for (int i = 1; i <= N; i += 3)
+	{
+		std::vector<uint8_t> d = LayoutData(i, 1);
+		cache->AddFile({(uint64)i, 3}, d.data(), (sint32)d.size());
+		version[i] = 1;
+	}
+	for (int i = 2; i <= N; i += 5)
+	{
+		CHECK(cache->DeleteFile({(uint64)i, 3}));
+		version[i] = -1;
+	}
+	CHECK(!cache->DeleteFile({(uint64)N + 1, 3}));
+	verify(cache);
+	delete cache;
+	for (int round = 0; round < 2; round++)
+	{
+		cache = FileCache::Open(path, false, 9);
+		CHECK(cache);
+		if (!cache)
+			return;
+		cache->UseCompression(false);
+		verify(cache);
+		if (round == 0)
+		{
+			// new names after the reopen, and rewrites of old ones: none of
+			// it may land on an entry or the file table still in use
+			for (int i = N + 1; i <= 2 * N; i++)
+			{
+				std::vector<uint8_t> d = LayoutData(i, 0);
+				cache->AddFile({(uint64)i, 3}, d.data(), (sint32)d.size());
+				version[i] = 0;
+			}
+			for (int i = 5; i <= 2 * N; i += 7)
+			{
+				std::vector<uint8_t> d = LayoutData(i, 2);
+				cache->AddFile({(uint64)i, 3}, d.data(), (sint32)d.size());
+				version[i] = 2;
+			}
+			verify(cache);
+		}
+		delete cache;
+	}
+	// the space rewritten and deleted entries left is used again: the file
+	// stays within twice what is live in it
+	long long liveBytes = 0;
+	for (int i = 1; i <= 2 * N; i++)
+		if (version[i] >= 0)
+			liveBytes += (long long)LayoutData(i, version[i]).size() + 0x20;
+	long long fileSize = FileSizeOf(path);
+	CHECK(fileSize > liveBytes && fileSize < 2 * liveBytes);
+	std::remove(path);
+	// random writes, rewrites and deletes over few names (names that collide
+	// in the lookup, and gaps that join and split), checked against what was
+	// written, through reopens
+	std::vector<int> model(64, -1);
+	std::mt19937 rng(5);
+	cache = FileCache::Create(path, 9);
+	CHECK(cache);
+	if (!cache)
+		return;
+	bool all = true;
+	for (int op = 0; op < 6000 && cache; op++)
+	{
+		int i = (int)(rng() % model.size());
+		uint64 n1 = (uint64)(i % 8) << 40 | (uint64)(i / 8), n2 = 0x51;
+		if (rng() % 3 == 0)
+		{
+			all &= cache->DeleteFile({n1, n2}) == (model[i] >= 0);
+			model[i] = -1;
+		}
+		else
+		{
+			std::vector<uint8_t> d = LayoutData(i, op);
+			cache->AddFile({n1, n2}, d.data(), (sint32)d.size());
+			model[i] = op;
+		}
+		if (op % 500 == 499)
+		{
+			delete cache;
+			cache = FileCache::Open(path, false, 9);
+			CHECK(cache);
+		}
+		if (cache && op % 97 == 0)
+		{
+			int live = 0;
+			for (int k = 0; k < (int)model.size(); k++)
+			{
+				std::vector<uint8_t> got;
+				uint64 k1 = (uint64)(k % 8) << 40 | (uint64)(k / 8);
+				bool has = cache->GetFile({k1, n2}, got);
+				all &= model[k] < 0 ? !has : has && got == LayoutData(k, model[k]);
+				live += model[k] >= 0;
+			}
+			all &= cache->GetFileCount() == live;
+		}
+	}
+	CHECK(all);
+	delete cache;
+	std::remove(path);
+}
+
 // tools/pack_graphic_packs.c writes these
 extern const unsigned char g_libretro_graphic_packs[];
 extern const size_t g_libretro_graphic_packs_size;
@@ -512,6 +672,7 @@ int main(int argc, char** argv)
 	TestZlib125();
 	TestCacheEntries();
 	TestFileCacheWriter();
+	TestFileCacheLayout();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);
 	if (s_failures)
