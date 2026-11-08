@@ -180,10 +180,14 @@ Now (as of `495ded87`):
   a native mapping otherwise) and inflate from the mapped span, with no
   read buffer at all; read without the cache's mutex (positional reads,
   the table published RCU).
-- The `VkPipelineCache` blob is read with `std::ifstream` into a vector and
-  copied again by the driver. Map it for `vkCreatePipelineCache` and unmap
-  after. Saving gets the blob from the driver once per save; save only
-  when its contents changed (not when its size did).
+- Done: the `VkPipelineCache` file is handed to `vkCreatePipelineCache`
+  mapped (`MappedFile`) and unmapped once the driver has its copy. It is
+  saved when its contents changed (a CRC, not its size), through a file
+  that then takes its name. The compile threads no longer take a
+  reader-writer lock around `vkCreateGraphicsPipelines` for the save's
+  sake, which held every compile, the GPU thread's synchronous ones
+  included, behind a save; the save waits for a moment none is building a
+  pipeline (`IdleWait`) and nothing waits for it.
 - The boot load of the transferable shader and pipeline caches copies every
   entry before deserializing it; deserialize from the borrowed bytes.
 - Compiled SPIR-V moves from rslc to the module without another copy;

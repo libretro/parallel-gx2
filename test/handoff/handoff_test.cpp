@@ -67,7 +67,11 @@
 //    wake their waiters (an idle core on its run queue's count), time out,
 //    and the state flag hands a state back and forth between two threads;
 //  - the audio ring hands out whole frames in place, across the wrap, for 2 and
-//    6 channels, and streams intact between a producer and a consumer thread.
+//    6 channels, and streams intact between a producer and a consumer thread;
+//  - IdleWait (the Vulkan pipeline cache's save, which waits for a moment no
+//    compile thread is building a pipeline): the last one out wakes the
+//    waiter (no poll - a lost wake hangs this test), work never waits for
+//    it, and a stop or a deadline ends its waits.
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompilerWorkQueue.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "util/helpers/ThreadStartedFlag.h"
@@ -85,6 +89,7 @@
 #include "Cemu/nex/nexWait.h"
 #include "util/helpers/RcuCell.h"
 #include "util/helpers/Semaphore.h"
+#include "util/helpers/IdleWait.h"
 #include "Cafe/HW/Espresso/PPCTimerClock.h"
 #include <set>
 #include "libretro.h"
@@ -1476,6 +1481,98 @@ static void TestAudioFeedWait()
 
 // --- Semaphore.h ------------------------------------------------------------
 
+static void TestIdleWait()
+{
+	using namespace std::chrono;
+	IdleWait gate;
+	std::atomic<bool> stop{false};
+	auto stopping = [&] { return stop.load(); };
+	// idle from the start: returns at once
+	CHECK(gate.WaitIdle(stopping));
+	{
+		// work under way: the waiter sleeps until the last one leaves, and
+		// the work never waits for it
+		constexpr int kWorkers = 4;
+		std::atomic<int> entered{0}, release{0};
+		std::vector<std::thread> workers;
+		for (int i = 0; i < kWorkers; i++)
+			workers.emplace_back([&] {
+				gate.Enter();
+				entered++;
+				while (!release.load())
+					std::this_thread::yield();
+				gate.Leave();
+			});
+		while (entered.load() < kWorkers)
+			std::this_thread::yield();
+		std::atomic<bool> woke{false};
+		std::thread waiter([&] {
+			CHECK(gate.WaitIdle(stopping));
+			woke = true;
+		});
+		std::this_thread::sleep_for(milliseconds(50));
+		CHECK(!woke.load());
+		release = 1;
+		for (auto& t : workers)
+			t.join();
+		waiter.join();
+		CHECK(woke.load() && gate.Idle());
+	}
+	{
+		// many enters and leaves on several threads against a waiter taking
+		// idle moments over and over: every one ends, and the count ends at 0
+		std::atomic<bool> done{false};
+		std::atomic<int> moments{0};
+		std::thread waiter([&] {
+			while (!done.load())
+				if (gate.WaitIdle([&] { return done.load(); }))
+					moments++;
+		});
+		std::vector<std::thread> workers;
+		for (int i = 0; i < 4; i++)
+			workers.emplace_back([&] {
+				for (int n = 0; n < 50000; n++)
+				{
+					gate.Enter();
+					gate.Leave();
+				}
+			});
+		for (auto& t : workers)
+			t.join();
+		done = true;
+		gate.Notify();
+		waiter.join();
+		CHECK(gate.Idle() && moments.load() > 0);
+	}
+	{
+		// a stop ends a wait for idle that would never come
+		gate.Enter();
+		std::thread waiter([&] { CHECK(!gate.WaitIdle(stopping)); });
+		std::this_thread::sleep_for(milliseconds(20));
+		stop = true;
+		gate.Notify();
+		waiter.join();
+		gate.Leave();
+		stop = false;
+	}
+	{
+		// WaitFor comes back by its deadline, or at once on a stop
+		auto t0 = steady_clock::now();
+		CHECK(!gate.WaitFor(stopping, milliseconds(30)));
+		CHECK(steady_clock::now() - t0 >= milliseconds(30));
+		std::thread stopper([&] {
+			std::this_thread::sleep_for(milliseconds(20));
+			stop = true;
+			gate.Notify();
+		});
+		t0 = steady_clock::now();
+		CHECK(gate.WaitFor(stopping, seconds(30)));
+		CHECK(steady_clock::now() - t0 < seconds(10));
+		stopper.join();
+		stop = false;
+	}
+}
+
 static void TestSemaphores()
 {
 	using namespace std::chrono;
@@ -1603,6 +1700,7 @@ int main()
 	TestNexWait();
 	TestRcuCell();
 	TestSemaphores();
+	TestIdleWait();
 	TestAudioRingSpans(2);
 	TestAudioRingSpans(6);
 	TestAudioRingThreads();

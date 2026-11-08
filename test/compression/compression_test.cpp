@@ -15,6 +15,9 @@
 //    land on nothing still in use (the file table included), and the file
 //    reuses the space rewritten and deleted entries leave; and random
 //    writes, rewrites and deletes read back as written;
+//  - the Vulkan pipeline cache's file: MappedFile gives a file's bytes (none
+//    for a missing or empty one), and ReplaceFileContents puts new contents
+//    in its place whole, leaving nothing beside it, or leaves it as it was;
 //  - the graphic packs compiled in (tools/pack_graphic_packs.c, built here
 //    as the core's build does) unpack to the files they were made from.
 #include <cstdio>
@@ -31,6 +34,7 @@
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 
 #include "Cemu/FileCache/FileCache.h"
+#include "util/helpers/MappedFile.h"
 
 #include "golden_deflate.h"
 #include "golden_entries.h"
@@ -627,6 +631,43 @@ static void TestFileCacheLayout()
 	std::remove(path);
 }
 
+static void TestMappedFile()
+{
+	const fs::path path = "mapped_test.bin";
+	std::error_code ec;
+	fs::remove(path, ec);
+	{
+		MappedFile none(path);
+		CHECK(none.size() == 0 && none.data() == nullptr);
+	}
+	std::vector<uint8_t> a = Noise(300000, 11), b = Noise(1234, 12);
+	CHECK(ReplaceFileContents(path, a.data(), a.size()));
+	CHECK(!fs::exists(fs::path("mapped_test.bin.tmp")));
+	{
+		MappedFile f(path);
+		CHECK(f.mapped());
+		CHECK(f.size() == a.size() && std::memcmp(f.data(), a.data(), a.size()) == 0);
+	}
+	// shorter contents replace longer ones whole
+	CHECK(ReplaceFileContents(path, b.data(), b.size()));
+	{
+		MappedFile f(path);
+		CHECK(f.size() == b.size() && std::memcmp(f.data(), b.data(), b.size()) == 0);
+	}
+	CHECK(fs::file_size(path, ec) == b.size());
+	// an empty file maps to nothing
+	CHECK(ReplaceFileContents(path, nullptr, 0));
+	{
+		MappedFile f(path);
+		CHECK(f.size() == 0);
+	}
+	// where nothing can be written: false, and nothing left behind
+	const fs::path bad = fs::path("no_such_dir_for_mapped_test") / "x.bin";
+	CHECK(!ReplaceFileContents(bad, a.data(), a.size()));
+	CHECK(!fs::exists(bad.parent_path()));
+	fs::remove(path, ec);
+}
+
 // tools/pack_graphic_packs.c writes these
 extern const unsigned char g_libretro_graphic_packs[];
 extern const size_t g_libretro_graphic_packs_size;
@@ -673,6 +714,7 @@ int main(int argc, char** argv)
 	TestCacheEntries();
 	TestFileCacheWriter();
 	TestFileCacheLayout();
+	TestMappedFile();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);
 	if (s_failures)

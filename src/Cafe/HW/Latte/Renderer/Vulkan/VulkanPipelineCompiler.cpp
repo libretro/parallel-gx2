@@ -992,9 +992,11 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	uint8 retryCount = 0;
 	while (retryCount < 3)
 	{
-		std::shared_lock lock(vkRenderer->m_pipeline_cache_save_mutex);
+		// marked as under way for the cache's save, which waits for a moment
+		// none is; nothing here waits for it
+		vkRenderer->m_pipeline_cache_builds.Enter();
 		result = vkCreateGraphicsPipelines(vkRenderer->m_logicalDevice, vkRenderer->m_pipeline_cache, 1, &pipelineInfo, nullptr, &pipeline);
-		lock.unlock();
+		vkRenderer->m_pipeline_cache_builds.Leave();
 		if (result != VK_ERROR_OUT_OF_DEVICE_MEMORY)
 			break;
 		retryCount++;

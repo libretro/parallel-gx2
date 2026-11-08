@@ -18,6 +18,8 @@
 
 #include "util/helpers/helpers.h"
 #include "util/helpers/StringHelpers.h"
+#include "util/helpers/MappedFile.h"
+#include <encodings/crc32.h>
 
 #include "config/ActiveSettings.h"
 #include "config/CemuConfig.h"
@@ -1832,41 +1834,11 @@ void VulkanRenderer::StopPipelineCacheSaveThread()
 		return;
 	m_destructionRequested = true;
 	m_pipeline_cache_semaphore.notify();
-	if (m_pipeline_cache_wake_ok)
-		retro_eventcount_notify(&m_pipeline_cache_wake);
+	m_pipeline_cache_builds.Notify();
 	m_pipeline_cache_save_thread.join();
-	retro_eventcount_free(&m_pipeline_cache_wake); // safe after a failed init too
-	m_pipeline_cache_wake_ok = false;
 }
 
-// Runs on: the save thread. Sleeps for the duration unless the renderer is
-// being destroyed, which ends the sleep at once; true if it is.
-bool VulkanRenderer::PipelineCacheSaveWait(std::chrono::milliseconds duration)
-{
-	const auto deadline = std::chrono::steady_clock::now() + duration;
-	for (;;)
-	{
-		if (m_destructionRequested)
-			return true;
-		const auto left = std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now()).count();
-		if (left <= 0)
-			return false;
-		if (!m_pipeline_cache_wake_ok)
-		{
-			std::this_thread::sleep_for(std::chrono::microseconds(std::min<int64_t>(left, 250000)));
-			continue;
-		}
-		const int key = retro_eventcount_prepare_wait(&m_pipeline_cache_wake);
-		if (m_destructionRequested)
-		{
-			retro_eventcount_cancel_wait(&m_pipeline_cache_wake);
-			return true;
-		}
-		retro_eventcount_commit_wait_timeout(&m_pipeline_cache_wake, key, left);
-	}
-}
-
-void VulkanRenderer::PipelineCacheSaveThread(size_t cache_size)
+void VulkanRenderer::PipelineCacheSaveThread(size_t savedSize, uint32 savedCrc)
 {
 	SetThreadName("vkDriverPlCache");
 	const auto dir = ActiveSettings::GetCachePath("shaderCache/driver/vk");
@@ -1884,6 +1856,9 @@ void VulkanRenderer::PipelineCacheSaveThread(size_t cache_size)
 	}
 
 	const auto filename = dir / fmt::format(L"{:016x}.bin", CafeSystem::GetForegroundTitleId());
+	auto stopping = [this] { return m_destructionRequested; };
+	// kept from one save to the next: it only grows with the cache
+	std::vector<uint8_t> cacheData;
 
 	while (true)
 	{
@@ -1893,98 +1868,84 @@ void VulkanRenderer::PipelineCacheSaveThread(size_t cache_size)
 		if (m_destructionRequested)
 			return;
 		// Saved 15 s after the last new pipeline asked for it, as upstream
-		// does; a renderer going away ends the wait instead of being noticed
-		// up to 250 ms later
-		if (PipelineCacheSaveWait(std::chrono::seconds(15)))
+		// does; a renderer going away ends the wait at once
+		if (m_pipeline_cache_builds.WaitFor(stopping, std::chrono::seconds(15)))
 			return;
-
-		// always prioritize the compiler threads over this thread
-		// avoid calling stalling lock() since it will block other threads from entering even when the lock is currently held in shared mode
-		while (!m_pipeline_cache_save_mutex.try_lock())
-		{
-			if (PipelineCacheSaveWait(std::chrono::milliseconds(250)))
-				return;
-		}
+		// The compile threads go first: read at a moment none of them is
+		// building a pipeline. None of them waits for this; one that starts
+		// during the read goes ahead, the cache being internally
+		// synchronized.
+		if (!m_pipeline_cache_builds.WaitIdle(stopping))
+			return;
+		// what is built from here on asks for the next save
+		m_pipeline_cache_semaphore.reset();
 
 		size_t size = 0;
 		VkResult res = vkGetPipelineCacheData(m_logicalDevice, m_pipeline_cache, &size, nullptr);
-		if (res == VK_SUCCESS && size > 0 && size != cache_size)
+		if (res != VK_SUCCESS || size == 0)
+			continue;
+		cacheData.resize(size);
+		res = vkGetPipelineCacheData(m_logicalDevice, m_pipeline_cache, &size, cacheData.data());
+		// VK_INCOMPLETE: it grew in between; what was written is a valid
+		// cache all the same, and the next save has the rest
+		if (res != VK_SUCCESS && res != VK_INCOMPLETE)
 		{
-			std::vector<uint8_t> cacheData(size);
-			res = vkGetPipelineCacheData(m_logicalDevice, m_pipeline_cache, &size, cacheData.data());
-			m_pipeline_cache_semaphore.reset();
-			m_pipeline_cache_save_mutex.unlock();
-
-			if (res == VK_SUCCESS)
-			{
-
-				auto file = std::ofstream(filename, std::ios::out | std::ios::binary);
-				if (file.is_open())
-				{
-					file.write((char*)cacheData.data(), cacheData.size());
-					file.close();
-
-					cache_size = size;
-					cemuLog_logDebug(LogType::Force, "pipeline cache saved");
-				}
-				else
-				{
-					cemuLog_log(LogType::Force, "can't write pipeline cache to disk");
-				}
-			}
-			else
-			{
-				cemuLog_log(LogType::Force, "can't retrieve pipeline cache data: 0x{:x}", res);
-			}
+			cemuLog_log(LogType::Force, "can't retrieve pipeline cache data: 0x{:x}", res);
+			continue;
 		}
-		else
+		// Written when its contents changed - not when its size did, which
+		// missed a cache that changed without growing and rewrote one that
+		// had not
+		const uint32 crc = encoding_crc32(0, cacheData.data(), size);
+		if (size == savedSize && crc == savedCrc)
+			continue;
+		// through a file that then takes its name: a crash or a title
+		// starting meanwhile never finds it half written
+		if (!ReplaceFileContents(filename, cacheData.data(), size))
 		{
-			m_pipeline_cache_semaphore.reset();
-			m_pipeline_cache_save_mutex.unlock();
+			cemuLog_log(LogType::Force, "can't write pipeline cache to disk");
+			continue;
 		}
+		savedSize = size;
+		savedCrc = crc;
+		cemuLog_logDebug(LogType::Force, "pipeline cache saved");
 	}
 }
 
 void VulkanRenderer::CreatePipelineCache()
 {
-	std::vector<uint8_t> cacheData;
 	const auto dir = ActiveSettings::GetCachePath("shaderCache/driver/vk");
-	if (fs::exists(dir))
+	const auto filename = dir / fmt::format("{:016x}.bin", CafeSystem::GetForegroundTitleId());
+	// The driver copies what it keeps, so the file is handed over mapped,
+	// and unmapped once it has: no read into a buffer of our own
+	size_t savedSize = 0;
+	uint32 savedCrc = 0;
 	{
-		const auto filename = dir / fmt::format("{:016x}.bin", CafeSystem::GetForegroundTitleId());
-		auto file = std::ifstream(filename, std::ios::in | std::ios::binary | std::ios::ate);
-		if (file.is_open())
+		MappedFile cacheFile(filename);
+		VkPipelineCacheCreateInfo createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+		createInfo.initialDataSize = cacheFile.size();
+		createInfo.pInitialData = cacheFile.data();
+		VkResult result = vkCreatePipelineCache(m_logicalDevice, &createInfo, nullptr, &m_pipeline_cache);
+		if (result == VK_SUCCESS)
 		{
-			const size_t fileSize = file.tellg();
-			file.seekg(0, std::ifstream::beg);
-			cacheData.resize(fileSize);
-			file.read((char*)cacheData.data(), cacheData.size());
-			file.close();
+			// as saved: a cache that takes no new pipeline is not written again
+			savedSize = cacheFile.size();
+			savedCrc = savedSize ? encoding_crc32(0, cacheFile.data(), savedSize) : 0;
+		}
+		else
+		{
+			cemuLog_log(LogType::Force, "Failed to open Vulkan pipeline cache: {}", result);
+			// unable to load the existing cache, start with an empty cache instead
+			createInfo.initialDataSize = 0;
+			createInfo.pInitialData = nullptr;
+			result = vkCreatePipelineCache(m_logicalDevice, &createInfo, nullptr, &m_pipeline_cache);
+			if (result != VK_SUCCESS)
+				UnrecoverableError(fmt::format("Failed to create new Vulkan pipeline cache: {}", result).c_str());
 		}
 	}
 
-	VkPipelineCacheCreateInfo createInfo{};
-	createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	createInfo.initialDataSize = cacheData.size();
-	createInfo.pInitialData = cacheData.data();
-	VkResult result = vkCreatePipelineCache(m_logicalDevice, &createInfo, nullptr, &m_pipeline_cache);
-	if (result != VK_SUCCESS)
-	{
-		cemuLog_log(LogType::Force, "Failed to open Vulkan pipeline cache: {}", result);
-		// unable to load the existing cache, start with an empty cache instead
-		createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-		createInfo.initialDataSize = 0;
-		createInfo.pInitialData = nullptr;
-		result = vkCreatePipelineCache(m_logicalDevice, &createInfo, nullptr, &m_pipeline_cache);
-		if (result != VK_SUCCESS)
-			UnrecoverableError(fmt::format("Failed to create new Vulkan pipeline cache: {}", result).c_str());
-	}
-
-	size_t cache_size = 0;
-	vkGetPipelineCacheData(m_logicalDevice, m_pipeline_cache, &cache_size, nullptr);
-
-	m_pipeline_cache_wake_ok = retro_eventcount_init(&m_pipeline_cache_wake);
-	m_pipeline_cache_save_thread = std::thread(&VulkanRenderer::PipelineCacheSaveThread, this, cache_size);
+	m_pipeline_cache_save_thread = std::thread(&VulkanRenderer::PipelineCacheSaveThread, this, savedSize, savedCrc);
 }
 
 

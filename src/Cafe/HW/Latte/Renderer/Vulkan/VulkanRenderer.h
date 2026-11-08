@@ -1,6 +1,5 @@
 #pragma once
 
-#include <rthreads/retro_eventcount.h>
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
@@ -11,6 +10,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRMemoryManager.h"
 #include "util/math/vector2.h"
 #include "util/helpers/Semaphore.h"
+#include "util/helpers/IdleWait.h"
 #include "libretro/LibretroViews.h"
 #include "util/helpers/MpscList.h"
 #include "util/containers/flat_hash_map.hpp"
@@ -256,7 +256,7 @@ public:
 	std::vector<VKRDestructibleObject*> m_destructionQueue;
 	std::atomic<uint32> m_destructionQueueSize{0};
 
-	void PipelineCacheSaveThread(size_t cache_size);
+	void PipelineCacheSaveThread(size_t savedSize, uint32 savedCrc);
 	// Stops the thread above without needing the device. The destructor does
 	// this too, but on the libretro unload path the destructor is skipped.
 	void StopPipelineCacheSaveThread();
@@ -581,13 +581,13 @@ private:
 	QueueFamilyIndices m_indices{};
 
 	Semaphore m_pipeline_cache_semaphore;
-	std::shared_mutex m_pipeline_cache_save_mutex;
 	std::thread m_pipeline_cache_save_thread;
-	// Wakes the save thread out of its 15 s wait when the renderer goes away,
-	// instead of it noticing at its next 250 ms look
-	retro_eventcount_t m_pipeline_cache_wake{};
-	bool m_pipeline_cache_wake_ok = false;
-	bool PipelineCacheSaveWait(std::chrono::milliseconds duration);
+	// The compile threads go through it around every vkCreateGraphicsPipelines;
+	// the save thread reads the cache at a moment none is in one, without any
+	// of them ever waiting for the save (a reader-writer lock before, which
+	// held every compile - the GPU thread's own included - behind a save).
+	// Its wake also ends the save thread's waits when the renderer goes away.
+	IdleWait m_pipeline_cache_builds;
 	VkPipelineCache m_pipeline_cache{ nullptr };
 	std::unordered_map<uint64, VkDescriptorSet> m_backbufferBlitDescriptorSetCache;
 	VkPipelineLayout m_pipelineLayout{nullptr};

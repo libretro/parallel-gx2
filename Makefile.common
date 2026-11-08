@@ -363,6 +363,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/crypto/crc32.cpp \
 	$(CORE_DIR)/src/util/crypto/md5.cpp \
 	$(CORE_DIR)/src/util/helpers/Deflate.cpp \
+	$(CORE_DIR)/src/util/helpers/MappedFile.cpp \
 	$(CORE_DIR)/src/util/helpers/Serializer.cpp \
 	$(CORE_DIR)/src/util/helpers/helpers.cpp \
 	$(CORE_DIR)/src/util/highresolutiontimer/HighResolutionTimer.cpp \

@@ -36,7 +36,7 @@ CXX_SRCS := compression_test.cpp $(SRC)/util/helpers/Deflate.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/ShaderSerializer.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
 	$(SRC)/util/helpers/Serializer.cpp \
-	$(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) stubs.cpp
+	$(SRC)/Cemu/FileCache/FileCache.cpp $(SRC)/util/helpers/MappedFile.cpp $(FILESTREAM) stubs.cpp
 
 all: compression_test$(EXE)
 
