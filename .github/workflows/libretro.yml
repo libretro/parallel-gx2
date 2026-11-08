@@ -84,6 +84,10 @@ jobs:
         # inside a file (the precompiled header's stub broke the Windows build)
         run: ./tools/check_build_paths.sh
 
+      - name: "A clone without submodules builds"
+        # make fetches them, where the build used to stop at glm/glm.hpp
+        run: ./tools/check_submodule_fetch.sh
+
       - name: "Controllers updated once a frame"
         # from retro_run, after the frontend's input is polled: no input
         # thread waking every millisecond to update them

@@ -5,6 +5,23 @@ LTO ?=
 CORE_DIR := .
 TARGET_NAME := parallel_gx2
 
+# The libraries and the graphic packs are git submodules. A checkout made
+# without them (a clone without --recursive, or one older than a submodule)
+# fetches them here, on the build that would otherwise stop at the first
+# header it cannot find. NO_SUBMODULE_FETCH=1 to leave the checkout alone.
+ifneq ($(NO_SUBMODULE_FETCH),1)
+SUBMODULE_STATUS := $(shell cd $(CORE_DIR) && [ -e .git ] && [ -f .gitmodules ] && \
+	for p in `git config -f .gitmodules --get-regexp '\.path$$' | cut -d' ' -f2`; do \
+		[ -n "`ls -A "$$p" 2>/dev/null`" ] && continue; \
+		echo "Fetching the git submodules (this checkout has none in $$p)" >&2; \
+		git submodule update --init --recursive >&2 || echo failed; \
+		break; \
+	done)
+ifeq ($(SUBMODULE_STATUS),failed)
+$(error Could not fetch the git submodules; run: git submodule update --init --recursive)
+endif
+endif
+
 ifeq ($(ECHO),1)
    E := 1
 endif

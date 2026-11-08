@@ -16,7 +16,7 @@ fi
 # the stub as the build writes it, into a scratch tree (a changed build tag
 # empties the object tree it is given)
 tmp=$(mktemp -d) || exit 2
-make -n OBJ_DIR="$tmp" >/dev/null 2>&1
+make -n NO_SUBMODULE_FETCH=1 OBJ_DIR="$tmp" >/dev/null 2>&1
 stub="$tmp/pch/precompiled.h"
 if [ ! -f "$stub" ]; then
 	echo "the precompiled header stub was not written"

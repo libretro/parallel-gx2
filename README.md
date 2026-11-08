@@ -23,7 +23,8 @@ graphics context, the surface and the swapchain are all the frontend's.
 sudo apt install -y g++ make
 
 # Clone with submodules - the libraries and the community graphic packs live
-# in them. On an existing clone: git submodule update --init --recursive
+# in them. A clone without them has make fetch them on its first build
+# (NO_SUBMODULE_FETCH=1 not to).
 git clone --recursive https://github.com/libretro/parallel-gx2.git
 cd parallel-gx2
 

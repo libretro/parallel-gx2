@@ -310,6 +310,17 @@ test-build-paths:
   script:
     - ./tools/check_build_paths.sh
 
+# A clone without its submodules gets them from its first make, where the
+# build used to stop at glm/glm.hpp.
+test-submodule-fetch:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_submodule_fetch.sh
+
 # The emulated controllers are updated once a frame from retro_run, after
 # the frontend's input is polled: no input thread waking every millisecond.
 test-input-per-frame:
