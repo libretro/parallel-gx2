@@ -2,7 +2,7 @@
 #include "Common/FileStream.h"
 #include <cstdarg>
 
-#include "libretro/libretro.h"
+#include "libretro.h"
 
 struct retro_vfs_interface* VFSFileStream::s_vfs_interface = nullptr;
 uint32 VFSFileStream::s_vfs_version = 0;
