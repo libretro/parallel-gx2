@@ -40,6 +40,20 @@ This repository builds the libretro core and nothing else. The standalone's part
 - Every core option has to be connected to something. Do not add an option the core does not read, and remove one that turns out to do nothing. Option defaults follow the standalone's defaults unless there is a reason, written down beside the option.
 - `settings.xml` is not used by this core. If you need a setting, use the current `.opt` file (a core option) instead of Cemu's `settings.xml`.
 
+## Shader compilation and stutter
+
+The first play of a game, with no shader, pipeline or driver cache on disk, has to be as smooth as playing it with all of them full: no compile is ever seen in gameplay. The plan, what the core does today and how to measure it are in `docs/SHADER-STUTTER.md`. These rules apply to every change that touches the shader or pipeline path - the decompiler (`LatteSHRC`, `LegacyShaderDecompiler`), shader compilation (`RendererShaderVk`, `RslcGlsl.h`, libretro-common's `gfx/shaders`), pipelines (`VulkanPipelineCompiler`, `VulkanPipelineStableCache`, the draw path in `VulkanRendererCore.cpp`), the caches (`LatteShaderCache`, `FileCache`, the `VkPipelineCache` blob) and the file I/O under them.
+
+- Shader compilation only gets better. Run the shader/PSO gate (`test/pso`) before and after the change; a number that gets worse - compiles, pipelines created on the draw path, synchronous creations, SPIR-V size, allocations or bytes copied, compile times - blocks the change. A change that improves one updates the baseline in the same commit. A number that has to get worse for correct output is the developer's call, stated in the commit message. Put the before and after numbers in the commit message.
+- Until `test/pso` exists, building it is the first shader/pipeline change; until then measure by hand as `docs/SHADER-STUTTER.md` describes, and still do not land a change that makes any of those numbers worse.
+- Never block a draw on a compile. No new synchronous shader compile, pipeline creation, link or wait for a worker on the GPU thread for a state that can be drawn another way. Skipping the draw is not another way; a fallback draws exactly what the game asked for.
+- The case that counts is the cold one: no caches of any kind, the driver's included. Measure cold and warm separately; a change that only helps warm runs does not meet the goal.
+- Count before timing, and attribute a stutter before fixing it: which frame, which stage, which state, how long. Timings are medians, p95, p99 and max over repeated runs in alternating order on an otherwise idle machine, and the emulated work and the pictures must be the same.
+- Every key change is traced to every consumer of the key, and a change to what a cached entry means bumps that cache's version. The transferable shader cache and the pipeline cache stay in the format standalone Cemu reads and writes; anything new the core persists goes in its own file.
+- The shader path's file I/O is zero-copy: map or borrow instead of reading a whole file into a buffer, decompress or build straight into the final destination, move compiled SPIR-V instead of copying it. Every borrow names its owner and how long it lives, up to the last CPU and GPU reader. No per-entry allocations on a cache load path.
+- Work for later runs on the workers, handed over through the lock-free queues in `util/helpers` and sleeping on an eventcount; optional work goes in the frame's slack. Never a lock, a sleep or a poll on this path.
+- Changes to rslc go to RetroArch's libretro-common, never to the core's copy. A shader that compiles faster but runs slower on the GPU is a regression too: SPIR-V instruction counts are part of the gate.
+
 ## Testing
 
 - `log.txt` names the commit it was built from, under "Loaded title". Ask testers for `log.txt` and the RetroArch log, and check which commit a log came from before drawing conclusions from it.
