@@ -95,7 +95,8 @@ jobs:
         # handoffs take no lock, nor AX's use of the audio devices, guest
         # time reads, the CPU's data cache flush reports, or the Vulkan
         # pipeline cache's compile threads, the worker queues or the shader
-        # compile pool, nor the emulated controllers' reads; nor does the
+        # compile pool, the emulated controllers' reads, the IOSU ioctl
+        # queues or the shader cache writer; nor does the
         # nex thread poll
         run: ./tools/check_gpu_waits.sh
 

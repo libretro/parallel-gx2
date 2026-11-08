@@ -7,12 +7,16 @@
 //    the flushes, reset, adler, totals and the return codes games check;
 //  - the shader and pipeline caches' entries standalone Cemu writes decode,
 //    and the ones written here decode, both through the dictionaries;
+//  - the cache file's async writer (Cemu/FileCache) has every entry four
+//    threads queued written out once it is stopped, starts again after,
+//    and stops at once when given nothing;
 //  - the graphic packs compiled in (tools/pack_graphic_packs.c, built here
 //    as the core's build does) unpack to the files they were made from.
 #include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "util/helpers/Deflate.h"
@@ -20,6 +24,8 @@
 #include "Cafe/HW/Latte/Common/ShaderSerializer.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
+
+#include "Cemu/FileCache/FileCache.h"
 
 #include "golden_deflate.h"
 #include "golden_entries.h"
@@ -409,6 +415,58 @@ static void TestCacheEntries()
 	}
 }
 
+static std::vector<uint8_t> EntryData(int thread, int i)
+{
+	std::vector<uint8_t> d = TestText(40 + (i * 37) % 3000);
+	d[0] = (uint8_t)thread;
+	d[1] = (uint8_t)i;
+	return d;
+}
+
+static void TestFileCacheWriter()
+{
+	const char* path = "filecache_test.bin";
+	std::remove(path);
+	constexpr int THREADS = 4, PER_THREAD = 150;
+	for (int round = 0; round < 2; round++)
+	{
+		// the second round reopens what the first wrote, and restarts the
+		// writer the first stopped
+		FileCache* cache = round ? FileCache::Open(path, false, 7) : FileCache::Create(path, 7);
+		CHECK(cache);
+		if (!cache)
+			return;
+		std::vector<std::thread> threads;
+		for (int t = 0; t < THREADS; t++)
+			threads.emplace_back([cache, t, round] {
+				for (int i = 0; i < PER_THREAD; i++)
+				{
+					std::vector<uint8_t> d = EntryData(t, i);
+					cache->AddFileAsync({(uint64)(round * 100 + t + 1), (uint64)i + 1}, d.data(), (sint32)d.size());
+				}
+			});
+		for (auto& t : threads)
+			t.join();
+		// everything queued before the stop is written by the time it returns
+		FileCache_StopAsyncWriter();
+		bool all = true;
+		for (int r = 0; r <= round; r++)
+			for (int t = 0; t < THREADS; t++)
+				for (int i = 0; i < PER_THREAD; i++)
+				{
+					std::vector<uint8_t> got;
+					all &= cache->GetFile({(uint64)(r * 100 + t + 1), (uint64)i + 1}, got) && got == EntryData(t, i);
+				}
+		CHECK(all);
+		CHECK(cache->GetFileCount() == (round + 1) * THREADS * PER_THREAD);
+		delete cache;
+	}
+	// nothing queued: stops at once, and again
+	FileCache_StopAsyncWriter();
+	FileCache_StopAsyncWriter();
+	std::remove(path);
+}
+
 // tools/pack_graphic_packs.c writes these
 extern const unsigned char g_libretro_graphic_packs[];
 extern const size_t g_libretro_graphic_packs_size;
@@ -453,6 +511,7 @@ int main(int argc, char** argv)
 	TestDeflate();
 	TestZlib125();
 	TestCacheEntries();
+	TestFileCacheWriter();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);
 	if (s_failures)

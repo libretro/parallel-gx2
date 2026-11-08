@@ -1,8 +1,8 @@
 #include "FileCache.h"
 #include "util/helpers/helpers.h"
 
-#include <mutex>
-#include <condition_variable>
+#include "util/helpers/MpscList.h"
+#include "util/helpers/EventWake.h"
 #include "util/helpers/Deflate.h"
 #include "Common/FileStream.h"
 
@@ -33,18 +33,16 @@ struct _FileCacheAsyncWriter
 	// a new one.
 	void Stop()
 	{
-		{
-			// Under the lock: the thread checks m_isRunning only after waking,
-			// so a stop set while it is between "no work" and wait() misses the
-			// notify and the join below never returns.
-			std::lock_guard lock(m_fileCacheMutex);
-			m_isRunning.store(false);
-		}
-		m_fileCacheCondVar.notify_all();
+		m_isRunning.store(false, std::memory_order_seq_cst);
+		m_wake.Notify();
 		if (m_fileCacheThread.joinable())
 			m_fileCacheThread.join();
+		m_started.store(false, std::memory_order_release);
 	}
 
+	// No lock (a mutex and condition variable before): the jobs go through
+	// an MpscList the one writer thread takes them all from at once, and it
+	// sleeps on an eventcount the jobs notify
 	void AddJob(FileCache* fileCache, const FileCache::FileName& name, const uint8* fileData, sint32 fileSize)
 	{
 		FileCacheAsyncJob async;
@@ -53,16 +51,15 @@ struct _FileCacheAsyncWriter
 		async.name2 = name.name2;
 		async.fileData = { fileData, fileData + fileSize };
 
-		std::unique_lock lock(m_fileCacheMutex);
-		m_writeRequests.emplace_back(std::move(async));
-		if (!m_fileCacheThread.joinable())
+		m_pending.fetch_add(1, std::memory_order_relaxed);
+		m_writeRequests.Push(std::move(async));
+		// the first job since the last Stop starts the thread
+		if (!m_started.exchange(true, std::memory_order_acq_rel))
 		{
-			m_isRunning.store(true);
+			m_isRunning.store(true, std::memory_order_seq_cst);
 			m_fileCacheThread = std::thread(&_FileCacheAsyncWriter::FileCacheThread, this);
 		}
-
-		lock.unlock();
-		m_fileCacheCondVar.notify_one();
+		m_wake.Notify();
 	}
 
 private:
@@ -71,33 +68,28 @@ private:
 		SetThreadName("fileCache");
 		while (true)
 		{
-			std::unique_lock lock(m_fileCacheMutex);
-			// Checked before waiting as well as after: a Stop() that came while
-			// this thread was busy writing has already notified, and waiting
-			// for it again would never return.
-			while (m_writeRequests.empty())
-			{
-				if (!m_isRunning.load(std::memory_order::relaxed))
-					return;
-				m_fileCacheCondVar.wait(lock);
-			}
-
-			std::vector<FileCacheAsyncJob> requestsCopy;
-			requestsCopy.swap(m_writeRequests); // fast copy & clear
-			lock.unlock();
-
-			for (const auto& entry : requestsCopy)
-			{
+			// Asleep until there is a job, or a stop with none left: a stop
+			// still writes out everything queued before it
+			m_wake.WaitUntil([this] {
+				return m_pending.load(std::memory_order_acquire) != 0 || !m_isRunning.load(std::memory_order_seq_cst);
+			});
+			bool any = false;
+			m_writeRequests.TakeAll([&](FileCacheAsyncJob&& entry) {
+				any = true;
+				m_pending.fetch_sub(1, std::memory_order_relaxed);
 				entry.fileCache->AddFile({ entry.name1, entry.name2 }, entry.fileData.data(), (sint32)entry.fileData.size());
-			}
+			});
+			if (!any && !m_isRunning.load(std::memory_order_seq_cst) && m_pending.load(std::memory_order_acquire) == 0)
+				return;
 		}
 	}
 
 	std::thread m_fileCacheThread;
-	std::mutex m_fileCacheMutex;
-	std::condition_variable m_fileCacheCondVar;
-	std::vector<FileCacheAsyncJob> m_writeRequests;
+	MpscList<FileCacheAsyncJob> m_writeRequests;
+	std::atomic<uint32> m_pending{0};
+	EventWake m_wake;
 	std::atomic_bool m_isRunning{false};
+	std::atomic_bool m_started{false};
 }FileCacheAsyncWriter;
 
 void FileCache_StopAsyncWriter()

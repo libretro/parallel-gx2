@@ -1,9 +1,8 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "iosu_ioctl.h"
-#include "util/helpers/ringbuffer.h"
+#include "util/helpers/MpscQueue.h"
 
-#include "util/helpers/Semaphore.h"
 #include "util/helpers/EventWake.h"
 
 #include <atomic>
@@ -12,10 +11,11 @@
 
 // deprecated IOCTL handling code
 
-RingBuffer<ioQueueEntry_t*, 256> _ioctlRingbuffer[IOS_DEVICE_COUNT];
-CounterSemaphore _ioctlRingbufferSemaphore[IOS_DEVICE_COUNT];
-
-std::mutex ioctlMutex;
+// A queue per device: the emulated threads push, the device's one worker
+// takes - no lock (a mutex, a ring and a counting semaphore before). Never
+// destroyed: the workers are detached, and one still waiting as the process
+// exits finds its queue where it was. A null entry is a shutdown's wake.
+static MpscQueue<ioQueueEntry_t*>* const sIoctlQueues = new MpscQueue<ioQueueEntry_t*>[IOS_DEVICE_COUNT];
 
 sint32 iosuIoctl_pushAndWait(uint32 ioctlHandle, ioQueueEntry_t* ioQueueEntry)
 {
@@ -26,12 +26,8 @@ sint32 iosuIoctl_pushAndWait(uint32 ioctlHandle, ioQueueEntry_t* ioQueueEntry)
 		return 0;
 	}
 	__OSLockScheduler();
-	ioctlMutex.lock();
 	ioQueueEntry->ppcThread = coreinit::OSGetCurrentThread();
-	
-	_ioctlRingbuffer[ioctlHandle].Push(ioQueueEntry);
-	ioctlMutex.unlock();
-	_ioctlRingbufferSemaphore[ioctlHandle].increment();
+	sIoctlQueues[ioctlHandle].push(ioQueueEntry);
 	coreinit::__OSSuspendThreadInternal(coreinit::OSGetCurrentThread());
 	if (ioQueueEntry->isCompleted == false)
 		assert_dbg();
@@ -39,22 +35,19 @@ sint32 iosuIoctl_pushAndWait(uint32 ioctlHandle, ioQueueEntry_t* ioQueueEntry)
 	return ioQueueEntry->returnValue;
 }
 
-// The deprecated IOSU threads below park in decrementWithWait() and have no way
-// out: they are detached and their loops never end. In a process that simply
-// exits that is invisible, but a libretro core gets unloaded, and the semaphore
-// array's own destructor then blocks in pthread_cond_destroy() for as long as a
-// thread is still waiting on it - a frontend that unloads the core and hangs.
+// The deprecated IOSU threads below park in their queue's pop and have no way
+// out of their own: they are detached and their loops never end. A libretro
+// core gets unloaded, so a shutdown wakes each of them to leave.
 static std::atomic_bool sIoctlShuttingDown{false};
-// How many of them are inside the wait right now, which is what the destructor
-// of the semaphore array cannot tolerate.
+// How many of them are inside the wait right now
 static std::atomic<int> sIoctlWaiters{0};
 
 void iosuIoctl_requestShutdown()
 {
 	sIoctlShuttingDown.store(true, std::memory_order_release);
-	// One post per device is enough: each has a single waiter.
+	// One wake per device is enough: each has a single worker.
 	for (uint32 i = 0; i < IOS_DEVICE_COUNT; i++)
-		_ioctlRingbufferSemaphore[i].increment();
+		sIoctlQueues[i].push(nullptr);
 }
 
 bool iosuIoctl_hasWaiters()
@@ -116,10 +109,10 @@ void iosuIoctl_resetAfterWorkersStopped()
 	cemu_assert_debug(sIoctlWorkersRunning.load(std::memory_order_acquire) == 0);
 	for (sint32 i = 0; i < IOS_DEVICE_COUNT; i++)
 	{
-		_ioctlRingbufferSemaphore[i].reset();
 		// Anything still queued belongs to a title that has ended, and the
-		// emulated thread that put it there went with it.
-		_ioctlRingbuffer[i].Clear();
+		// emulated thread that put it there went with it - and the shutdown's
+		// own wakes for devices that never had a worker
+		sIoctlQueues[i].clear();
 	}
 }
 
@@ -139,26 +132,23 @@ ioQueueEntry_t* iosuIoctl_getNextWithWait(uint32 deviceIndex)
 	while (true)
 	{
 		sIoctlWaiters.fetch_add(1, std::memory_order_acq_rel);
-		_ioctlRingbufferSemaphore[deviceIndex].decrementWithWait();
+		ioQueueEntry_t* entry = sIoctlQueues[deviceIndex].pop();
 		sIoctlWaiters.fetch_sub(1, std::memory_order_acq_rel);
 		if (sIoctlShuttingDown.load(std::memory_order_acquire))
 			return nullptr;
-		if (_ioctlRingbuffer[deviceIndex].HasData())
-			return _ioctlRingbuffer[deviceIndex].Pop();
-		// Woken with nothing behind it, which after a clean shutdown should not
-		// happen any more - the semaphores are reset once the workers are known
-		// to be gone. Kept because a spurious wake is a spurious wake, and
-		// popping an empty queue would be worse than waiting again.
+		if (entry)
+			return entry;
+		// A shutdown's wake left over from before the queues were cleared:
+		// wait again
 	}
 }
 
 ioQueueEntry_t* iosuIoctl_getNextWithTimeout(uint32 deviceIndex, sint32 ms)
 {
-	if (!_ioctlRingbufferSemaphore[deviceIndex].decrementWithWaitAndTimeout(ms))
-		return nullptr; // timeout or spurious wake up
-	if (_ioctlRingbuffer[deviceIndex].HasData() == false)
-		return nullptr;
-	return _ioctlRingbuffer[deviceIndex].Pop();
+	ioQueueEntry_t* entry = nullptr;
+	if (!sIoctlQueues[deviceIndex].pop_until(entry, std::chrono::steady_clock::now() + std::chrono::milliseconds(ms)))
+		return nullptr; // timeout
+	return entry;
 }
 
 void iosuIoctl_completeRequest(ioQueueEntry_t* ioQueueEntry, uint32 returnValue)
@@ -172,6 +162,6 @@ void iosuIoctl_init()
 {
 	for (sint32 i = 0; i < IOS_DEVICE_COUNT; i++)
 	{
-		_ioctlRingbuffer[i].Clear();
+		sIoctlQueues[i].clear();
 	}
 }

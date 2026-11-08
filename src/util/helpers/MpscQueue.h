@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <utility>
@@ -60,6 +61,15 @@ public:
 		T item;
 		pop(item);
 		return item;
+	}
+
+	// As pop, but back by the deadline whether or not there was anything;
+	// true if it took an item
+	bool pop_until(T& item, std::chrono::steady_clock::time_point deadline)
+	{
+		bool got = false;
+		m_wake.WaitUntil([&] { return got || (got = peek2(item)); }, deadline);
+		return got;
 	}
 
 	void clear()

@@ -1,7 +1,8 @@
 # zlib and Zstandard through libretro-common (compression_test.cpp): the
 # core's Deflate helpers, the console's zlib125 on the host side, the shader
-# and pipeline cache entries, and the graphic packs compiled in, with the
-# pack tool built as the core's build builds it (run_tests.sh).
+# and pipeline cache entries and the cache file's async writer, and the
+# graphic packs compiled in, with the pack tool built as the core's build
+# builds it (run_tests.sh).
 # SANITIZER=thread or SANITIZER=address,undefined for the sanitizer runs.
 LRC := ../../dependencies/libretro-common
 SRC := ../../src
@@ -9,7 +10,7 @@ DEP := ../../dependencies
 CXX ?= g++
 CC ?= gcc
 HOSTCC ?= cc
-FLAGS := -O1 -g -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
+FLAGS := -O1 -g -DHAVE_THREADS -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
 # what the core's precompiled header, which the serializers take, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
 	-include $(SRC)/Common/precompiled.h
@@ -20,18 +21,22 @@ ifneq (,$(findstring undefined,$(SANITIZER)))
    FLAGS += -fno-sanitize-recover=undefined
 endif
 LIBS := -lpthread
+FILESTREAM := $(SRC)/Common/unix/FileStream_unix.cpp
 ifneq (,$(findstring mingw,$(CC)))
    LIBS += -static
    EXE := .exe
+   FILESTREAM := $(SRC)/Common/windows/FileStream_win32.cpp
 endif
 LRC_SRCS := $(LRC)/encodings/encoding_deflate.c $(LRC)/encodings/encoding_crc32.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c \
-	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c
+	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c \
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := compression_test.cpp $(SRC)/util/helpers/Deflate.cpp \
 	$(SRC)/Cafe/OS/libs/zlib125/zlib125_stream.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/ShaderSerializer.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
-	$(SRC)/util/helpers/Serializer.cpp
+	$(SRC)/util/helpers/Serializer.cpp \
+	$(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) stubs.cpp
 
 all: compression_test$(EXE)
 
@@ -64,4 +69,4 @@ compression_test$(EXE): $(CXX_SRCS) $(LRC_SRCS) graphic_packs.c golden_deflate.h
 .PHONY: all clean
 
 clean:
-	rm -rf compression_test compression_test.exe pack_graphic_packs_host pack_graphic_packs_host.exe graphic_packs.c fixture *.o
+	rm -rf compression_test compression_test.exe filecache_test.bin pack_graphic_packs_host pack_graphic_packs_host.exe graphic_packs.c fixture *.o

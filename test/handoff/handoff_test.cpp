@@ -987,6 +987,22 @@ static void TestMpscQueue()
 	CHECK(ordered);
 	CHECK(!queue.peek2(extra));
 	CHECK(queue.empty());
+	// pop_until (the IOSU ioctl queues): back at the deadline with nothing,
+	// at once with something - pushed from another thread mid-wait
+	{
+		using clock = std::chrono::steady_clock;
+		auto start = clock::now();
+		CHECK(!queue.pop_until(extra, start + std::chrono::milliseconds(30)));
+		CHECK(clock::now() - start >= std::chrono::milliseconds(25));
+		std::thread t([&] {
+			std::this_thread::sleep_for(std::chrono::milliseconds(3));
+			queue.push({7, 7});
+		});
+		start = clock::now();
+		CHECK(queue.pop_until(extra, start + std::chrono::seconds(30)));
+		t.join();
+		CHECK(extra.first == 7 && clock::now() - start < std::chrono::seconds(10));
+	}
 }
 
 static void TestMpmcQueue()
