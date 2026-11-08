@@ -1,5 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h"
 #include "WindowSystem.h"
+#include "libretro/LibretroDRC.h"
 
 #include "Cafe/HW/Latte/Core/LatteRingBuffer.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
@@ -542,6 +543,10 @@ void OpenGLRenderer::HandleScreenshotRequest(LatteTextureView* texView, bool pad
 	SaveScreenshot(rgb_data, screenshotWidth, screenshotHeight, !padView);
 }
 
+// Counts the backbuffer's renderbuffers made (libretro_getBackbufferFBO): a new
+// one holds nothing defined until it is cleared
+static uint32 s_libretro_fbo_generation = 0;
+
 void OpenGLRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground)
 {
 	if (padView && !IsPadWindowActive())
@@ -562,7 +567,8 @@ void OpenGLRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutpu
 	GLCanvas_MakeCurrent(padView);
 
 	// The backbuffer takes the size the TV picture is rendered at (the
-	// GamePad's with the GamePad Screen layout), before it is bound below
+	// GamePad's with the GamePad Screen layout, both packed with Both Screens),
+	// before it is bound below
 	extern bool LibretroDRC_OutputFollowsScreen(bool padView);
 	if (LibretroDRC_OutputFollowsScreen(padView))
 	{
@@ -594,21 +600,32 @@ void OpenGLRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutpu
 		adjustedX, adjustedY, adjustedWidth, adjustedHeight);
 
 	// When both screens are shown (Side by Side, Top Bottom, Picture in
-	// Picture) they share this one backbuffer, and the GamePad blit asks for a
-	// clear: it wiped the TV image drawn just before, so only the GamePad
-	// screen was ever seen. Clear once per frame, before whichever screen comes
-	// first, as the Vulkan path does with its presentation image.
-	if (GLCanvas_ShouldRenderScreen(!padView))
+	// Picture, Both Screens) they share this one backbuffer, and the GamePad
+	// blit asks for a clear: it wiped the TV image drawn just before, so only
+	// the GamePad screen was ever seen. The backbuffer keeps what each screen
+	// last showed instead, as the Vulkan path's presentation image does: a
+	// title that scans out the GamePad less often than the TV (Wind Waker HD)
+	// left it black in every frame with only a TV picture while it was cleared
+	// each frame. (Picture in Picture excepted: there the TV picture covers the
+	// inset.) It is cleared when the screens move in it, a single-screen layout
+	// in between included, and when it was made anew (Both Screens, when the
+	// second picture's size changes), whose contents are undefined until then.
 	{
-		static uint32 s_lastClearedFrame = ~0u;
-		clearBackground = s_lastClearedFrame != LatteGPUState.frameCounter;
-		s_lastClearedFrame = LatteGPUState.frameCounter;
+		const std::array<int, 10> arrangement = LibretroDRC_Arrangement(windowWidth, windowHeight);
+		static std::array<int, 10> s_lastArrangement{};
+		static uint32 s_lastClearedGeneration = ~0u;
+		if (GLCanvas_ShouldRenderScreen(!padView))
+			clearBackground = s_lastArrangement != arrangement ||
+				s_lastClearedGeneration != s_libretro_fbo_generation;
+		s_lastArrangement = arrangement;
+		s_lastClearedGeneration = s_libretro_fbo_generation;
 	}
 
 	if (clearBackground)
 	{
 		g_renderer->renderTarget_setViewport(0, 0, windowWidth, windowHeight, 0.0f, 1.0f);
 		g_renderer->ClearColorbuffer(padView);
+		LibretroDRC_NotePresentClear();
 	}
 
 	shader_unbind(RendererShader::ShaderType::kGeometry);
@@ -780,6 +797,7 @@ GLuint libretro_getBackbufferFBO(int width, int height)
 		glFramebufferRenderbuffer(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_RENDERBUFFER_EXT, s_libretro_rbo);
 		s_libretro_fbo_w = width;
 		s_libretro_fbo_h = height;
+		s_libretro_fbo_generation++;
 	}
 	return s_libretro_fbo;
 }

@@ -636,8 +636,12 @@ static double libretro_wanted_fps()
 	return fps;
 }
 
-void libretro_signal_frame_ready()
+static void libretro_publish_frame_screens(uint32_t width, uint32_t height);
+
+// The GPU thread's frame of width x height is ready for retro_run
+void libretro_signal_frame_ready(uint32_t width, uint32_t height)
 {
+	libretro_publish_frame_screens(width, height);
 	s_prof_frames_ready.fetch_add(1, std::memory_order_relaxed);
 	s_game_frames.fetch_add(1, std::memory_order_relaxed);
 	s_frame_ready.store(true, std::memory_order_release);
@@ -701,6 +705,46 @@ static bool s_hw_render_initialized = false;
 enum class SelectedGraphicsAPI { OpenGL, Vulkan };
 static SelectedGraphicsAPI s_graphics_api = SelectedGraphicsAPI::OpenGL;
 
+// DRC layout state is shared with VulkanRenderer via LibretroDRC.h.
+#include "LibretroDRC.h"
+std::atomic<uint32> g_libretroScreenState{(uint32)LibretroScreenLayout::Tv};
+
+// One writer thread: retro_run's, which also takes the options
+static void libretro_set_screen_state(uint32 clear, uint32 set)
+{
+	const uint32 state = g_libretroScreenState.load(std::memory_order_relaxed);
+	g_libretroScreenState.store((state & ~clear) | set, std::memory_order_relaxed);
+}
+
+static uint32 s_present_clears = 0;
+
+uint32 LibretroDRC_PresentClears()
+{
+	return s_present_clears;
+}
+
+void LibretroDRC_NotePresentClear()
+{
+	s_present_clears++;
+}
+
+// A width and a height in one word, so a reader never gets one without the
+// other
+static constexpr uint32_t libretro_pack_size(uint32_t width, uint32_t height)
+{
+	return (width << 16) | (height & 0xFFFFu);
+}
+
+static constexpr uint32_t libretro_size_width(uint32_t size)
+{
+	return size >> 16;
+}
+
+static constexpr uint32_t libretro_size_height(uint32_t size)
+{
+	return size & 0xFFFFu;
+}
+
 // The size of the picture handed to the frontend. With Vulkan it follows the
 // internal resolution option, so a title rendered at 1440p or 4K reaches the
 // screen at that size rather than scaled down into 1280x720 (NNshi); it is
@@ -708,10 +752,20 @@ static SelectedGraphicsAPI s_graphics_api = SelectedGraphicsAPI::OpenGL;
 // option takes effect for the output at the next content load, as the GPU
 // thread draws into that image the whole time. The OpenGL path follows the TV
 // picture instead (libretro_gl_picture_size). With the GamePad Screen layout
-// both follow the GamePad picture.
+// both follow the GamePad picture, and with Both Screens both pictures, packed.
 static uint32_t s_out_width = SCREEN_WIDTH, s_out_height = SCREEN_HEIGHT;
 static bool s_out_size_taken = false;
 static uint32_t s_wanted_out_width = SCREEN_WIDTH, s_wanted_out_height = SCREEN_HEIGHT;
+// The size the TV picture starts at, the one above that applies, for the GPU
+// thread (libretro_screen_size, LibretroDRC_DefaultOutputSize). Left alone at
+// unload, while the GPU thread may still draw.
+static std::atomic<uint32_t> s_tv_start_size{libretro_pack_size(SCREEN_WIDTH, SCREEN_HEIGHT)};
+
+static void libretro_publish_tv_start_size()
+{
+	s_tv_start_size.store(s_out_size_taken ? libretro_pack_size(s_out_width, s_out_height)
+		: libretro_pack_size(s_wanted_out_width, s_wanted_out_height), std::memory_order_relaxed);
+}
 
 // Before the presentation image exists - retro_get_system_av_info comes first -
 // the size is the one the option asks for.
@@ -720,8 +774,8 @@ static uint32_t libretro_out_height();
 
 // Once the presentation image exists, its size is the output size: the
 // renderer resizes it to what a resolution graphic pack renders the TV picture
-// at, or to the GamePad picture with the GamePad Screen layout
-// (VulkanRenderer::UpdatePresentationImageSize).
+// at, to the GamePad picture with the GamePad Screen layout, or to both packed
+// with Both Screens (VulkanRenderer::UpdatePresentationImageSize).
 static uint32_t libretro_out_width()
 {
 	if (s_graphics_api != SelectedGraphicsAPI::Vulkan) return s_gl_shown_width;
@@ -743,18 +797,45 @@ static uint32_t libretro_out_height()
 }
 
 // Tells the frontend when the output size changes, e.g. when a resolution
-// pack's size takes over from the core option's.
+// pack's size takes over from the core option's, and when its aspect does:
+// the GPU thread resizes the presentation image before it signals the first
+// frame drawn at the new size, so a run can see Both Screens' packed size
+// while the last frame signalled still says one 16:9 screen, and the aspect
+// that goes with the size follows a run later.
 static uint32_t s_reported_out_width = 0, s_reported_out_height = 0; // what the frontend was last told
+static float s_reported_out_aspect = 0.0f;
 // The largest frame the frontend was told to expect. 4x 720p covers every
 // Internal Resolution step of a 720p game, but 3x of a 1080p game (5760x3240)
 // or a big resolution pack goes past it, and SET_GEOMETRY must not exceed the
-// max: then the max grows through SET_SYSTEM_AV_INFO.
+// max: then the max grows through SET_SYSTEM_AV_INFO. Both Screens' packing at
+// the Internal Resolution asked for is made room for from the start
+// (retro_get_system_av_info).
 static uint32_t s_max_out_width = SCREEN_WIDTH * 4, s_max_out_height = SCREEN_HEIGHT * 4;
+
+// What the last frame signalled shows, for the map that describes it and its
+// aspect: published by the GPU thread with the frame
+// (libretro_publish_frame_screens), read by retro_run before it hands the
+// frame over. Through a SeqlockValue: rendering ahead, the GPU thread
+// publishes the next frame's while retro_run reads.
+static SeqlockValue<LibretroFrameScreens> s_frame_screens;
+
+// The display aspect of a frame of width x height: 16:9, the TV's and the
+// GamePad's, except for a frame of Both Screens, which holds the two 16:9
+// pictures one under the other and is as wide as its pixels. From what the
+// frame was drawn with, not the layout chosen since.
+static float libretro_out_aspect(uint32_t width, uint32_t height)
+{
+	const LibretroFrameScreens frame = s_frame_screens.Load();
+	if (frame.count == 2 && frame.width == width && frame.height == height && height)
+		return (float)width / (float)height;
+	return 16.0f / 9.0f;
+}
 
 static void libretro_report_out_size()
 {
 	const uint32_t width = libretro_out_width(), height = libretro_out_height();
-	if (width == s_reported_out_width && height == s_reported_out_height)
+	const float aspect = libretro_out_aspect(width, height);
+	if (width == s_reported_out_width && height == s_reported_out_height && aspect == s_reported_out_aspect)
 		return;
 	if (width > s_max_out_width || height > s_max_out_height)
 	{
@@ -768,14 +849,15 @@ static void libretro_report_out_size()
 	}
 	s_reported_out_width = width;
 	s_reported_out_height = height;
+	s_reported_out_aspect = aspect;
 	retro_game_geometry geometry{};
 	geometry.base_width = width;
 	geometry.base_height = height;
 	geometry.max_width = s_max_out_width;
 	geometry.max_height = s_max_out_height;
-	geometry.aspect_ratio = 16.0f / 9.0f;
+	geometry.aspect_ratio = aspect;
 	environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
-	libretro_log(RETRO_LOG_INFO, "output is now %ux%u\n", width, height);
+	libretro_log(RETRO_LOG_INFO, "output is now %ux%u, aspect %.3f\n", width, height, aspect);
 }
 
 #ifdef ENABLE_OPENGL
@@ -789,6 +871,8 @@ static void libretro_report_out_size()
 // presentation image does (VulkanRenderer::UpdatePresentationImageSize). With
 // the GamePad Screen layout it is called with the GamePad picture's size
 // instead, which the frame then always takes (NNshi: 854x480, not 1280x720).
+// With Both Screens it is called with each picture's size, and the frame takes
+// both, packed (LibretroDRC_PackedSize).
 void libretro_gl_picture_size(int width, int height, bool padView)
 {
 	extern float g_libretroRenderScale;
@@ -800,10 +884,22 @@ void libretro_gl_picture_size(int width, int height, bool padView)
 		w = width;
 		h = height;
 	}
+	// Both Screens: the backbuffer holds both pictures, one under the other,
+	// within the same bound
+	if (LibretroDRC_Layout() == LibretroScreenLayout::BothScreens)
+	{
+		LibretroDRC_NoteScreenSize(padView, (uint32)w, (uint32)h);
+		uint32 packedW, packedH;
+		LibretroDRC_PackedSize(packedW, packedH);
+		if (packedW > 8192 || packedH > 8192)
+			return;
+		w = (int)packedW;
+		h = (int)packedH;
+	}
 	auto& windowInfo = WindowSystem::GetWindowInfo();
 	if (windowInfo.phys_width == w && windowInfo.phys_height == h)
 		return;
-	cemuLog_log(LogType::Force, "[libretro] the {} picture is rendered at {}x{}; handing it over at that size", padView ? "GamePad" : "TV", w, h);
+	cemuLog_log(LogType::Force, "[libretro] the {} picture is rendered at {}x{}; handing over {}x{}", padView ? "GamePad" : "TV", width, height, w, h);
 	windowInfo.width = w;
 	windowInfo.height = h;
 	windowInfo.phys_width = w;
@@ -811,11 +907,7 @@ void libretro_gl_picture_size(int width, int height, bool padView)
 }
 #endif
 
-// DRC layout state is shared with VulkanRenderer via LibretroDRC.h.
-#include "LibretroDRC.h"
 #include "LibretroGraphicPacks.h"
-LibretroScreenLayout g_libretroScreenLayout = LibretroScreenLayout::Tv;
-bool g_libretroDRCPositionSwapped = false;
 
 // Screen layouts, in the shape melonDS DS uses: a handful of configured
 // layouts and one button that steps through them. The count and the layout in
@@ -864,6 +956,17 @@ static bool s_next_layout_button_held = false;
 // pad holding one meant the layout change and nothing else; dropping the
 // frame's input wholesale is enough and needs no per-button bookkeeping.
 static bool s_layout_combo_held_this_frame = false;
+
+// The frontend's video views (RETRO_ENVIRONMENT_GET_VIDEO_VIEWS_STATUS), as of
+// this retro_run: whether it lays out the screens of a frame itself, and
+// whether it shows both eyes. 0 where it has none.
+static unsigned s_views_status = 0;
+// Cleared once the frontend did not know the call: it is not asked again.
+static bool s_views_status_supported = true;
+// The frontend holds a map from the core, which an empty one takes back.
+static bool s_views_map_sent = false;
+// The frontend refused the last map, which was logged.
+static bool s_views_map_rejected = false;
 
 static retro_hw_render_callback s_hw_render{};
 
@@ -1223,6 +1326,7 @@ static LibretroScreenLayout libretro_parse_screen_layout(const char* v, Libretro
 	if (libretro_drc_iequals(v, "Side by Side")) return LibretroScreenLayout::SideBySide;
 	if (libretro_drc_iequals(v, "Top Bottom")) return LibretroScreenLayout::TopBottom;
 	if (libretro_drc_iequals(v, "Picture in Picture")) return LibretroScreenLayout::PictureInPicture;
+	if (libretro_drc_iequals(v, "Both Screens")) return LibretroScreenLayout::BothScreens;
 	return fallback;
 }
 
@@ -1235,19 +1339,53 @@ static const char* libretro_screen_layout_name(LibretroScreenLayout layout)
 	case LibretroScreenLayout::SideBySide: return "Side by Side";
 	case LibretroScreenLayout::TopBottom: return "Top Bottom";
 	case LibretroScreenLayout::PictureInPicture: return "Picture in Picture";
+	case LibretroScreenLayout::BothScreens: return "Both Screens";
 	}
 	return "Default Screen";
 }
 
+// The size each picture was last drawn at, which Both Screens packs: the TV's
+// [0] and the GamePad's [1]. Noted by the renderers as they draw them, on the
+// GPU thread, and read by the frontend's thread for a touch, so atomic. Until
+// a picture has been drawn, the size the core's output starts at (the
+// Internal Resolution option) for the TV, and 854x480 for the GamePad, which
+// that option leaves alone: it resizes only 16:9 targets, and 854x480 is not
+// quite (LatteTexture's isScreenShaped). Cleared when content unloads.
+// Packed (libretro_pack_size).
+static std::atomic<uint32_t> s_screen_size[2]{};
+
+static void libretro_screen_size(bool padView, uint32_t& width, uint32_t& height)
+{
+	uint32_t size = s_screen_size[padView].load(std::memory_order_relaxed);
+	if (!size)
+		size = padView ? libretro_pack_size(854, 480) : s_tv_start_size.load(std::memory_order_relaxed);
+	width = libretro_size_width(size);
+	height = libretro_size_height(size);
+}
+
+void LibretroDRC_NoteScreenSize(bool padView, uint32 width, uint32 height)
+{
+	s_screen_size[padView].store(width && height ? libretro_pack_size(width, height) : 0, std::memory_order_relaxed);
+}
+
+void LibretroDRC_PackedSize(uint32& width, uint32& height)
+{
+	uint32_t tvW, tvH, padW, padH;
+	libretro_screen_size(false, tvW, tvH);
+	libretro_screen_size(true, padW, padH);
+	// The same whichever comes first
+	LibretroViews_PackedSize(tvW, tvH, padW, padH, width, height);
+}
+
 static bool libretro_drc_needs_pad_view()
 {
-	return g_libretroScreenLayout != LibretroScreenLayout::Tv;
+	return LibretroDRC_Layout() != LibretroScreenLayout::Tv;
 }
 
 // Shared DRC helpers (declared in LibretroDRC.h, also called from VulkanRenderer).
 bool LibretroDRC_ShouldRenderScreen(bool padView)
 {
-	switch (g_libretroScreenLayout)
+	switch (LibretroDRC_Layout())
 	{
 	case LibretroScreenLayout::Tv:
 		return !padView;
@@ -1256,6 +1394,7 @@ bool LibretroDRC_ShouldRenderScreen(bool padView)
 	case LibretroScreenLayout::SideBySide:
 	case LibretroScreenLayout::TopBottom:
 	case LibretroScreenLayout::PictureInPicture:
+	case LibretroScreenLayout::BothScreens:
 		return true;
 	}
 	return !padView;
@@ -1263,23 +1402,52 @@ bool LibretroDRC_ShouldRenderScreen(bool padView)
 
 bool LibretroDRC_OutputFollowsScreen(bool padView)
 {
-	return padView == (g_libretroScreenLayout == LibretroScreenLayout::GamePad);
+	const LibretroScreenLayout layout = LibretroDRC_Layout();
+	// Both pictures, packed (LibretroDRC_PackedSize)
+	if (layout == LibretroScreenLayout::BothScreens)
+		return true;
+	return padView == (layout == LibretroScreenLayout::GamePad);
 }
 
 void LibretroDRC_DefaultOutputSize(uint32& width, uint32& height)
 {
-	width = s_out_width;
-	height = s_out_height;
+	const uint32_t size = s_tv_start_size.load(std::memory_order_relaxed);
+	width = libretro_size_width(size);
+	height = libretro_size_height(size);
 }
+
+static void libretro_compute_viewport(uint32 state, bool padView,
+	int dstWidth, int dstHeight,
+	int& outX, int& outY, int& outWidth, int& outHeight);
 
 void LibretroDRC_ComputeViewport(bool padView,
 	int dstWidth, int dstHeight,
 	int& outX, int& outY, int& outWidth, int& outHeight)
 {
-	// Top-left origin convention. GL callers flip Y at their site.
-	const bool isPrimary = g_libretroDRCPositionSwapped ? padView : !padView;
+	libretro_compute_viewport(LibretroDRC_State(), padView, dstWidth, dstHeight, outX, outY, outWidth, outHeight);
+}
 
-	switch (g_libretroScreenLayout)
+// Both screens from one reading of the layout
+std::array<int, 10> LibretroDRC_Arrangement(int dstWidth, int dstHeight)
+{
+	const uint32 state = LibretroDRC_State();
+	std::array<int, 10> arrangement{dstWidth, dstHeight};
+	libretro_compute_viewport(state, false, dstWidth, dstHeight,
+		arrangement[2], arrangement[3], arrangement[4], arrangement[5]);
+	libretro_compute_viewport(state, true, dstWidth, dstHeight,
+		arrangement[6], arrangement[7], arrangement[8], arrangement[9]);
+	return arrangement;
+}
+
+static void libretro_compute_viewport(uint32 state, bool padView,
+	int dstWidth, int dstHeight,
+	int& outX, int& outY, int& outWidth, int& outHeight)
+{
+	// Top-left origin convention. GL callers flip Y at their site.
+	const bool swapped = LibretroDRC_Swapped(state);
+	const bool isPrimary = swapped ? padView : !padView;
+
+	switch (LibretroDRC_Layout(state))
 	{
 	case LibretroScreenLayout::Tv:
 	case LibretroScreenLayout::GamePad:
@@ -1347,6 +1515,21 @@ void LibretroDRC_ComputeViewport(bool padView,
 			outY = dstHeight - outHeight - 10;
 		}
 		return;
+
+	case LibretroScreenLayout::BothScreens:
+	{
+		uint32_t tvW, tvH, padW, padH;
+		libretro_screen_size(false, tvW, tvH);
+		libretro_screen_size(true, padW, padH);
+		const LibretroFrameScreens frame = LibretroViews_FrameScreens(LibretroScreenLayout::BothScreens,
+			swapped, (uint32_t)dstWidth, (uint32_t)dstHeight, tvW, tvH, padW, padH);
+		const LibretroScreenRect& r = frame.screens[isPrimary ? 0 : 1];
+		outX = r.x;
+		outY = r.y;
+		outWidth = r.width;
+		outHeight = r.height;
+		return;
+	}
 	}
 }
 
@@ -1426,7 +1609,7 @@ public:
 		s_gl_frame_fbo = libretro_getBackbufferFBO(width, height);
 		s_gl_frame_width = width;
 		s_gl_frame_height = height;
-		libretro_signal_frame_ready();
+		libretro_signal_frame_ready((uint32_t)width, (uint32_t)height);
 		// The frame is the frontend's now: give its thread back until the next
 		// retro_run. Only for the TV swap - a DRC swap is part of the same frame,
 		// and stopping at both would halve the frame rate of a title that does
@@ -2376,16 +2559,89 @@ static LibretroLayoutButton libretro_parse_layout_button(const char* v)
 	return LibretroLayoutButton::None;
 }
 
+// The layout the renderers draw with: the slot's, or Both Screens in place of
+// a composite one while the frontend shows both eyes
+// (LibretroViews_EffectiveLayout). Called when the slot, its layout or the
+// frontend's views status changes.
 static void libretro_apply_screen_layout()
 {
-	const LibretroScreenLayout layout = s_screen_layouts[s_screen_layout_index];
-	if (layout == g_libretroScreenLayout)
+	const LibretroScreenLayout layout = LibretroViews_EffectiveLayout(s_screen_layouts[s_screen_layout_index], s_views_status);
+	if (layout == LibretroDRC_Layout())
 		return;
 
-	g_libretroScreenLayout = layout;
+	libretro_set_screen_state(kLibretroScreenLayoutMask, (uint32)layout);
 	const bool padVisible = layout != LibretroScreenLayout::Tv;
 	ActiveSettings::SetLibretroDisplayDRCOverride(padVisible);
 	WindowSystem::GetWindowInfo().pad_open = padVisible;
+}
+
+// Every retro_run, before the GPU thread is let go for the next frame: whether
+// the frontend lays out views, and whether it shows both eyes, which turns the
+// composite layouts into Both Screens. The answer can change at any time - the
+// frontend's stereo mode, its video driver, a headset.
+static void libretro_update_video_views_status()
+{
+	unsigned status = 0;
+	if (s_views_status_supported && !environ_cb(RETRO_ENVIRONMENT_GET_VIDEO_VIEWS_STATUS, &status))
+	{
+		s_views_status_supported = false;
+		status = 0;
+	}
+	if (status == s_views_status)
+		return;
+	libretro_log(RETRO_LOG_INFO, "video views: presents=%d stereo=%d headset=%d\n",
+		(status & RETRO_VIDEO_VIEWS_STATUS_PRESENTS) ? 1 : 0,
+		(status & RETRO_VIDEO_VIEWS_STATUS_STEREO) ? 1 : 0,
+		(status & RETRO_VIDEO_VIEWS_STATUS_HMD) ? 1 : 0);
+	s_views_status = status;
+	libretro_apply_screen_layout();
+}
+
+// Right before a frame of width x height goes to the frontend: the map of the
+// screens in it, every run as the API asks, while the frontend lays out views.
+// An empty map, once, when it stops, when the frame has no screens to describe,
+// or when the frame is not the size its screens were published for (resized on
+// the GPU thread since; the next frame is described again).
+static void libretro_send_video_views(uint32_t width, uint32_t height)
+{
+	retro_video_view views[2];
+	unsigned count = 0;
+	if (s_views_status & RETRO_VIDEO_VIEWS_STATUS_PRESENTS)
+	{
+		const LibretroFrameScreens frame = s_frame_screens.Load();
+		if (frame.width == width && frame.height == height)
+			count = LibretroViews_BuildMap(frame, views);
+	}
+	if (count)
+	{
+		retro_video_views map{};
+		map.views = views;
+		map.num_views = count;
+		const bool accepted = environ_cb(RETRO_ENVIRONMENT_SET_VIDEO_VIEWS, &map);
+		if (!accepted && !s_views_map_rejected)
+			libretro_log(RETRO_LOG_ERROR, "the frontend refused a video views map of %u views (%ux%u)\n", count, width, height);
+		s_views_map_rejected = !accepted;
+		s_views_map_sent = true;
+	}
+	else if (s_views_map_sent)
+	{
+		retro_video_views none{};
+		environ_cb(RETRO_ENVIRONMENT_SET_VIDEO_VIEWS, &none);
+		s_views_map_sent = false;
+		s_views_map_rejected = false;
+	}
+}
+
+// With each frame the GPU thread signals: what it shows, from the layout it was
+// drawn with and its size.
+static void libretro_publish_frame_screens(uint32_t width, uint32_t height)
+{
+	uint32_t tvW, tvH, padW, padH;
+	libretro_screen_size(false, tvW, tvH);
+	libretro_screen_size(true, padW, padH);
+	const uint32 state = LibretroDRC_State();
+	s_frame_screens.Store(LibretroViews_FrameScreens(LibretroDRC_Layout(state), LibretroDRC_Swapped(state),
+		width, height, tvW, tvH, padW, padH));
 }
 
 // Both conversion options are pointless without a destination - the title is
@@ -2556,7 +2812,7 @@ static void libretro_next_screen_layout()
 
 	libretro_log(RETRO_LOG_INFO, "screen layout %u of %u (%s)\n",
 		s_screen_layout_index + 1, s_screen_layout_count,
-		libretro_screen_layout_name(g_libretroScreenLayout));
+		libretro_screen_layout_name(s_screen_layouts[s_screen_layout_index]));
 }
 
 static void libretro_start_wua_conversion(TitleId baseTitleId, const fs::path& gamePath);
@@ -3145,7 +3401,7 @@ static void libretro_apply_core_options()
 	// Screen layouts
 	libretro_read_screen_layout_options();
 	if (const char* v = libretro_get_option_value("cemu_drc_position"))
-		g_libretroDRCPositionSwapped = libretro_drc_iequals(v, "swapped");
+		libretro_set_screen_state(kLibretroScreenSwapped, libretro_drc_iequals(v, "swapped") ? kLibretroScreenSwapped : 0);
 
 	// Internal resolution, as a factor applied to screen-shaped render targets
 	// (see g_libretroRenderScale). This used to write the chosen size into
@@ -3167,6 +3423,7 @@ static void libretro_apply_core_options()
 			libretro_update_render_scale();
 			s_wanted_out_width = newWidth;
 			s_wanted_out_height = newHeight;
+			libretro_publish_tv_start_size();
 			if (log_cb && g_libretroRenderScale != 1.0f)
 				libretro_log(RETRO_LOG_INFO, "rendering screen-sized targets at %ux%u (%.2fx)\n",
 					newWidth, newHeight, g_libretroRenderScale);
@@ -4023,13 +4280,21 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info)
 			{
 				s_wanted_out_width = w;
 				s_wanted_out_height = h;
+				libretro_publish_tv_start_size();
 			}
 		}
+	// Room for Both Screens at the Internal Resolution asked for: the GamePad's
+	// 854x480 under the TV, so 3x is 3840x2640, past four times 720p's height
+	// (libretro_screen_size)
+	{
+		const uint32_t tvHeight = s_out_size_taken ? s_out_height : s_wanted_out_height;
+		s_max_out_height = std::max<uint32_t>(s_max_out_height, tvHeight + 480);
+	}
 	info->geometry.base_width = s_reported_out_width = libretro_out_width();
 	info->geometry.base_height = s_reported_out_height = libretro_out_height();
 	info->geometry.max_width = std::max(s_max_out_width, info->geometry.base_width);
 	info->geometry.max_height = std::max(s_max_out_height, info->geometry.base_height);
-	info->geometry.aspect_ratio = 16.0f / 9.0f;
+	info->geometry.aspect_ratio = s_reported_out_aspect = libretro_out_aspect(info->geometry.base_width, info->geometry.base_height);
 	if (!s_game_loaded)
 		s_output_fps = libretro_wanted_fps();
 	info->timing.fps = s_output_fps;
@@ -5437,6 +5702,7 @@ static void libretro_create_renderer()
 					s_out_width = s_wanted_out_width;
 					s_out_height = s_wanted_out_height;
 					s_out_size_taken = true;
+					libretro_publish_tv_start_size();
 				}
 				vkRenderer->CreatePresentationImage(s_out_width, s_out_height);
 
@@ -6043,6 +6309,12 @@ RETRO_API void retro_unload_game()
 	libretro_set_motion(false);
 	// The next content takes the output size afresh from the option.
 	s_out_size_taken = false;
+	// The frontend drops the views map when content unloads; the next content
+	// asks for the status afresh
+	s_views_status = 0;
+	s_views_status_supported = true;
+	s_views_map_sent = false;
+	s_views_map_rejected = false;
 	libretro_reset_install_switches();
 
 	// Before anything else: stop handing the frontend audio. This used to be
@@ -6075,6 +6347,18 @@ RETRO_API void retro_unload_game()
 	// Whichever way it goes, this wakes anything still waiting on a frame that
 	// is never coming: both of its paths call libretro_wake_frame_waiters.
 	const bool stopped = libretro_stop_title();
+
+	// With the GPU thread stopped, which notes them: the next content takes
+	// the pictures' sizes Both Screens packs afresh, and has no frame to
+	// describe until it draws one. The frame record has one writer, so not
+	// while a title that would not stop still draws.
+	for (int i = 0; i < 2; i++)
+		s_screen_size[i].store(0, std::memory_order_relaxed);
+	if (stopped)
+	{
+		s_frame_screens.Store(LibretroFrameScreens{});
+		libretro_publish_tv_start_size();
+	}
 
 	if (!stopped)
 	{
@@ -6754,9 +7038,10 @@ bool libretro_get_touch_state(uint16_t* x, uint16_t* y)
 		return false;
 	// Pointer comes in as (-0x7fff..0x7fff) over the libretro presentation
 	// surface, which we treat as a 1280x720 (SCREEN_WIDTH x SCREEN_HEIGHT)
-	// virtual canvas. In composite DRC modes (SBS / TopBottom / PiP) only the
-	// DRC sub-rect is the touchable area; clicks elsewhere don't belong on the
-	// GamePad. Map pointer → canvas → DRC sub-rect → GamePad touchscreen.
+	// virtual canvas. In composite DRC modes (SBS / TopBottom / PiP / Both
+	// Screens) only the DRC sub-rect is the touchable area; clicks elsewhere
+	// don't belong on the GamePad. Map pointer → canvas → DRC sub-rect →
+	// GamePad touchscreen.
 	// The result is in the touch panel's raw units, as VPADController hands
 	// them to games (x 92..3975, y 3841..147 from top to bottom): games
 	// calibrate tpData themselves, so screen pixels land in one corner.
@@ -7452,6 +7737,9 @@ RETRO_API void retro_run()
 	InputManager::instance().update_controllers();
 	libretro_update_rumble();
 	libretro_update_software_keyboard();
+	// Before the GPU thread is let go: the frontend's views decide the layout
+	// the next frame is drawn with
+	libretro_update_video_views_status();
 
 	using prof_clock = std::chrono::steady_clock;
 	const auto profStart = prof_clock::now();
@@ -7612,6 +7900,7 @@ RETRO_API void retro_run()
 			}
 		}
 		libretro_report_out_size();
+		libretro_send_video_views(libretro_out_width(), libretro_out_height());
 		video_cb(RETRO_HW_FRAME_BUFFER_VALID, libretro_out_width(), libretro_out_height(), 0);
 		libretro_finish_run(profStart, profWaited, profTimedOut);
 		return;
@@ -7626,6 +7915,7 @@ RETRO_API void retro_run()
 #endif // ENABLE_OPENGL
 
 	libretro_report_out_size();
+	libretro_send_video_views(libretro_out_width(), libretro_out_height());
 	video_cb(RETRO_HW_FRAME_BUFFER_VALID, libretro_out_width(), libretro_out_height(), 0);
 	// Flush audio
 	libretro_finish_run(profStart, profWaited, profTimedOut);

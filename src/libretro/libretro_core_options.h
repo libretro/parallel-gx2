@@ -387,7 +387,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_screen_layout1",
 		"Layout 1",
 		NULL,
-		NULL,
+		"Both Screens: the TV and the GamePad at their own sizes, the GamePad under the TV (above it with GamePad Position Swapped). A frontend with video views takes them as two screens and lays them out itself.",
 		NULL,
 		"controller",
 		{
@@ -396,6 +396,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ "Side by Side", NULL },
 			{ "Top Bottom", NULL },
 			{ "Picture in Picture", NULL },
+			{ "Both Screens", NULL },
 			{ NULL, NULL },
 		},
 		"Default Screen"
@@ -404,7 +405,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_screen_layout2",
 		"Layout 2",
 		NULL,
-		NULL,
+		"Both Screens: the TV and the GamePad at their own sizes, the GamePad under the TV (above it with GamePad Position Swapped). A frontend with video views takes them as two screens and lays them out itself.",
 		NULL,
 		"controller",
 		{
@@ -413,6 +414,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ "Side by Side", NULL },
 			{ "Top Bottom", NULL },
 			{ "Picture in Picture", NULL },
+			{ "Both Screens", NULL },
 			{ NULL, NULL },
 		},
 		"GamePad Screen"
@@ -421,7 +423,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_screen_layout3",
 		"Layout 3",
 		NULL,
-		NULL,
+		"Both Screens: the TV and the GamePad at their own sizes, the GamePad under the TV (above it with GamePad Position Swapped). A frontend with video views takes them as two screens and lays them out itself.",
 		NULL,
 		"controller",
 		{
@@ -430,6 +432,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ "Side by Side", NULL },
 			{ "Top Bottom", NULL },
 			{ "Picture in Picture", NULL },
+			{ "Both Screens", NULL },
 			{ NULL, NULL },
 		},
 		"Side by Side"
@@ -438,7 +441,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_screen_layout4",
 		"Layout 4",
 		NULL,
-		NULL,
+		"Both Screens: the TV and the GamePad at their own sizes, the GamePad under the TV (above it with GamePad Position Swapped). A frontend with video views takes them as two screens and lays them out itself.",
 		NULL,
 		"controller",
 		{
@@ -447,6 +450,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ "Side by Side", NULL },
 			{ "Top Bottom", NULL },
 			{ "Picture in Picture", NULL },
+			{ "Both Screens", NULL },
 			{ NULL, NULL },
 		},
 		"Top Bottom"
@@ -455,7 +459,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_screen_layout5",
 		"Layout 5",
 		NULL,
-		NULL,
+		"Both Screens: the TV and the GamePad at their own sizes, the GamePad under the TV (above it with GamePad Position Swapped). A frontend with video views takes them as two screens and lays them out itself.",
 		NULL,
 		"controller",
 		{
@@ -464,6 +468,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ "Side by Side", NULL },
 			{ "Top Bottom", NULL },
 			{ "Picture in Picture", NULL },
+			{ "Both Screens", NULL },
 			{ NULL, NULL },
 		},
 		"Picture in Picture"

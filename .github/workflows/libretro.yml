@@ -126,6 +126,14 @@ jobs:
           make -C test/handoff clean
           SANITIZER=address,undefined ./test/handoff/run_tests.sh
 
+      - name: "Screen layouts and video views"
+        # Both Screens' packing, the layout a frame is drawn with and the
+        # views map that describes it: plain, then under ASan + UBSan
+        run: |
+          ./test/video_views/run_tests.sh
+          make -C test/video_views clean
+          SANITIZER=address,undefined ./test/video_views/run_tests.sh
+
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.

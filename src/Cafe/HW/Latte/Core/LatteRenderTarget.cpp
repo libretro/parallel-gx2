@@ -1017,16 +1017,19 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 
 	bool showDRC = swkbd_hasKeyboardInputHook() == false && (isDRCPrimary ^ altScreenRequested);
 
-	// In libretro composite display modes (SBS / TopBottom / PiP) both screens
+	// In libretro composite display modes (SBS / TopBottom / PiP / Both Screens) both screens
 	// are presented simultaneously, so the standalone showDRC toggle-swap (which
 	// substitutes DRC for TV when the user holds Tab) must not apply — route each
 	// renderTarget straight to its own destination. We also enforce TV-then-DRC
 	// dispatch order, regardless of Cemu's scan-out call order, because PiP's
 	// DRC sub-rect overlays the full-image TV blit and must be drawn last.
+	const uint32 libretroState = LibretroDRC_State();
+	const LibretroScreenLayout libretroLayout = LibretroDRC_Layout(libretroState);
 	const bool libretroComposite =
-		g_libretroScreenLayout == LibretroScreenLayout::SideBySide ||
-		g_libretroScreenLayout == LibretroScreenLayout::TopBottom ||
-		g_libretroScreenLayout == LibretroScreenLayout::PictureInPicture;
+		libretroLayout == LibretroScreenLayout::SideBySide ||
+		libretroLayout == LibretroScreenLayout::TopBottom ||
+		libretroLayout == LibretroScreenLayout::PictureInPicture ||
+		libretroLayout == LibretroScreenLayout::BothScreens;
 	// The GamePad-only layout has the same ordering problem, for a different
 	// reason: the mirror at the end of this function copies the TV image into
 	// the pad view for titles that never draw a DRC image of their own, and a
@@ -1038,7 +1041,7 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 	static bool s_seenDrcScanout = false;
 	if (renderTarget & RENDER_TARGET_DRC)
 		s_seenDrcScanout = true;
-	const bool libretroDrcOnly = g_libretroScreenLayout == LibretroScreenLayout::GamePad;
+	const bool libretroDrcOnly = libretroLayout == LibretroScreenLayout::GamePad;
 	if (libretroComposite || libretroDrcOnly)
 	{
 		static LatteTextureView* s_cachedTvView = nullptr;
@@ -1058,29 +1061,34 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 			s_cachedDrcView = texView;
 
 		// Dispatch in a fixed order rather than the one Cemu happens to scan
-		// out in - blits are idempotent within a frame, and PiP draws the
-		// secondary screen over the primary, so the small one has to land
-		// last. Which of the two is small flips with the GamePad Position
-		// option, so the order flips with it: swapped means the TV image is
-		// the inset and goes second.
+		// out in: PiP draws the secondary screen over the primary, so the
+		// small one has to land last. Which of the two is small flips with the
+		// GamePad Position option, so the order flips with it: swapped means
+		// the TV image is the inset and goes second.
 		// LibretroDRC_ShouldRenderScreen would drop the TV blit in the
 		// GamePad-only layout anyway; not asking for it saves the work.
 		const bool tvVisible = s_cachedTvView && LibretroDRC_ShouldRenderScreen(false);
 		const bool drcVisible = s_cachedDrcView && g_renderer->IsPadWindowActive();
-		if (g_libretroDRCPositionSwapped)
+		const auto dispatch = [&](bool tv, bool drc)
 		{
-			if (drcVisible)
+			if (drc && LibretroDRC_Swapped(libretroState))
 				LatteRenderTarget_copyToBackbuffer(s_cachedDrcView, true);
-			if (tvVisible)
+			if (tv)
 				LatteRenderTarget_copyToBackbuffer(s_cachedTvView, false);
-		}
-		else
-		{
-			if (tvVisible)
-				LatteRenderTarget_copyToBackbuffer(s_cachedTvView, false);
-			if (drcVisible)
+			if (drc && !LibretroDRC_Swapped(libretroState))
 				LatteRenderTarget_copyToBackbuffer(s_cachedDrcView, true);
-		}
+		};
+		// The frontend's image keeps each screen's picture (DrawBackbufferQuad),
+		// so a scan-out blits only the screens it brought. The others go again
+		// in PiP, where the TV covers the inset, and after a blit that cleared
+		// the image.
+		const bool pip = libretroLayout == LibretroScreenLayout::PictureInPicture;
+		const bool tvNew = pip || (renderTarget & RENDER_TARGET_TV);
+		const bool drcNew = pip || (renderTarget & RENDER_TARGET_DRC);
+		const uint32 clears = LibretroDRC_PresentClears();
+		dispatch(tvVisible && tvNew, drcVisible && drcNew);
+		if (LibretroDRC_PresentClears() != clears)
+			dispatch(tvVisible && !tvNew, drcVisible && !drcNew);
 		if (libretroDrcOnly && !s_seenDrcScanout && s_cachedTvView && g_renderer->IsPadWindowActive())
 			LatteRenderTarget_copyToBackbuffer(s_cachedTvView, true);
 	}

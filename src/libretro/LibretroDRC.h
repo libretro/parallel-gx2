@@ -1,23 +1,39 @@
 #pragma once
 
 // Shared DRC (GamePad) display-layout state used by both the libretro entry
-// point (CemuLibretroLinux.cpp) and the renderers that present into the
-// libretro window FBO / shared Vulkan image. Defined in CemuLibretroLinux.cpp.
+// point (CemuLibretro.cpp) and the renderers that present into the libretro
+// window FBO / shared Vulkan image. Defined in CemuLibretro.cpp.
 
 
 #include "Common/precompiled.h"
+#include "LibretroViews.h"
 
-enum class LibretroScreenLayout
+// The layout the renderers draw with and GamePad Position Swapped, in one word
+// so a reader gets the two together: written on retro_run's thread, read on
+// the GPU thread.
+constexpr uint32 kLibretroScreenLayoutMask = 0xFFu;
+constexpr uint32 kLibretroScreenSwapped = 1u << 8;
+extern std::atomic<uint32> g_libretroScreenState;
+
+inline uint32 LibretroDRC_State()
 {
-	Tv,               // TV only
-	GamePad,          // GamePad only
-	SideBySide,       // primary 80% + secondary 20%, side-by-side
-	TopBottom,        // primary 70% on top, secondary 30% on bottom
-	PictureInPicture, // primary fullscreen, secondary as small corner overlay
-};
+	return g_libretroScreenState.load(std::memory_order_relaxed);
+}
 
-extern LibretroScreenLayout g_libretroScreenLayout;
-extern bool g_libretroDRCPositionSwapped;
+inline LibretroScreenLayout LibretroDRC_Layout(uint32 state = LibretroDRC_State())
+{
+	return (LibretroScreenLayout)(state & kLibretroScreenLayoutMask);
+}
+
+inline bool LibretroDRC_Swapped(uint32 state = LibretroDRC_State())
+{
+	return (state & kLibretroScreenSwapped) != 0;
+}
+
+// Counts the times the renderer cleared what the screens had left in the
+// frontend's image (a new image, or the screens moved in it). GPU thread only.
+uint32 LibretroDRC_PresentClears();
+void LibretroDRC_NotePresentClear();
 
 // Returns true when Cemu should actually present the requested screen for the
 // active layout. Used both by OpenGLCanvasCallbacks::ShouldRenderScreen and
@@ -31,9 +47,21 @@ void LibretroDRC_ComputeViewport(bool padView,
 	int dstWidth, int dstHeight,
 	int& outX, int& outY, int& outWidth, int& outHeight);
 
+// Where the screens sit in a composite of dstWidth x dstHeight: its size, then
+// the TV's and the GamePad's viewports. The renderers keep what is in the
+// composite while this stays the same, and clear it when it changes.
+std::array<int, 10> LibretroDRC_Arrangement(int dstWidth, int dstHeight);
+
 // The screen whose size the frame handed to the frontend takes: the GamePad's
-// with the GamePad Screen layout, the TV's with every other one.
+// with the GamePad Screen layout, both packed with Both Screens, the TV's with
+// every other one.
 bool LibretroDRC_OutputFollowsScreen(bool padView);
+
+// Both Screens: the size a picture is drawn at (the GamePad's when padView),
+// noted by the renderer as it draws it, and the size of the frame the two are
+// packed into.
+void LibretroDRC_NoteScreenSize(bool padView, uint32 width, uint32 height);
+void LibretroDRC_PackedSize(uint32& width, uint32& height);
 
 // The size the core's output started at (the Internal Resolution option),
 // which the TV picture is handed over at unless a resolution pack sets it.
