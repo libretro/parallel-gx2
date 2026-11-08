@@ -6,7 +6,8 @@
 //    blocks kept as they are and compressed ones;
 //  - threads share one archive, each with its own ZArchiveFile, and read and
 //    look up at once (run under ThreadSanitizer by CI);
-//  - an archive that is not one, or is cut short, does not open.
+//  - an archive that is not one, or is cut short, does not open, and says
+//    what it found instead (the reason the user is shown).
 // VFSFileStream is the stdio one below, counting what the reader opens and
 // reads, in place of the frontend's VFS.
 #include "Cafe/Filesystem/ZArchiveVFS.h"
@@ -249,11 +250,34 @@ static void TestBroken(const fs::path& good)
 		std::fwrite(bytes.data(), 1, len, f);
 		std::fclose(f);
 	};
+	// and each says why, which is what the user is told
+	std::string why;
+	auto says = [&](const char* what) { return why.find(what) != std::string::npos; };
 	write(bytes.size() - 1);
-	CHECK(ZArchive::Open(bad) == nullptr);
+	CHECK(ZArchive::Open(bad, &why) == nullptr);
+	// cut short by one: the footer is read one octet early
+	CHECK(says("magic") && says(fmt::format("the file's: {}", bytes.size() - 1).c_str()));
 	write(100);
-	CHECK(ZArchive::Open(bad) == nullptr);
-	CHECK(ZArchive::Open(fs::temp_directory_path() / "parallel_gx2_no_such.wua") == nullptr);
+	CHECK(ZArchive::Open(bad, &why) == nullptr);
+	CHECK(says("100 bytes long"));
+	CHECK(ZArchive::Open(fs::temp_directory_path() / "parallel_gx2_no_such.wua", &why) == nullptr);
+	CHECK(says("could not be opened"));
+	// one whose footer is right but whose size is not the file's (as a
+	// stream reporting the wrong size would make it): both sizes are given
+	{
+		std::vector<uint8> saved = bytes;
+		const uint64 claimed = bytes.size() + 4096;
+		for (int i = 0; i < 8; i++)
+			bytes[bytes.size() - 16 + i] = (uint8)(claimed >> (56 - 8 * i));
+		write(bytes.size());
+		CHECK(ZArchive::Open(bad, &why) == nullptr);
+		CHECK(says("magic 169f52d6") && says(fmt::format("size {} (the file's: {})", claimed, bytes.size()).c_str()));
+		bytes = saved;
+	}
+	// an archive that opens leaves the reason alone
+	why = "untouched";
+	std::unique_ptr<ZArchive> ok(ZArchive::Open(good, &why));
+	CHECK(ok != nullptr && why == "untouched");
 	fs::remove(bad);
 }
 

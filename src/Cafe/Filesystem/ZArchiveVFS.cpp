@@ -1,17 +1,39 @@
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 
-ZArchive* ZArchive::Open(const fs::path& path)
+// What the last 144 octets of a file say, against what an archive's footer
+// has there: its magic, its version, and the archive's size, which has to be
+// the file's (as the stream reports it)
+static std::string DescribeFooter(VFSFileStream* stream, uint64 fileSize)
 {
+	if (fileSize < 144)
+		return fmt::format("it is {} bytes long, too short for an archive", fileSize);
+	uint8 f[144];
+	stream->SetPosition(fileSize - 144);
+	if (stream->readData(f, sizeof(f)) != sizeof(f))
+		return fmt::format("its last 144 of {} bytes could not be read", fileSize);
+	auto be32 = [&](int at) { return (uint32)f[at] << 24 | (uint32)f[at + 1] << 16 | (uint32)f[at + 2] << 8 | f[at + 3]; };
+	const uint64 total = (uint64)be32(128) << 32 | be32(132);
+	return fmt::format("its footer has magic {:08x} (an archive's: 169f52d6), version {:08x} (61bf3a01), size {} (the file's: {})",
+		be32(140), be32(136), total, fileSize);
+}
+
+ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
+{
+	auto fail = [&](std::string why) -> ZArchive* {
+		if (whyNot)
+			*whyNot = std::move(why);
+		return nullptr;
+	};
 	std::unique_ptr<VFSFileStream> stream(VFSFileStream::openFile2(path));
 	if (!stream)
-		return nullptr;
+		return fail("it could not be opened");
 	std::unique_ptr<ZArchive> archive(new ZArchive());
 	archive->m_path = path;
 	archive->m_size = stream->GetSize();
 	// read the footer from the file, then the whole index after the blocks
 	zar_t* z = zar_new(archive->m_size);
 	if (!z)
-		return nullptr;
+		return fail("out of memory");
 	zar_request_t req;
 	int err;
 	while ((err = zar_open_step(z, &req)) == ZAR_PENDING)
@@ -19,11 +41,11 @@ ZArchive* ZArchive::Open(const fs::path& path)
 	const uint64 indexOffset = zar_index_offset(z);
 	zar_free(z);
 	if (err != ZAR_OK || indexOffset >= archive->m_size)
-		return nullptr;
+		return fail(DescribeFooter(stream.get(), archive->m_size));
 	archive->m_index.resize(archive->m_size - indexOffset);
 	stream->SetPosition(indexOffset);
 	if (stream->readData(archive->m_index.data(), (uint32)archive->m_index.size()) != archive->m_index.size())
-		return nullptr;
+		return fail(fmt::format("its index, {} bytes from offset {}, could not be read", archive->m_index.size(), indexOffset));
 	archive->m_indexOffset = indexOffset;
 	return archive.release();
 }

@@ -5536,7 +5536,11 @@ static void libretro_prepare_and_launch_title()
 		}
 		else
 		{
-			libretro_log(RETRO_LOG_ERROR, "Unsupported file format\n");
+			// Which check turned it down and what it found, rather than a bare
+			// "Unsupported file format": a .wua that will not open says why
+			const std::string why = launchTitle.GetInvalidDescription();
+			cemuLog_log(LogType::Force, "Cannot start \"{}\": {}", _pathToUtf8(gamePath), why);
+			libretro_show_message(RETRO_LOG_ERROR, 10000, "Cannot start this content: " + why);
 			return;
 		}
 	}

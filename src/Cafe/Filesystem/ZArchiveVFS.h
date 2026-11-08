@@ -24,7 +24,9 @@ public:
 		Node node;
 	};
 
-	static ZArchive* Open(const fs::path& path);
+	// nullptr if it cannot be read as an archive, and then in @whyNot, if
+	// given, what was found instead
+	static ZArchive* Open(const fs::path& path, std::string* whyNot = nullptr);
 
 	// A file or a directory; the empty path is the root
 	std::optional<Node> LookUp(std::string_view path) const;

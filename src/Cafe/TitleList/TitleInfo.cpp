@@ -223,10 +223,21 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 			pathOut = path;
 			// a Wii U archive file can contain multiple titles but TitleInfo only maps to one
 			// we use the first base title that we find. This is the most intuitive behavior when someone launches "game.wua"
-			std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+			std::string whyNot;
+			std::unique_ptr<ZArchive> zar(ZArchive::Open(path, &whyNot));
 			std::vector<ZArchive::DirEntry> rootDir;
-			if (!zar || !zar->ListDir("", rootDir))
+			if (!zar)
+			{
+				m_invalidDetail = "not a Wii U archive: " + whyNot;
+				SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
 				return false;
+			}
+			if (!zar->ListDir("", rootDir))
+			{
+				m_invalidDetail = "the archive's root directory could not be read";
+				SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
+				return false;
+			}
 			bool foundBase = false;
 			for (const ZArchive::DirEntry& dirEntry : rootDir)
 			{
@@ -245,6 +256,18 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 					foundBase = true;
 					break;
 				}
+			}
+			if (!foundBase)
+			{
+				// what is there instead: an archive of only updates or DLC,
+				// or folders named otherwise than <title id>_v<version>
+				std::string names;
+				for (size_t i = 0; i < rootDir.size() && i < 8; i++)
+					names += fmt::format("{}\"{}\"", i ? ", " : "", rootDir[i].name);
+				if (rootDir.size() > 8)
+					names += ", ...";
+				m_invalidDetail = fmt::format("the archive holds no base title (its root: {})", rootDir.empty() ? std::string("empty") : names);
+				SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
 			}
 			return foundBase;
 		}
@@ -295,6 +318,27 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 	}
 	SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
 	return false;
+}
+
+std::string TitleInfo::GetInvalidDescription() const
+{
+	if (!m_invalidDetail.empty())
+		return m_invalidDetail;
+	switch (m_invalidReason)
+	{
+	case InvalidReason::BAD_PATH_OR_INACCESSIBLE:
+		return "it could not be opened";
+	case InvalidReason::UNKNOWN_FORMAT:
+		return "it is not a title: a .wua, .wud, .wux, .wuhb, an RPX, or a title's folder";
+	case InvalidReason::NO_DISC_KEY:
+		return "no key for the disc image in keys.txt";
+	case InvalidReason::NO_TITLE_TIK:
+		return "the title has no ticket (title.tik)";
+	case InvalidReason::MISSING_XML_FILES:
+		return "the title has no meta/meta.xml, code/app.xml or code/cos.xml";
+	default:
+		return "it is not a title the core can start";
+	}
 }
 
 bool TitleInfo::IsValid() const
@@ -587,6 +631,9 @@ bool TitleInfo::ParseXmlInfo()
 		bool hasAnyXml = m_parsedMetaXml || m_parsedAppXml || m_parsedCosXml;
 		if (hasAnyXml)
 			cemuLog_log(LogType::Force, "Title has missing meta .xml files. Title path: {}", _pathToUtf8(m_fullPath));
+		m_invalidDetail = fmt::format("the title has no {}{}{}",
+			(allowMissingMetaXml == false && !m_parsedMetaXml) ? "meta/meta.xml " : "",
+			!m_parsedAppXml ? "code/app.xml " : "", !m_parsedCosXml ? "code/cos.xml" : "");
 		delete m_parsedMetaXml;
 		delete m_parsedAppXml;
 		delete m_parsedCosXml;

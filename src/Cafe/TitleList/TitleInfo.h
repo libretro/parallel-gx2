@@ -151,7 +151,7 @@ public:
 		UNKNOWN_FORMAT = 2,
 		NO_DISC_KEY = 3,
 		NO_TITLE_TIK = 4,
-		MISSING_XML_FILES = 4,
+		MISSING_XML_FILES = 5,
 	};
 
 	struct CachedInfo
@@ -191,6 +191,9 @@ public:
 
 	bool IsValid() const;
 	InvalidReason GetInvalidReason() const { return m_invalidReason; }
+	// Why a title is not valid, in words, for the user: which check failed
+	// and what was found
+	std::string GetInvalidDescription() const;
 	uint64 GetUID(); // returns a unique identifier derived from the absolute canonical title location which can be used to identify this title by its location. May not persist across sessions, especially when Cemu is used portable
 
 	fs::path GetPath() const;
@@ -287,6 +290,7 @@ private:
 	std::string m_subPath; // used for formats where fullPath isn't unique on its own (like WUA)
 	uint64 m_uid{};
 	InvalidReason m_invalidReason{ InvalidReason::NONE }; // if m_isValid == false, this contains a more detailed error code
+	std::string m_invalidDetail; // what was found, where there is more to say than the code
 	// mounting info
 	std::vector<std::pair<sint32, std::string>> m_mountpoints;
 	class FSTVolume* m_wudVolume{};
