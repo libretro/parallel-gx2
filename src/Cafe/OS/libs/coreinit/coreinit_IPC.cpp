@@ -4,6 +4,7 @@
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "coreinit_MessageQueue.h"
 #include "coreinit_IPC.h"
+#include "util/helpers/IndexFreeList.h"
 
 namespace coreinit
 {
@@ -105,6 +106,12 @@ namespace coreinit
 	SysAllocator<IPCResourceBuffer, IPC_NUM_RESOURCE_BUFFERS * Espresso::CORE_COUNT, 0x40> s_ipcResourceBuffers;
 	SysAllocator<IPCDriver, Espresso::CORE_COUNT, 0x40> s_ipcDriver;
 
+	// Each core's free resource buffers. The IOSU's service threads give
+	// them back as they reply, while the core takes and gives them too, so
+	// not the driver's own FIFO, which only one thread may touch: a lock-free
+	// list on the host side. fifoFreeBuffers stays, unused, for the layout.
+	IndexFreeList<IPC_NUM_RESOURCE_BUFFERS> s_ipcFreeBuffers[Espresso::CORE_COUNT];
+
 	IPCDriver& IPCDriver_GetByCore(uint32 coreIndex)
 	{
 		cemu_assert_debug(coreIndex >= 0 && coreIndex < (uint32)Espresso::CORE_COUNT);
@@ -129,8 +136,7 @@ namespace coreinit
 		// setup resource buffer FIFOs
 		ipcDriver.fifoFreeBuffers.Init();
 		ipcDriver.fifoBuffersInFlight.Init();
-		for (size_t i = 0; i < IPC_NUM_RESOURCE_BUFFERS; i++)
-			ipcDriver.fifoFreeBuffers.Push(ipcDriver.resBufferDescriptor + i);
+		s_ipcFreeBuffers[coreIndex].Fill();
 	}
 
 	IPCResourceBufferDescriptor* IPCDriver_AllocateResource(IPCDriver* ipcDriver, IOSDevHandle devHandle, IPCCommandId cmdId, OSMessageQueue* asyncMessageQueue, MEMPTR<void> asyncResultFunc, MEMPTR<void> asyncResultUserParam)
@@ -139,7 +145,9 @@ namespace coreinit
 		IPCResourceBufferDescriptor* descriptor = nullptr;
 		while (true) 
 		{
-			descriptor = ipcDriver->fifoFreeBuffers.Pop();
+			size_t index;
+			if (s_ipcFreeBuffers[ipcDriver->coreIndex].Pop(index))
+				descriptor = ipcDriver->resBufferDescriptor + index;
 			if (!descriptor)
 			{
 				cemuLog_log(LogType::Force, "IPCDriver: Exceeded free resources");
@@ -171,7 +179,7 @@ namespace coreinit
 	void IPCDriver_ReleaseResource(IPCDriver* ipcDriver, IPCResourceBufferDescriptor* requestDescriptor)
 	{
 		requestDescriptor->IsAllocated = 0;
-		ipcDriver->fifoFreeBuffers.Push(requestDescriptor);
+		s_ipcFreeBuffers[ipcDriver->coreIndex].Push(requestDescriptor - ipcDriver->resBufferDescriptor);
 	}
 
 	/* IPC threads */
@@ -298,24 +306,16 @@ namespace coreinit
 		OSSignalEvent(&descriptor->eventSynchronousIPC);
 	}
 
-	// handles responses queued in shared region
-	void IPCDriver_KernelCallback(IPCDriver& ipcDriver)
-	{
-		cemu_assert_debug(ipcDriver.kernelSharedArea.numAvailableResponses != 0);
-		for (uint32 i = 0; i < ipcDriver.kernelSharedArea.numAvailableResponses; i++)
-			IPCDriver_HandleResponse(ipcDriver, ipcDriver.kernelSharedArea.responseArray[i], ipcDriver.coreIndex);
-		ipcDriver.kernelSharedArea.numAvailableResponses = 0;
-	}
-
 	// called by our HLE'd IOSU directly
 	void IPCDriver_NotifyResponses(uint32 ppcCoreIndex, IPCCommandBody** responseArray, uint32 numResponses)
 	{
+		// Straight to the response handler rather than through the area the
+		// kernel shares with the core: services on different threads reply to
+		// the same core at once, and the area would need a lock for that
 		cemu_assert(numResponses < 11);
 		IPCDriver& ipcDriver = IPCDriver_GetByCore(ppcCoreIndex);
-		ipcDriver.kernelSharedArea.numAvailableResponses = numResponses;
 		for (uint32 i = 0; i < numResponses; i++)
-			ipcDriver.kernelSharedArea.responseArray[i] = responseArray[i];
-		IPCDriver_KernelCallback(ipcDriver);
+			IPCDriver_HandleResponse(ipcDriver, responseArray[i], ppcCoreIndex);
 	}
 
 	void _IPCDriver_SetupCmd_IOSOpen(IPCDriver& ipcDriver, IPCResourceBufferDescriptor* requestDescriptor, const char* devicePath, uint32 flags)

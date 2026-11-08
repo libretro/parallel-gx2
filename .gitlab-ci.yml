@@ -217,6 +217,25 @@ test-zarchive:
     - make -C test/zarchive clean
     - SANITIZER=address,undefined ./test/zarchive/run_tests.sh
 
+# The IOSU kernel without locks: message queues, timers and IPC from several
+# threads at once, against the kernel's own source. The core's precompiled
+# header wants fmt and glm.
+test-iosu-kernel:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/iosu/run_tests.sh
+    - make -C test/iosu clean
+    - SANITIZER=thread ./test/iosu/run_tests.sh
+    - make -C test/iosu clean
+    - SANITIZER=address,undefined ./test/iosu/run_tests.sh
+
 # libretro-common's deflate and rzstd in the core: zlib's own streams, the
 # console's zlib125 a byte at a time, standalone Cemu's shader and pipeline
 # cache entries, the graphic packs through the pack tool. The core's

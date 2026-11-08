@@ -96,8 +96,8 @@ jobs:
         # time reads, the CPU's data cache flush reports, or the Vulkan
         # pipeline cache's compile threads, the worker queues or the shader
         # compile pool, the emulated controllers' reads, the IOSU ioctl
-        # queues or the shader cache writer; nor does the
-        # nex thread poll
+        # queues, the IOSU kernel's IPC or the shader cache writer; nor does
+        # the nex thread poll
         run: ./tools/check_gpu_waits.sh
 
       - name: "curl_compat against local servers"
@@ -146,6 +146,18 @@ jobs:
           SANITIZER=thread ./test/zarchive/run_tests.sh
           make -C test/zarchive clean
           SANITIZER=address,undefined ./test/zarchive/run_tests.sh
+
+      - name: "IOSU kernel"
+        # Message queues, timers and IPC from several threads at once, against
+        # the kernel's own source; plain, under ThreadSanitizer, under ASan +
+        # UBSan. The core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/iosu/run_tests.sh
+          make -C test/iosu clean
+          SANITIZER=thread ./test/iosu/run_tests.sh
+          make -C test/iosu clean
+          SANITIZER=address,undefined ./test/iosu/run_tests.sh
 
       - name: "zlib and Zstandard"
         # libretro-common's deflate and rzstd in the core: zlib's own streams,

@@ -44,6 +44,8 @@
 # settings (SeqlockValue.h) - instead of a shared_mutex, a mutex and a
 # spinlock per read. The IOSU ioctl queues (MpscQueue.h, a mutex, a ring and a
 # counting semaphore before) and the shader cache's async writer likewise.
+# The IOSU kernel every IPC passes through - message queues, timers, device
+# handles, the command pool, the replies - and each core's IPC buffers.
 #
 # The waits on the way from loading a title to its first frame sleep until
 # what they wait for has happened (LatteGpuWake, ThreadStartedFlag), not by
@@ -141,7 +143,9 @@ for f in src/Cemu/Logging/CemuLogging.cpp src/Cemu/Logging/LogFileSink.h \
 	src/Cemu/nex/nex.cpp src/Cemu/nex/nex.h src/Cemu/nex/nexThread.cpp src/Cemu/nex/nexWait.h \
 	src/input/emulated/EmulatedController.cpp src/input/emulated/EmulatedController.h \
 	src/input/api/Controller.cpp src/input/api/Controller.h src/input/api/ControllerState.h \
-	src/util/helpers/RcuCell.h src/Cafe/IOSU/legacy/iosu_ioctl.cpp; do
+	src/util/helpers/RcuCell.h src/Cafe/IOSU/legacy/iosu_ioctl.cpp \
+	src/Cafe/IOSU/kernel/iosu_kernel.cpp src/Cafe/OS/libs/coreinit/coreinit_IPC.cpp \
+	src/util/helpers/IndexFreeList.h; do
 	if pp $f | grep -qE 'std::[a-z_]*mutex|std::(shared|unique|scoped)_lock|lock_guard|condition_variable|sleep_for|FSpinlock'; then
 		echo "$f: takes a lock or sleeps again"; fail=1
 	fi
