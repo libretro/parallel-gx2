@@ -37,7 +37,9 @@ with `CC`/`CXX` set to a MinGW-w64 cross compiler) for Windows,
 `platform=ios-arm64` and `platform=tvos-arm64` (Metal only),
 `platform=android-arm64` and `platform=android-x86_64` with `NDK_ROOT` set,
 and a webOS SDK compiler as `CC`/`CXX` for webOS. `DEBUG=1` builds without
-optimisation, `SANITIZER=address` with a sanitizer.
+optimisation, `SANITIZER=address` with a sanitizer, `PSO_TRACE=1` with every
+shader or pipeline compile a draw waits for written to the log with its frame
+and duration (`docs/SHADER-STUTTER.md`).
 
 ## Install
 

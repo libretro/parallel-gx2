@@ -243,6 +243,12 @@ ifneq ($(SANITIZER),)
    LDFLAGS += -fsanitize=$(SANITIZER)
 endif
 
+# The shader/PSO trace (src/Cafe/HW/Latte/Core/PsoTrace.h): every compile a
+# draw waits for, logged with its frame and duration. Never in release builds.
+ifeq ($(PSO_TRACE),1)
+   FLAGS += -DPSO_TRACE
+endif
+
 CFLAGS   := $(FLAGS) -std=gnu11 $(CFLAGS)
 CXXFLAGS := $(FLAGS) -std=gnu++20 $(CXXFLAGS)
 LDFLAGS  += $(fpic) $(SHARED)
@@ -271,7 +277,7 @@ endif
 
 # The toolchain and configuration a tree was built with; a change wipes it,
 # since nothing in an object's name says which compiler produced it.
-BUILD_TAG := $(CC)|$(CXX)|$(platform)|$(arch)|$(DEBUG)|$(LTO)|$(SANITIZER)|$(HAVE_VULKAN)|$(HAVE_OPENGL)|$(HAVE_METAL)|$(HAVE_LIBUSB)
+BUILD_TAG := $(CC)|$(CXX)|$(platform)|$(arch)|$(DEBUG)|$(LTO)|$(SANITIZER)|$(HAVE_VULKAN)|$(HAVE_OPENGL)|$(HAVE_METAL)|$(HAVE_LIBUSB)|$(PSO_TRACE)
 BUILD_TAG_STATUS := $(shell \
 	if [ "`cat $(OBJ_DIR)/.build-tag 2>/dev/null`" != "$(BUILD_TAG)" ]; then \
 		rm -rf $(OBJ_DIR); mkdir -p $(OBJ_DIR); \

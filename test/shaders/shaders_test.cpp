@@ -12,10 +12,14 @@
 //    set to 1, save the few the packs themselves get wrong (glslang refuses
 //    them too).
 // Each module is written to the directory given, for spirv-val.
+//
+// The shader/PSO gate (test/pso) builds this file with SHADERS_CORPUS_ONLY
+// and takes every module through s_onModule: the corpus is the same one.
 #include "Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h"
 
 #include <gfx/shaders/rslc.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -34,6 +38,9 @@ static std::string s_out;
 // The widths of the module's RoundingModeRTE execution modes, as a mask of
 // 16, 32 and 64 (bits 0, 1, 2)
 static unsigned s_lastRte;
+
+// Each module compiled: its name, its words and how long rslc took
+static void (*s_onModule)(const std::string& name, const uint32_t* words, size_t count, double micros);
 
 static unsigned RteWidths(const uint32_t* w, size_t n)
 {
@@ -58,7 +65,10 @@ static bool Compile(const std::string& name, const std::string& glsl, rslc_stage
 	opts.err = err;
 	opts.err_cap = sizeof(err);
 	rslc_result result{};
-	if (!rslc_compile(src.data(), src.size(), stage, &opts, &result))
+	const auto start = std::chrono::steady_clock::now();
+	const bool compiled = rslc_compile(src.data(), src.size(), stage, &opts, &result);
+	const double micros = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+	if (!compiled)
 	{
 		if (report)
 		{
@@ -69,6 +79,8 @@ static bool Compile(const std::string& name, const std::string& glsl, rslc_stage
 	}
 	s_compiled++;
 	s_lastRte = RteWidths(result.spirv, result.spirv_len);
+	if (s_onModule)
+		s_onModule(name, result.spirv, result.spirv_len, micros);
 	if (!s_out.empty())
 	{
 		std::string file = name;
@@ -432,6 +444,7 @@ static void TestGraphicPacks(const fs::path& packs)
 	}
 }
 
+#ifndef SHADERS_CORPUS_ONLY
 int main(int argc, char** argv)
 {
 	if (argc < 2)
@@ -452,3 +465,4 @@ int main(int argc, char** argv)
 	std::printf("shaders_test: %d modules, all passed\n", s_compiled);
 	return 0;
 }
+#endif

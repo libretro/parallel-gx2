@@ -10,6 +10,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/RslcGlsl.h"
 #include <gfx/shaders/rslc.h>
 #include "util/helpers/helpers.h"
+#include "Cafe/HW/Latte/Core/PsoTrace.h"
 
 bool s_isLoadingShadersVk{ false };
 class FileCache* s_spirvCache{nullptr};
@@ -248,11 +249,13 @@ void RendererShaderVk::PreponeCompilation(bool isRenderThread)
 	const bool isStillQueued = m_ticket && m_ticket->Claim() != nullptr;
 	if (!isStillQueued)
 	{
+		PSO_TRACE_SCOPE(isRenderThread ? "shader wait for its compile thread" : "shader wait (worker)", m_baseHash);
 		WaitUntilCompiled();
 		--g_compiled_shaders_async; // compilation caused a stall so we don't consider this one async
 		return;
 	}
 	// compile synchronously
+	PSO_TRACE_SCOPE(isRenderThread ? "shader compile on the GPU thread" : "shader compile (worker)", m_baseHash);
 	m_compilationState.store(COMPILATION_STATE::COMPILING, std::memory_order_release);
 	CompileInternal(isRenderThread);
 	SetCompiled();

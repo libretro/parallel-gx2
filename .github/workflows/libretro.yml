@@ -173,6 +173,15 @@ jobs:
           make -C test/compression clean
           SANITIZER=address,undefined ./test/compression/run_tests.sh
 
+      - name: "Shader/PSO gate"
+        # What the shader path costs - each module of the compile corpus, the
+        # file cache's load path - against test/pso/baseline.txt: worse
+        # fails, and better fails until the baseline is updated with it
+        # (AGENTS.md). The core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/cemu_graphic_packs dependencies/fmt dependencies/glm
+          ./test/pso/run_tests.sh
+
       - name: "Shader compiler"
         # rslc, as the Vulkan renderer hands it GLSL: the core's own shaders,
         # the decompiler's shapes and every graphic pack shader it ships, each

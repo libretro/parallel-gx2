@@ -80,6 +80,13 @@ in its commit message.
 
 ### M0: the gate (first; nothing else lands before it)
 
+In: `test/pso` gates the compile corpus (each module's SPIR-V instruction
+count, and the corpus' modules, words and instructions) and the file
+cache's load path (allocations and bytes allocated per entry read), with
+rslc's time per shader reported; `PSO_TRACE=1` traces the draw path in the
+core. Still to come under M0: the Latte programs generated from a seed, and
+pipelines on lavapipe from a replayed draw sequence, which arrive with M1.
+
 `test/pso`, run in both CIs on every commit:
 
 - **Corpus.** Latte programs the decompiler is fed: the decompiler shapes
@@ -103,10 +110,11 @@ in its commit message.
   warm-up excluded, A/B/B/A order with repeats. Cold (no caches of any
   kind, driver cache included) and warm are separate runs.
 - **In the core**, behind a build flag (`PSO_TRACE=1`, nothing in release
-  builds): every synchronous compile or pipeline creation on the GPU thread
-  logged with the frame, the duration, the stage and the reason (new
-  shader, new state, no fallback ready), so a stutter a tester reports is
-  attributed to a cause, not guessed at.
+  builds; `PsoTrace.h`): every decompile, every shader compile or wait for
+  one and every pipeline creation a draw waits for, logged as
+  `PSO_TRACE frame N <what> <key> <ms>`, and every draw skipped while its
+  pipeline compiles, so a stutter a tester reports is attributed to a
+  cause, not guessed at.
 
 ### M1: fewer pipelines (cut the permutations)
 

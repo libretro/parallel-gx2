@@ -6,6 +6,7 @@
 
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Core/PsoTrace.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -250,6 +251,7 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 		if (pipelineCompiler->Compile(false, true, true) == false)
 		{
 			// shaders or pipeline not cached -> asynchronous compilation
+			PSO_TRACE_EVENT("pipeline async, draws skipped until it lands", pipelineHash);
 			PipelineCompiler::CompileThreadPool_QueueCompilation(pipelineCompiler);
 		}
 		else
@@ -260,6 +262,7 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	else
 	{
 		// synchronous compilation
+		PSO_TRACE_SCOPE(allowAsyncCompile ? "pipeline sync" : GetConfig().async_compile ? "pipeline sync (essential draw)" : "pipeline sync (async off)", pipelineHash);
 		pipelineCompiler->Compile(true, true, true);
 		delete pipelineCompiler;
 	}
