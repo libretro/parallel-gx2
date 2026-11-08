@@ -2024,6 +2024,8 @@ namespace iosu
 }
 
 extern void CemuCommonInit();
+// Ends the TSC rate measurement CemuCommonInit started (PPCTimer.cpp)
+extern void PPCTimer_shutdown();
 extern std::atomic_bool g_isGPUInitFinished;
 
 // Called by CemuCommonInit() at every init stage. Cemu's own log.txt is only
@@ -6553,6 +6555,12 @@ RETRO_API void retro_deinit()
 	// frontend never exits. Until those services can be stopped without
 	// blocking, the threads are left as they are.
 	CafeTitleList::Shutdown();
+
+	// The TSC rate measurement runs for three seconds after the first
+	// retro_run; a title that failed to start well within them left it
+	// asleep in this library after the frontend had unloaded it, and it
+	// crashed the frontend when it woke.
+	PPCTimer_shutdown();
 
 	// The shader cache writer is a thread owned by a static. Left to the
 	// static's destructor, it is joined inside FreeLibrary under the loader

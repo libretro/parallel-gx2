@@ -18,9 +18,15 @@
 // as it gets better (PPCTimer_initThread); taken up by the next guest time
 // read (PPCTimerClock.h)
 static std::atomic<uint64> _rdtscFrequency{0};
-// The title start waits on this for the first estimate (PPCTimer_waitForInit)
-// (never destroyed: the calibration thread is detached and may notify at exit)
+// The title start waits on this for the first estimate (PPCTimer_waitForInit),
+// and the calibration thread for its next measurement or a stop
 static ImmortalEventWake sTimerReady;
+// The calibration thread, joined by PPCTimer_shutdown. It was detached: a
+// frontend that unloaded the core within its three seconds - a title that
+// failed to start, say - left it asleep in code that was then unmapped, and
+// it crashed the frontend when it woke (DEP violation on Windows).
+static std::thread sCalibrationThread;
+static std::atomic<bool> sCalibrationStop{false};
 static PPCTimerClock sGuestClock;
 static_assert(PPCTimerClock::kConsoleClock == Espresso::CORE_CLOCK);
 
@@ -65,7 +71,14 @@ int PPCTimer_initThread()
 	const auto start = std::chrono::steady_clock::now();
 	for (const int ms : { 25, 200, 3000 })
 	{
-		std::this_thread::sleep_until(start + std::chrono::milliseconds(ms));
+		// A stop ends the wait. What was measured until then is still
+		// published if it is long enough to mean something (a few
+		// milliseconds); otherwise the rate stays as it was, and the next
+		// PPCTimer_init measures it again
+		const bool stopping = sTimerReady->WaitUntil([] { return sCalibrationStop.load(std::memory_order_acquire); },
+			start + std::chrono::milliseconds(ms));
+		if (stopping && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(5))
+			break;
 		_mm_mfence();
 		const HRTick stopTick = HighResolutionTimer::now().getTick();
 		const uint64 tscEnd = __rdtsc();
@@ -78,15 +91,32 @@ int PPCTimer_initThread()
 			continue;
 		_rdtscFrequency.store(tscFreq, std::memory_order_release);
 		sTimerReady->Notify();
+		if (stopping)
+			break;
 	}
 	return 0;
 }
 
 void PPCTimer_init()
 {
-	std::thread t(PPCTimer_initThread);
-	t.detach();
+	if (!sCalibrationThread.joinable())
+	{
+		sCalibrationStop.store(false, std::memory_order_release);
+		sCalibrationThread = std::thread(PPCTimer_initThread);
+	}
 	sGuestClock.Restart(__rdtsc());
+}
+
+// Ends the measurement PPCTimer_init started, keeping what it measured if
+// that is long enough to mean anything; before the library is unloaded
+// (retro_deinit). PPCTimer_init starts it again.
+void PPCTimer_shutdown()
+{
+	if (!sCalibrationThread.joinable())
+		return;
+	sCalibrationStop.store(true, std::memory_order_release);
+	sTimerReady->Notify();
+	sCalibrationThread.join();
 }
 
 void PPCTimer_start()

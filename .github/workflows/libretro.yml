@@ -168,6 +168,19 @@ jobs:
           make -C test/iosu clean
           SANITIZER=address,undefined ./test/iosu/run_tests.sh
 
+      - name: "Nothing left running at unload"
+        # What the core stops before the frontend unloads it: a thread still
+        # running wakes in unmapped code and crashes the frontend. Plain,
+        # under ThreadSanitizer, under ASan + UBSan. The core's precompiled
+        # header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/teardown/run_tests.sh
+          make -C test/teardown clean
+          SANITIZER=thread ./test/teardown/run_tests.sh
+          make -C test/teardown clean
+          SANITIZER=address,undefined ./test/teardown/run_tests.sh
+
       - name: "zlib and Zstandard"
         # libretro-common's deflate and rzstd in the core: zlib's own streams,
         # the console's zlib125 a byte at a time, standalone Cemu's shader
