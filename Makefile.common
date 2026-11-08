@@ -524,7 +524,10 @@ CORE_ASFLAGS := -I$(SRC_DIR)/resource
 # precompiled: a stub of that name is force-included, and the compiler
 # takes the precompiled header next to it in its place (GCC a .gch, which
 # it skips for the stub when the flags do not match; Clang a .pch).
-CORE_PCH_HEADER := $(abspath $(SRC_DIR)/Common/precompiled.h)
+# No absolute paths here: on MSYS2, make's are /c/... ones, which a native
+# MinGW compiler cannot open (MSYS converts them on a command line, never
+# inside the stub). The stub finds the header through -I$(SRC_DIR).
+CORE_PCH_HEADER := $(SRC_DIR)/Common/precompiled.h
 CORE_PCH_INCLUDE := $(CORE_PCH_HEADER)
 ifneq ($(NO_PCH),1)
    CORE_PCH_STUB := $(OBJ_DIR)/pch/precompiled.h
@@ -535,13 +538,13 @@ ifneq ($(NO_PCH),1)
    endif
    # rewritten only when the flags change, which is when the PCH must be
    CORE_PCH_FLAGS = $(CXXFLAGS) $(CORE_FLAGS) $(CORE_WARNFLAGS)
-   $(CORE_PCH_STUB):
-	@mkdir -p $(@D)
-	echo '#include "$(CORE_PCH_HEADER)"' > $@
+   # the stub is written (Makefile, with the flags) only when its line
+   # changed, so a tree built with an older one picks the new one up
+   CORE_PCH_STUB_LINE := \#include "Common/precompiled.h"
    $(CORE_PCH): $(CORE_PCH_STUB) $(OBJ_DIR)/pch/flags $(SRC_DIR)/Common/precompiled.h
 	@$(if $(E),echo PCH $<,)
 	$(CXX) $(CORE_PCH_FLAGS) -MMD -MP -MF $(CORE_PCH_STUB).d -MT $@ -x c++-header -c $< -o $@
-   CORE_PCH_INCLUDE := $(abspath $(CORE_PCH_STUB))
+   CORE_PCH_INCLUDE := $(CORE_PCH_STUB)
 endif
 CORE_CXXFLAGS := -include $(CORE_PCH_INCLUDE) $(CORE_WARNFLAGS)
 

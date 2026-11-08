@@ -299,6 +299,17 @@ test-no-wsi:
   script:
     - ./tools/check_no_wsi.sh
 
+# No path make made absolute written into a file the compiler reads: MinGW's
+# g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
+test-build-paths:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_build_paths.sh
+
 # The emulated controllers are updated once a frame from retro_run, after
 # the frontend's input is polled: no input thread waking every millisecond.
 test-input-per-frame:

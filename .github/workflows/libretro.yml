@@ -79,6 +79,11 @@ jobs:
         # point in the core: the frontend owns the context and the surface
         run: ./tools/check_no_wsi.sh
 
+      - name: "No absolute paths written for the compiler"
+        # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
+        # inside a file (the precompiled header's stub broke the Windows build)
+        run: ./tools/check_build_paths.sh
+
       - name: "Controllers updated once a frame"
         # from retro_run, after the frontend's input is polled: no input
         # thread waking every millisecond to update them

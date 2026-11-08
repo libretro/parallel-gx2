@@ -289,7 +289,10 @@ ifneq ($(CORE_PCH),)
 CORE_PCH_FLAGS_STATUS := $(shell mkdir -p $(OBJ_DIR)/pch; \
 	echo '$(CORE_PCH_FLAGS)' > $(OBJ_DIR)/pch/flags.tmp; \
 	cmp -s $(OBJ_DIR)/pch/flags.tmp $(OBJ_DIR)/pch/flags || mv -f $(OBJ_DIR)/pch/flags.tmp $(OBJ_DIR)/pch/flags; \
-	rm -f $(OBJ_DIR)/pch/flags.tmp)
+	rm -f $(OBJ_DIR)/pch/flags.tmp; \
+	echo '$(CORE_PCH_STUB_LINE)' > $(CORE_PCH_STUB).tmp; \
+	cmp -s $(CORE_PCH_STUB).tmp $(CORE_PCH_STUB) || mv -f $(CORE_PCH_STUB).tmp $(CORE_PCH_STUB); \
+	rm -f $(CORE_PCH_STUB).tmp)
 endif
 
 .DEFAULT_GOAL := all
