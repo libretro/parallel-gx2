@@ -207,7 +207,7 @@ test-zarchive:
   needs: []
   variables:
     GIT_SUBMODULE_STRATEGY: normal
-    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm dependencies/pugixml
     CC: gcc-12
     CXX: g++-12
   script:

@@ -147,9 +147,10 @@ jobs:
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.
-        # The core's precompiled header wants fmt and glm.
+        # The core's precompiled header wants fmt and glm, the meta.xml
+        # parser pugixml.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/pugixml
           ./test/zarchive/run_tests.sh
           make -C test/zarchive clean
           SANITIZER=thread ./test/zarchive/run_tests.sh

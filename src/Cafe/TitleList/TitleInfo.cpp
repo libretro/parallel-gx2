@@ -592,8 +592,18 @@ bool TitleInfo::ParseXmlInfo()
 		return false;
 	// meta/meta.xml
 	auto xmlData = fsc_extractFile(fmt::format("{}meta/meta.xml", mountPath).c_str());
+	// what went wrong with it, for when the title turns out not to be valid
+	std::string metaWhyNot = "it is not there, or could not be read";
 	if(xmlData)
-		m_parsedMetaXml = ParsedMetaXml::Parse(xmlData->data(), xmlData->size());
+	{
+		// the first octets, for the log: what it holds if not a meta.xml
+		std::string head;
+		for (size_t i = 0; i < xmlData->size() && i < 32; i++)
+			head += fmt::format("{:02x}", (*xmlData)[i]);
+		m_parsedMetaXml = ParsedMetaXml::Parse(xmlData->data(), xmlData->size(), &metaWhyNot);
+		if (!m_parsedMetaXml)
+			cemuLog_log(LogType::Force, "meta/meta.xml of {}: {} (starts {})", _pathToUtf8(m_fullPath), metaWhyNot, head);
+	}
 
 	if(!m_parsedMetaXml)
 	{
@@ -631,9 +641,11 @@ bool TitleInfo::ParseXmlInfo()
 		bool hasAnyXml = m_parsedMetaXml || m_parsedAppXml || m_parsedCosXml;
 		if (hasAnyXml)
 			cemuLog_log(LogType::Force, "Title has missing meta .xml files. Title path: {}", _pathToUtf8(m_fullPath));
-		m_invalidDetail = fmt::format("the title has no {}{}{}",
-			(allowMissingMetaXml == false && !m_parsedMetaXml) ? "meta/meta.xml " : "",
-			!m_parsedAppXml ? "code/app.xml " : "", !m_parsedCosXml ? "code/cos.xml" : "");
+		if (allowMissingMetaXml == false && !m_parsedMetaXml)
+			m_invalidDetail = "its meta/meta.xml is unusable: " + metaWhyNot;
+		else
+			m_invalidDetail = fmt::format("the title has no {}{}",
+				!m_parsedAppXml ? "code/app.xml " : "", !m_parsedCosXml ? "code/cos.xml" : "");
 		delete m_parsedMetaXml;
 		delete m_parsedAppXml;
 		delete m_parsedCosXml;

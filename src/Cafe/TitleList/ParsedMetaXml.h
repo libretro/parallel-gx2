@@ -2,6 +2,7 @@
 
 #include <pugixml.hpp>
 #include "config/CemuConfig.h"
+#include "Cafe/TitleList/TitleId.h"
 
 struct ParsedMetaXml
 {
@@ -58,17 +59,25 @@ struct ParsedMetaXml
 		return m_olv_accesskey;
 	}
 
-	static ParsedMetaXml* Parse(uint8* xmlData, size_t xmlSize)
+	// nullptr if it is not a meta.xml, and then in @whyNot, if given, which
+	// part of one it lacks
+	static ParsedMetaXml* Parse(uint8* xmlData, size_t xmlSize, std::string* whyNot = nullptr)
 	{
+		auto fail = [&](std::string why) -> ParsedMetaXml* {
+			if (whyNot)
+				*whyNot = std::move(why);
+			return nullptr;
+		};
 		if (xmlSize == 0)
-			return nullptr;
+			return fail("it is empty");
 		pugi::xml_document meta_doc;
-		if (!meta_doc.load_buffer_inplace(xmlData, xmlSize))
-			return nullptr;
+		const pugi::xml_parse_result parsed = meta_doc.load_buffer_inplace(xmlData, xmlSize);
+		if (!parsed)
+			return fail(fmt::format("it is {} bytes that do not parse as XML: {} at offset {}", xmlSize, parsed.description(), (sint64)parsed.offset));
 
 		const auto root = meta_doc.child("menu");
 		if (!root)
-			return nullptr;
+			return fail(fmt::format("its root element is <{}>, not <menu>", meta_doc.document_element().name()));
 
 		ParsedMetaXml* parsedMetaXml = new ParsedMetaXml();
 
@@ -115,7 +124,7 @@ struct ParsedMetaXml
 		{
 			// not valid
 			delete parsedMetaXml;
-			return nullptr;
+			return fail("it has no title_id");
 		}
 		return parsedMetaXml;
 	}

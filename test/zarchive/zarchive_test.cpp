@@ -7,10 +7,14 @@
 //  - threads share one archive, each with its own ZArchiveFile, and read and
 //    look up at once (run under ThreadSanitizer by CI);
 //  - an archive that is not one, or is cut short, does not open, and says
-//    what it found instead (the reason the user is shown).
+//    what it found instead (the reason the user is shown);
+//  - a title's meta.xml as Breath of the Wild's (a BOM, twelve languages,
+//    Japanese) parses, and one that will not says why: not XML (where),
+//    no <menu>, no title_id, empty.
 // VFSFileStream is the stdio one below, counting what the reader opens and
 // reads, in place of the frontend's VFS.
 #include "Cafe/Filesystem/ZArchiveVFS.h"
+#include "Cafe/TitleList/ParsedMetaXml.h"
 
 #include <atomic>
 #include <cstdio>
@@ -281,8 +285,45 @@ static void TestBroken(const fs::path& good)
 	fs::remove(bad);
 }
 
+static void TestMetaXml()
+{
+	std::string xml = "\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<menu type=\"complex\" access=\"777\">\n"
+		"  <version type=\"unsignedInt\" length=\"4\">33</version>\n"
+		"  <product_code type=\"string\" length=\"32\">WUP-P-ALZE</product_code>\n"
+		"  <title_id type=\"hexBinary\" length=\"8\">00050000101C9400</title_id>\n"
+		"  <title_version type=\"unsignedInt\" length=\"4\">0</title_version>\n"
+		"  <region type=\"hexBinary\" length=\"4\">00000002</region>\n";
+	const char* langs[] = {"ja", "en", "fr", "de", "it", "es", "zhs", "ko", "nl", "pt", "ru", "zht"};
+	for (const char* l : langs)
+		xml += fmt::format("  <longname_{0} type=\"string\" length=\"512\">\xe3\x82\xbc\xe3\x83\xab\xe3\x83\x80\xe3\x81\xae\xe4\xbc\x9d\xe8\xaa\xac\n\xe3\x83\x96\xe3\x83\xac\xe3\x82\xb9 {0}</longname_{0}>\n"
+			"  <shortname_{0} type=\"string\" length=\"512\">The Legend of Zelda {0}</shortname_{0}>\n"
+			"  <publisher_{0} type=\"string\" length=\"256\">Nintendo</publisher_{0}>\n", l);
+	for (int i = 0; i < 300; i++) // BotW's is long: padded out with other elements
+		xml += fmt::format("  <pc_e{0} type=\"unsignedInt\" length=\"4\">{0}</pc_e{0}>\n", i);
+	xml += "</menu>\n";
+	auto parse = [](std::string text, std::string* why) {
+		std::vector<uint8> buf(text.begin(), text.end());
+		return std::unique_ptr<ParsedMetaXml>(ParsedMetaXml::Parse(buf.data(), buf.size(), why));
+	};
+	std::string why = "untouched";
+	auto ok = parse(xml, &why);
+	CHECK(ok && ok->GetTitleId() == 0x00050000101C9400ull && why == "untouched");
+	CHECK(ok && ok->GetShortName(CafeConsoleLanguage::EN) == "The Legend of Zelda en");
+	CHECK(ok && ok->GetLongName(CafeConsoleLanguage::JA).find("\xe3\x82\xbc") == 0);
+	CHECK(!parse(xml.substr(0, xml.size() / 2), &why) && why.find("do not parse as XML") != std::string::npos && why.find("at offset") != std::string::npos);
+	std::string notMenu = xml;
+	notMenu.replace(notMenu.find("<menu"), 5, "<item");
+	notMenu.replace(notMenu.rfind("</menu>"), 7, "</item>");
+	CHECK(!parse(notMenu, &why) && why == "its root element is <item>, not <menu>");
+	std::string noId = xml;
+	noId.erase(noId.find("  <title_id"), noId.find("</title_id>") + 12 - noId.find("  <title_id"));
+	CHECK(!parse(noId, &why) && why == "it has no title_id");
+	CHECK(!parse("", &why) && why == "it is empty");
+}
+
 int main()
 {
+	TestMetaXml();
 	std::vector<TestFile> files;
 	const fs::path path = MakeArchive(files);
 	std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
