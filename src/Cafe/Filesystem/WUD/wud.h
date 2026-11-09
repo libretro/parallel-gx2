@@ -12,12 +12,16 @@ struct wuxHeader_t
 struct wud_t
 {
 	class FileStream* fs;
+	// the file's octets, where it is mapped, while fs lives
+	const unsigned char* mapped;
+	unsigned long long	fileSize;
 	long long		uncompressedSize;
 	bool			isCompressed;
 	// data used when compressed
 	unsigned int	sectorSize;
 	unsigned int	indexTableEntryCount;
-	unsigned int*	indexTable;
+	const unsigned int*	indexTable; // in the mapping, or indexTableCopy
+	unsigned int*	indexTableCopy;
 	long long		offsetIndexTable;
 	long long		offsetSectorArray;
 };
@@ -31,4 +35,8 @@ void wud_close(wud_t* wud);
 
 bool wud_isWUXCompressed(wud_t* wud);
 unsigned int wud_readData(wud_t* wud, void* buffer, unsigned int length, long long offset);
+// The image's length octets at offset, lent from the mapping and valid until
+// wud_close: nullptr where they are not all there and in one piece (an
+// unmapped file, a range past the end, or one that crosses a .wux sector)
+const unsigned char* wud_lend(wud_t* wud, unsigned int length, long long offset);
 long long wud_getWUDSize(wud_t* wud);

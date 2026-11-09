@@ -42,7 +42,8 @@ public:
 	// from "it is, and no key in the cache decrypts it" - a caller that wants to
 	// tell the user which of the two happened cannot get that from the return
 	// value alone.
-	static bool FindDiscKey(const fs::path& path, NCrypto::AesKey& discTitleKey, bool* imageOpened = nullptr);
+	// search, if given, says where the key was looked for (KeyCache.h)
+	static bool FindDiscKey(const fs::path& path, NCrypto::AesKey& discTitleKey, bool* imageOpened = nullptr, struct KeyCacheSearch* search = nullptr);
 
 	static FSTVolume* OpenFromDiscImage(const fs::path& path, NCrypto::AesKey& discTitleKey, ErrorCode* errorCodeOut = nullptr);
 	static FSTVolume* OpenFromDiscImage(const fs::path& path, ErrorCode* errorCodeOut = nullptr);

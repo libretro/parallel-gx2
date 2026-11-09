@@ -7,12 +7,17 @@
 // through FileStream, so an archive the host application hands over - an
 // Android content:// URI behind SAF, say - reads like any other file.
 //
-// The archive's index - everything past the compressed blocks: records,
-// names, tree and footer - is read into memory once on opening and never
-// changes after, so any number of threads look paths up and list
-// directories at once, each with a zar_t of its own and no I/O. A file's
-// octets are read through a ZArchiveFile, which has its own reader and its
-// own stream of the archive: nothing is shared between threads that read.
+// The archive is mapped where it can be, once, for as long as it is open:
+// lookups and listings read the index where it lies, and a file's octets go
+// from the mapping straight to where the read wants them - a block kept as
+// it is copied once, a compressed one decoded from the pages - with no
+// stream, no seek and nothing shared but the pages. Where it cannot be
+// mapped (a file only the frontend's VFS reaches, or one too big for the
+// address space) the index - everything past the blocks: records, names,
+// tree and footer - is read into memory once on opening, and each
+// ZArchiveFile reads its blocks through a stream of its own. Either way
+// nothing changes after opening, so any number of threads look up, list
+// and read at once, each with a zar_t of its own.
 class ZArchive
 {
 public:
@@ -36,7 +41,12 @@ public:
 	const fs::path& GetPath() const { return m_path; }
 	uint64 GetSize() const { return m_size; }
 
-	// What a reader asked for: from the index in memory, or from @stream
+	// whether the octets are lent from the archive's mapping, so that a
+	// file reads with no stream
+	bool IsMapped() const { return m_mapped != nullptr; }
+
+	// What a reader asked for: from the mapping, from the index in memory,
+	// or from @stream
 	size_t Supply(const zar_request_t& req, FileStream* stream) const;
 
 private:
@@ -46,7 +56,9 @@ private:
 	fs::path m_path;
 	uint64 m_size{};
 	uint64 m_indexOffset{};
-	std::vector<uint8> m_index;
+	std::vector<uint8> m_index;            // unmapped only
+	std::unique_ptr<FileStream> m_mapping;
+	const uint8* m_mapped{};               // m_size octets while m_mapping lives
 };
 
 class ZArchiveFile
@@ -65,5 +77,5 @@ private:
 	const ZArchive& m_archive;
 	ZArchive::Node m_file;
 	zar_t* m_reader{};
-	std::unique_ptr<FileStream> m_stream;
+	std::unique_ptr<FileStream> m_stream;  // unmapped only
 };

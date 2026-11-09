@@ -6,6 +6,10 @@
 //    blocks kept as they are and compressed ones;
 //  - threads share one archive, each with its own ZArchiveFile, and read and
 //    look up at once (run under ThreadSanitizer by CI);
+//  - an archive that maps is read from its mapping alone: once open, no
+//    lookup, listing or read of any file opens a stream or reads one; one
+//    that does not map (FileStream refusing, as a frontend's VFS file does)
+//    reads the same through streams of its own;
 //  - an archive that is not one, or is cut short, does not open, and says
 //    what it found instead (the reason the user is shown);
 //  - a title's meta.xml as Breath of the Wild's (a BOM, twelve languages,
@@ -36,6 +40,7 @@ static int s_failures = 0;
 
 static std::atomic<uint32> s_opens{0};
 static std::atomic<uint32> s_reads{0};
+static bool s_noMap = false;
 
 FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
 {
@@ -44,6 +49,23 @@ FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
 		return nullptr;
 	s_opens++;
 	return new FileStream(f);
+}
+
+FileStream* FileStream::openFileMapped(const fs::path& path)
+{
+	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ,
+		s_noMap ? RETRO_VFS_FILE_ACCESS_HINT_NONE : RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS);
+	if (!f)
+		return nullptr;
+	s_opens++;
+	return new FileStream(f);
+}
+
+std::span<const uint8> FileStream::MappedSpan()
+{
+	int64_t len = 0;
+	const uint8_t* map = filestream_get_mapped_ptr(m_file, &len);
+	return map && len > 0 ? std::span<const uint8>(map, (size_t)len) : std::span<const uint8>();
 }
 
 FileStream::~FileStream()
@@ -444,15 +466,25 @@ int main()
 	TestUnordered();
 	std::vector<TestFile> files;
 	const fs::path path = MakeArchive(files);
-	std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
-	CHECK(zar != nullptr);
-	if (zar)
+	for (bool map : {true, false})
 	{
+		s_noMap = !map;
+		std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+		CHECK(zar != nullptr);
+		if (!zar)
+			continue;
+		CHECK(zar->IsMapped() == map);
+		const uint32 opens = s_opens, reads = s_reads;
 		TestIndex(*zar, files);
 		TestReads(*zar, files);
 		TestThreads(*zar, files);
+		// mapped, every octet came from the pages; else each file its stream
+		if (map)
+			CHECK(s_opens == opens && s_reads == reads);
+		else
+			CHECK(s_opens > opens && s_reads > reads);
 	}
-	zar.reset();
+	s_noMap = false;
 	TestBroken(path);
 	fs::remove(path);
 	if (s_failures)

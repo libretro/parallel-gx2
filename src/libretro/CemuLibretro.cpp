@@ -5612,7 +5612,9 @@ static bool libretro_disc_key_available(const fs::path& gamePath)
 	if (ext != ".wud" && ext != ".wux")
 		return true;
 
-	KeyCache_Prepare();
+	// read again at every load: a key added to keys.txt since the last one
+	// counts without a restart
+	KeyCache_Prepare(true);
 
 	// FindDiscKey decrypts the partition header to recognise a key, and the two
 	// AES entry points are function pointers that stay null until AES128_init
@@ -5626,7 +5628,8 @@ static bool libretro_disc_key_available(const fs::path& gamePath)
 
 	NCrypto::AesKey discTitleKey;
 	bool imageOpened = false;
-	if (FSTVolume::FindDiscKey(gamePath, discTitleKey, &imageOpened))
+	KeyCacheSearch search;
+	if (FSTVolume::FindDiscKey(gamePath, discTitleKey, &imageOpened, &search))
 		return true;
 
 	// The image would not open or its header would not read: whatever is wrong
@@ -5636,9 +5639,7 @@ static bool libretro_disc_key_available(const fs::path& gamePath)
 		return true;
 
 	const fs::path keysPath = ActiveSettings::GetUserDataPath("keys.txt");
-	libretro_show_message(RETRO_LOG_ERROR, 8000,
-		fmt::format("No disc key for {}. Put it beside the image as {}, or add it to {}",
-			_pathToUtf8(gamePath.filename()), _pathToUtf8(fs::path(gamePath.filename()).replace_extension(".key")), _pathToUtf8(keysPath)));
+	libretro_show_message(RETRO_LOG_ERROR, 10000, KeyCache_DescribeMissing(gamePath, keysPath, search));
 	return false;
 }
 

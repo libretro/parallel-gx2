@@ -381,6 +381,42 @@ test-zarchive:
     - make -C test/zarchive clean
     - SANITIZER=address,undefined ./test/zarchive/run_tests.sh
 
+# The core's .wud/.wux, .app and .wuhb readers, against images the test makes,
+# mapped and not. The core's precompiled header wants fmt and glm.
+test-disc-image:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/disc_image/run_tests.sh
+    - make -C test/disc_image clean
+    - SANITIZER=thread ./test/disc_image/run_tests.sh
+    - make -C test/disc_image clean
+    - SANITIZER=address,undefined ./test/disc_image/run_tests.sh
+
+# Where the core looks for a disc image's key, and what it says when none
+# fits. The core's precompiled header wants fmt and glm.
+test-keycache:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/keycache/run_tests.sh
+    - make -C test/keycache clean
+    - SANITIZER=thread ./test/keycache/run_tests.sh
+    - make -C test/keycache clean
+    - SANITIZER=address,undefined ./test/keycache/run_tests.sh
+
 # The shader/PSO gate: what the shader path costs, against
 # test/pso/baseline.txt; worse fails, and better fails until the baseline is
 # updated with it (AGENTS.md). The core's precompiled header wants fmt and glm,

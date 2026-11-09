@@ -1,7 +1,7 @@
 #include "Common/precompiled.h"
 #include "Common/FileStream.h"
 #include "Cemu/ncrypto/ncrypto.h"
-#include "Cafe/Filesystem/WUD/wud.h"
+#include "Cafe/Filesystem/FST/FSTDataSource.h"
 #include "util/crypto/aes128.h"
 #include "fstUtil.h"
 
@@ -13,109 +13,6 @@
 #define SET_FST_ERROR(__code) 	if (errorCodeOut) *errorCodeOut = ErrorCode::__code
 
 static_assert(sizeof(NCrypto::AesIv) == 16); // make sure IV is actually 16 bytes
-
-class FSTDataSource
-{
-public:
-	virtual uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) = 0;
-	virtual ~FSTDataSource() {};
-
-protected:
-	FSTDataSource() {};
-
-	bool m_isOpen;
-};
-
-class FSTDataSourceWUD : public FSTDataSource
-{
-public:
-
-	static FSTDataSourceWUD* Open(const fs::path& path)
-	{
-		wud_t* wudFile = wud_open(path);
-		if (!wudFile)
-			return nullptr;
-		FSTDataSourceWUD* ds = new FSTDataSourceWUD();
-		ds->m_wudFile = wudFile;
-		return ds;
-	}
-
-	void SetBaseOffset(uint64 baseOffset)
-	{
-		m_baseOffset = baseOffset;
-	}
-
-	uint64 GetBaseOffset() const
-	{
-		return m_baseOffset;
-	}
-
-	uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) override
-	{
-		cemu_assert_debug(size <= 0xFFFFFFFF);
-		return wud_readData(m_wudFile, data, (uint32)size, clusterOffset + offset + m_baseOffset);
-	}
-
-	~FSTDataSourceWUD() override
-	{
-		if(m_wudFile)
-			wud_close(m_wudFile);
-	}
-
-protected:
-	FSTDataSourceWUD() {}	
-	wud_t* m_wudFile;
-	uint64 m_baseOffset{};
-	std::vector<uint64> m_clusterOffset;
-};
-
-class FSTDataSourceApp : public FSTDataSource
-{
-public:
-	static FSTDataSourceApp* Open(fs::path path, NCrypto::TMDParser& tmd)
-	{
-		std::vector<std::unique_ptr<FileStream>> clusterFile;
-		uint32 maxIndex = 0;
-		for (auto& itr : tmd.GetContentList())
-			maxIndex = std::max(maxIndex, (uint32)itr.index);
-		clusterFile.resize(maxIndex + 1);
-		// open all the app files
-		for (auto& itr : tmd.GetContentList())
-		{
-			FileStream* appFile = FileStream::openFile2(path / fmt::format("{:08x}.app", itr.contentId));
-			if (!appFile)
-				return nullptr;
-			clusterFile[itr.index].reset(appFile);
-		}
-		// construct FSTDataSourceApp
-		FSTDataSourceApp* dsApp = new FSTDataSourceApp(std::move(clusterFile));
-		return dsApp;
-	}
-
-	uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) override
-	{
-		// ignore clusterOffset for .app files since each file is already relative to the cluster base
-		cemu_assert_debug(clusterIndex < m_clusterFile.size());
-		cemu_assert_debug(m_clusterFile[clusterIndex].get());
-		cemu_assert_debug(size <= 0xFFFFFFFF);
-		if (!m_clusterFile[clusterIndex].get())
-			return 0;
-		m_clusterFile[clusterIndex].get()->SetPosition(offset);
-		return m_clusterFile[clusterIndex].get()->readData(data, (uint32)size);
-	}
-
-	~FSTDataSourceApp() override
-	{
-	}
-
-private:
-	FSTDataSourceApp(std::vector<std::unique_ptr<FileStream>>&& clusterFiles)
-	{
-		m_clusterFile = std::move(clusterFiles);
-	}
-
-	std::vector<std::unique_ptr<FileStream>> m_clusterFile;
-};
 
 constexpr size_t DISC_SECTOR_SIZE = 0x8000;
 
@@ -188,7 +85,7 @@ struct DiscPartitionHeader
 
 static_assert(sizeof(DiscPartitionHeader) == 0x40+0x20);
 
-bool FSTVolume::FindDiscKey(const fs::path& path, NCrypto::AesKey& discTitleKey, bool* imageOpened)
+bool FSTVolume::FindDiscKey(const fs::path& path, NCrypto::AesKey& discTitleKey, bool* imageOpened, KeyCacheSearch* search)
 {
 	if (imageOpened)
 		*imageOpened = false;
@@ -212,38 +109,8 @@ bool FSTVolume::FindDiscKey(const fs::path& path, NCrypto::AesKey& discTitleKey,
 	if (imageOpened)
 		*imageOpened = true;
 
-	// a key beside the image (<image name>.key) joins the key cache first
-	KeyCache_AddKeyFile(fs::path(path).replace_extension(".key"));
-	// try all the keys in the key cache
-	uint8 headerDecrypted[sizeof(header)-16];
-	sint32 triedKeys = 0;
-	for (sint32 i = 0; i < 0x7FFFFFFF; i++)
-	{
-		uint8* key128 = KeyCache_GetAES128(i);
-		if (key128 == NULL)
-		{
-			cemuLog_log(LogType::Force, "[FST] FindDiscKey: reached end of keycache at index {} (tried={})", i, triedKeys);
-			break;
-		}
-		triedKeys++;
-		if (i < 10 || (i % 250) == 0)
-			cemuLog_log(LogType::Force, "[FST] FindDiscKey: trying key index {}", i);
-		AES128_CBC_decrypt(headerDecrypted, header + 16, sizeof(headerDecrypted), key128, header);
-		if (std::all_of(headerDecrypted, headerDecrypted + sizeof(headerDecrypted), [](const uint8 v) {return v == 0; }))
-		{
-			// key found
-			cemuLog_log(LogType::Force, "[FST] FindDiscKey: key FOUND at index {} after trying {} keys", i, triedKeys);
-			std::memcpy(discTitleKey.b, key128, 16);
-			return true;
-		}
-	}
-	cemuLog_log(LogType::Force, "[FST] FindDiscKey: no key in the keycache (keys_tried={}), trying a key file", triedKeys);
-
-	// check for a key file next to the WUD file
-	fs::path keyPath = path;
-	keyPath.replace_extension("key");
-	std::unique_ptr<FileStream> keyFile(FileStream::openFile2(keyPath));
-	return keyFile && keyFile->readData(discTitleKey.b, sizeof(discTitleKey.b)) == sizeof(discTitleKey.b);
+	// keys.txt, then the key files beside the image
+	return KeyCache_FindDiscKey(path, header, discTitleKey.b, search);
 }
 
 // open WUD image using key cache
@@ -459,7 +326,10 @@ FSTVolume* FSTVolume::OpenFromContentFolder(fs::path folderPath, ErrorCode* erro
 	NCrypto::AesKey titleKey;
 	ticketParser.GetTitleKey(titleKey);
 	// open data source
-	std::unique_ptr<FSTDataSource> dataSource(FSTDataSourceApp::Open(folderPath, tmdParser));
+	std::vector<FSTDataSourceApp::Content> contents;
+	for (const auto& itr : tmdParser.GetContentList())
+		contents.push_back({itr.index, itr.contentId});
+	std::unique_ptr<FSTDataSource> dataSource(FSTDataSourceApp::Open(folderPath, contents));
 	if (!dataSource)
 		return nullptr;
 	// get info about FST from first cluster (todo - is this correct or does the TMD store info about the fst?)
@@ -492,10 +362,11 @@ FSTVolume* FSTVolume::OpenFST(FSTDataSource* dataSource, uint64 fstOffset, uint3
 	uint32 fstSizePadded = (fstSize + 15) & ~15; // pad to AES block size
 	// read FST data and decrypt
 	std::vector<uint8> fstData(fstSizePadded);
-	if (dataSource->readData(0, FST_CLUSTER_OFFSET, fstOffset, fstData.data(), fstSizePadded) != fstSizePadded)
+	const uint8* fstEncrypted = dataSource->Fetch(0, FST_CLUSTER_OFFSET, fstOffset, fstData.data(), fstSizePadded);
+	if (!fstEncrypted)
 		return nullptr;
 	uint8 iv[16]{};
-	AES128_CBC_decrypt(fstData.data(), fstData.data(), fstSizePadded, partitionTitleKey->b, iv);
+	AES128_CBC_decrypt(fstData.data(), fstEncrypted, fstSizePadded, partitionTitleKey->b, iv);
 	// validate header
 	FSTHeader* fstHeader = (FSTHeader*)fstData.data();
 	const void* fstEnd = fstData.data() + fstSize;
@@ -972,13 +843,14 @@ void FSTVolume::DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex,
 			cemu_assert(m_sectorSize >= NCrypto::AesIv::SIZE);
 			uint64 clusterOffset = (uint64)m_cluster[clusterIndex].offset * m_sectorSize;
 			NCrypto::AesIv prevIV{};
-			if (m_dataSource->readData(clusterIndex, clusterOffset, blockIndex * m_sectorSize - NCrypto::AesIv::SIZE, prevIV.iv, NCrypto::AesIv::SIZE) != NCrypto::AesIv::SIZE)
+			const uint8* prev = m_dataSource->Fetch(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize - NCrypto::AesIv::SIZE, prevIV.iv, NCrypto::AesIv::SIZE);
+			if (!prev)
 			{
 				cemuLog_log(LogType::Force, "Failed to read IV for raw FST block");
 				m_detectedCorruption = true;
 				return;
 			}
-			ivOut = prevIV;
+			memcpy(ivOut.iv, prev, NCrypto::AesIv::SIZE);
 		}
 	}
 }
@@ -1005,18 +877,17 @@ FSTCachedRawBlock* FSTVolume::GetDecryptedRawBlock(uint32 clusterIndex, uint32 b
 	block->blockData.rawData.resize(m_sectorSize);
 	// block not cached, read new
 	block->lastAccess = ++m_cacheAccessCounter;
-	if (m_dataSource->readData(clusterIndex, clusterOffset, blockIndex * m_sectorSize, block->blockData.rawData.data(), m_sectorSize) != m_sectorSize)
+	// decrypted from the file's pages into the block, or read there first
+	NCrypto::AesIv iv{};
+	DetermineUnhashedBlockIV(clusterIndex, blockIndex, iv);
+	if (!m_dataSource->ReadRawBlock(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize, block->blockData.rawData.data(), m_sectorSize,
+		m_partitionTitlekey.b, iv.iv, block->ivForNextBlock.iv))
 	{
 		cemuLog_log(LogType::Force, "Failed to read raw FST block");
 		delete block;
 		m_detectedCorruption = true;
 		return nullptr;
 	}
-	// decrypt hash data
-	NCrypto::AesIv iv{};
-	DetermineUnhashedBlockIV(clusterIndex, blockIndex, iv);
-	std::copy(block->blockData.rawData.data() + m_sectorSize - NCrypto::AesIv::SIZE, block->blockData.rawData.data() + m_sectorSize, block->ivForNextBlock.iv);
-	AES128_CBC_decrypt(block->blockData.rawData.data(), block->blockData.rawData.data(), m_sectorSize, m_partitionTitlekey.b, iv.iv);
 	// if this is the next block, then hash it
 	if(cluster.hasContentHash)
 	{
@@ -1069,18 +940,15 @@ FSTCachedHashedBlock* FSTVolume::GetDecryptedHashedBlock(uint32 clusterIndex, ui
 		block = new FSTCachedHashedBlock();
 	// block not cached, read new
 	block->lastAccess = ++m_cacheAccessCounter;
-	if (m_dataSource->readData(clusterIndex, clusterOffset, blockIndex * BLOCK_SIZE, block->blockData.rawData, BLOCK_SIZE) != BLOCK_SIZE)
+	// decrypted from the file's pages into the block, or read there first
+	static_assert(BLOCK_SIZE == FSTDataSource::HASHED_BLOCK_SIZE && BLOCK_HASH_SIZE == FSTDataSource::HASHED_BLOCK_HASH_SIZE);
+	if (!m_dataSource->ReadHashedBlock(clusterIndex, clusterOffset, (uint64)blockIndex * BLOCK_SIZE, block->blockData.rawData, m_partitionTitlekey.b, blockIndex % 16))
 	{
 		cemuLog_log(LogType::Force, "Failed to read hashed FST block");
 		delete block;
 		m_detectedCorruption = true;
 		return nullptr;
 	}
-	// decrypt hash data
-	uint8 iv[16]{};
-	AES128_CBC_decrypt(block->blockData.getHashData(), block->blockData.getHashData(), BLOCK_HASH_SIZE, m_partitionTitlekey.b, iv);
-	// decrypt file data
-	AES128_CBC_decrypt(block->blockData.getFileData(), block->blockData.getFileData(), BLOCK_FILE_SIZE, m_partitionTitlekey.b, block->blockData.getH0Hash(blockIndex%16));
 	// compare with H0 to verify data integrity
 	NCrypto::CHash160 h0;
 	SHA1(block->blockData.getFileData(), BLOCK_FILE_SIZE, h0.b);

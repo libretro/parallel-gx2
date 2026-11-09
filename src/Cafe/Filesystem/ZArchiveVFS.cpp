@@ -24,12 +24,15 @@ ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
 			*whyNot = std::move(why);
 		return nullptr;
 	};
-	std::unique_ptr<FileStream> stream(FileStream::openFile2(path));
+	std::unique_ptr<FileStream> stream(FileStream::openFileMapped(path));
 	if (!stream)
 		return fail("it could not be opened");
 	std::unique_ptr<ZArchive> archive(new ZArchive());
 	archive->m_path = path;
 	archive->m_size = stream->GetSize();
+	const std::span<const uint8> mapped = stream->MappedSpan();
+	if (!mapped.empty() && mapped.size() == archive->m_size)
+		archive->m_mapped = mapped.data();
 	// read the footer from the file, then the whole index after the blocks
 	zar_t* z = zar_new(archive->m_size);
 	if (!z)
@@ -42,17 +45,32 @@ ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
 	zar_free(z);
 	if (err != ZAR_OK || indexOffset >= archive->m_size)
 		return fail(DescribeFooter(stream.get(), archive->m_size));
+	archive->m_indexOffset = indexOffset;
+	if (archive->m_mapped)
+	{
+		// the index is read where it lies, and so is everything else
+		archive->m_mapping = std::move(stream);
+		return archive.release();
+	}
 	archive->m_index.resize(archive->m_size - indexOffset);
 	stream->SetPosition(indexOffset);
 	if (stream->readData(archive->m_index.data(), (uint32)archive->m_index.size()) != archive->m_index.size())
 		return fail(fmt::format("its index, {} bytes from offset {}, could not be read", archive->m_index.size(), indexOffset));
-	archive->m_indexOffset = indexOffset;
 	return archive.release();
 }
 
 size_t ZArchive::Supply(const zar_request_t& req, FileStream* stream) const
 {
 	size_t length = req.length;
+	if (m_mapped)
+	{
+		// one copy, from the pages to where the reader wants them
+		if (req.offset >= m_size)
+			return 0;
+		length = (size_t)std::min<uint64>(length, m_size - req.offset);
+		memcpy(req.dst, m_mapped + req.offset, length);
+		return length;
+	}
 	if (!m_index.empty() && req.offset >= m_indexOffset)
 	{
 		const uint64 at = req.offset - m_indexOffset;
@@ -155,7 +173,7 @@ uint64 ZArchiveFile::Read(uint64 offset, void* buffer, uint64 size)
 			return 0;
 		}
 	}
-	if (!m_stream)
+	if (!m_stream && !m_archive.IsMapped())
 	{
 		m_stream.reset(FileStream::openFile2(m_archive.GetPath()));
 		if (!m_stream)

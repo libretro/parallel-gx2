@@ -57,6 +57,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/Account/Account.cpp \
 	$(CORE_DIR)/src/Cafe/CafeSystem.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/FST.cpp \
+	$(CORE_DIR)/src/Cafe/Filesystem/FST/FSTDataSource.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/KeyCache.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/WUHBReader.cpp \

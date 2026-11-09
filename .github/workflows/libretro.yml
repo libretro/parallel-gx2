@@ -266,6 +266,31 @@ jobs:
           make -C test/zarchive clean
           SANITIZER=address,undefined ./test/zarchive/run_tests.sh
 
+      - name: "Disc images, title content, homebrew bundles"
+        # the core's .wud/.wux, .app and .wuhb readers against images made by
+        # the test, mapped and not: plain, under ThreadSanitizer, under ASan +
+        # UBSan. The core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/disc_image/run_tests.sh
+          make -C test/disc_image clean
+          SANITIZER=thread ./test/disc_image/run_tests.sh
+          make -C test/disc_image clean
+          SANITIZER=address,undefined ./test/disc_image/run_tests.sh
+
+      - name: "Disc keys"
+        # where the core looks for a disc image's key - keys.txt, read again
+        # at each load, and the .key files beside the image - and what it says
+        # when none fits: plain, under ThreadSanitizer, under ASan + UBSan.
+        # The core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/keycache/run_tests.sh
+          make -C test/keycache clean
+          SANITIZER=thread ./test/keycache/run_tests.sh
+          make -C test/keycache clean
+          SANITIZER=address,undefined ./test/keycache/run_tests.sh
+
       - name: "IOSU kernel"
         # Message queues, timers and IPC from several threads at once, against
         # the kernel's own source; plain, under ThreadSanitizer, under ASan +

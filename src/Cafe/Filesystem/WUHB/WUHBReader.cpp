@@ -1,8 +1,31 @@
 #include "WUHBReader.h"
 #include "Common/FileStream.h"
+WUHBReader::WUHBReader(FileStream* fileIn) : m_fileIn(fileIn)
+{
+	cemu_assert_debug(fileIn != nullptr);
+	m_mapped = m_fileIn->MappedSpan();
+	if (m_mapped.size() != m_fileIn->GetSize())
+		m_mapped = {};
+}
+
+bool WUHBReader::ReadAt(uint64 offset, void* dst, uint64 len) const
+{
+	if (!m_mapped.empty())
+	{
+		if (offset > m_mapped.size() || m_mapped.size() - offset < len)
+			return false;
+		memcpy(dst, m_mapped.data() + offset, (size_t)len);
+		return true;
+	}
+	if (len > 0xFFFFFFFF)
+		return false;
+	m_fileIn->SetPosition(offset);
+	return m_fileIn->readData(dst, (uint32)len) == len;
+}
+
 WUHBReader* WUHBReader::FromPath(const fs::path& path)
 {
-	FileStream* fileIn{FileStream::openFile2(path)};
+	FileStream* fileIn{FileStream::openFileMapped(path)};
 	if (!fileIn)
 		return nullptr;
 
@@ -50,38 +73,59 @@ const WUHBReader::EntryType<File>& WUHBReader::GetFallback()
 }
 
 template<bool File>
-WUHBReader::EntryType<File> WUHBReader::GetEntry(uint32 offset) const
+bool WUHBReader::ReadFixed(uint32 offset, void* fixed, uint64& nameAt) const
 {
-	auto fallback = GetFallback<File>();
-	if(offset == ROMFS_ENTRY_EMPTY)
-		return fallback;
-
 	const char* typeName = File ? "fentry" : "direntry";
-	EntryType<File> ret;
+	if (offset == ROMFS_ENTRY_EMPTY)
+		return false;
 	if (offset >= (File ? m_header.file_table_size : m_header.dir_table_size))
 	{
 		cemuLog_log(LogType::Force, "WUHB {} offset exceeds table size declared in header", typeName);
-		return fallback;
+		return false;
 	}
-
-	// read the entry
-	m_fileIn->SetPosition((File ? m_header.file_table_ofs : m_header.dir_table_ofs) + offset);
-	auto read = m_fileIn->readData(&ret, offsetof(EntryType<File>, name));
-	if (read != offsetof(EntryType<File>, name))
+	const uint64 at = (File ? m_header.file_table_ofs : m_header.dir_table_ofs) + offset;
+	if (!ReadAt(at, fixed, offsetof(EntryType<File>, name)))
 	{
 		cemuLog_log(LogType::Force, "failed to read WUHB {} at offset: {}", typeName, offset);
-		return fallback;
+		return false;
 	}
+	nameAt = at + offsetof(EntryType<File>, name);
+	return true;
+}
 
-	// read the name
-	ret.name.resize(ret.name_size);
-	read = m_fileIn->readData(ret.name.data(), ret.name_size);
-	if (read != ret.name_size)
+bool WUHBReader::NameIs(uint64 nameAt, uint32 nameSize, std::string_view name) const
+{
+	if (nameSize != name.size())
+		return false;
+	if (!m_mapped.empty())
+		return nameAt <= m_mapped.size() && m_mapped.size() - nameAt >= nameSize
+			&& memcmp(m_mapped.data() + nameAt, name.data(), nameSize) == 0;
+	char buf[256];
+	for (uint32 done = 0; done < nameSize;)
 	{
-		cemuLog_log(LogType::Force, "failed to read WUHB {} name", typeName);
+		const uint32 n = std::min<uint32>(sizeof(buf), nameSize - done);
+		if (!ReadAt(nameAt + done, buf, n) || memcmp(buf, name.data() + done, n) != 0)
+			return false;
+		done += n;
+	}
+	return true;
+}
+
+template<bool File>
+WUHBReader::EntryType<File> WUHBReader::GetEntry(uint32 offset) const
+{
+	auto fallback = GetFallback<File>();
+	EntryType<File> ret;
+	uint64 nameAt;
+	if (!ReadFixed<File>(offset, &ret, nameAt))
+		return fallback;
+	// the name
+	ret.name.resize(ret.name_size);
+	if (!ReadAt(nameAt, ret.name.data(), ret.name_size))
+	{
+		cemuLog_log(LogType::Force, "failed to read WUHB {} name", File ? "fentry" : "direntry");
 		return fallback;
 	}
-
 	return ret;
 }
 
@@ -96,18 +140,34 @@ romfs_fentry_t WUHBReader::GetFileEntry(uint32 offset) const
 
 uint64 WUHBReader::GetFileSize(uint32 entryOffset) const
 {
-	return GetFileEntry(entryOffset).size;
+	// the fields alone: no name read, nothing allocated
+	romfs_fentry_t fixed;
+	uint64 nameAt;
+	return ReadFixed<true>(entryOffset, &fixed, nameAt) ? (uint64)fixed.size : 0;
 }
 
 uint64 WUHBReader::ReadFromFile(uint32 entryOffset, uint64 fileOffset, uint64 length, void* buffer) const
 {
-	const auto fileEntry = GetFileEntry(entryOffset);
-	if (fileOffset >= fileEntry.size)
+	romfs_fentry_t fileEntry;
+	uint64 nameAt;
+	if (!ReadFixed<true>(entryOffset, &fileEntry, nameAt))
 		return 0;
-	const uint64 readAmount = std::min(length, fileEntry.size - fileOffset);
+	const uint64 size = fileEntry.size;
+	if (fileOffset >= size)
+		return 0;
+	uint64 readAmount = std::min(length, size - fileOffset);
 	const uint64 wuhbOffset = m_header.file_partition_ofs + fileEntry.offset + fileOffset;
+	if (!m_mapped.empty())
+	{
+		// one copy, from the pages; short where the image is
+		if (wuhbOffset >= m_mapped.size())
+			return 0;
+		readAmount = std::min<uint64>(readAmount, m_mapped.size() - wuhbOffset);
+		memcpy(buffer, m_mapped.data() + wuhbOffset, (size_t)readAmount);
+		return readAmount;
+	}
 	m_fileIn->SetPosition(wuhbOffset);
-	return m_fileIn->readData(buffer, readAmount);
+	return m_fileIn->readData(buffer, (uint32)std::min<uint64>(readAmount, 0xFFFFFFFF));
 }
 
 uint32 WUHBReader::GetHashTableEntryOffset(uint32 hash, bool isFile) const
@@ -118,9 +178,8 @@ uint32 WUHBReader::GetHashTableEntryOffset(uint32 hash, bool isFile) const
 	const uint64 hash_table_entry_count = hash_table_size / sizeof(uint32);
 	const uint64 hash_table_entry_offset = hash_table_ofs + (hash % hash_table_entry_count) * sizeof(uint32);
 
-	m_fileIn->SetPosition(hash_table_entry_offset);
 	uint32 tableOffset;
-	if (!m_fileIn->readU32(tableOffset))
+	if (!ReadAt(hash_table_entry_offset, &tableOffset, sizeof(tableOffset)))
 	{
 		cemuLog_log(LogType::Force, "failed to read WUHB hash table entry at file offset: {}", hash_table_entry_offset);
 		return ROMFS_ENTRY_EMPTY;
@@ -130,15 +189,18 @@ uint32 WUHBReader::GetHashTableEntryOffset(uint32 hash, bool isFile) const
 }
 
 template<bool T>
-bool WUHBReader::SearchHashList(uint32& entryOffset, const fs::path& targetName) const
+bool WUHBReader::SearchHashList(uint32& entryOffset, std::string_view targetName) const
 {
-	for (;;)
+	// a chain broken by a bad offset, or one that loops, ends the search
+	for (uint32 steps = 0; steps < 0x100000; steps++)
 	{
 		if (entryOffset == ROMFS_ENTRY_EMPTY)
 			return false;
-		auto entry = GetEntry<T>(entryOffset);
-
-		if (entry.name == targetName)
+		EntryType<T> entry;
+		uint64 nameAt;
+		if (!ReadFixed<T>(entryOffset, &entry, nameAt))
+			return false;
+		if (NameIs(nameAt, entry.name_size, targetName))
 			return true;
 		entryOffset = entry.hash;
 	}
@@ -152,9 +214,9 @@ uint32 WUHBReader::Lookup(const std::filesystem::path& path, bool isFile) const
 		const auto partString = part.string();
 		currentEntryOffset = GetHashTableEntryOffset(CalcPathHash(currentEntryOffset, partString.c_str(), 0, partString.size()), lookInFileHT);
 		if (lookInFileHT)
-			return SearchHashList<true>(currentEntryOffset, part);
+			return SearchHashList<true>(currentEntryOffset, partString);
 		else
-			return SearchHashList<false>(currentEntryOffset, part);
+			return SearchHashList<false>(currentEntryOffset, partString);
 	};
 	// look for the root entry
 	if (!look("", false))
@@ -181,9 +243,7 @@ uint32 WUHBReader::Lookup(const std::filesystem::path& path, bool isFile) const
 bool WUHBReader::CheckMagicValue() const
 {
 	uint8 magic[4];
-	m_fileIn->SetPosition(0);
-	int read = m_fileIn->readData(magic, 4);
-	if (read != 4)
+	if (!ReadAt(0, magic, 4))
 	{
 		cemuLog_log(LogType::Force, "Failed to read WUHB magic numbers");
 		return false;
@@ -193,10 +253,7 @@ bool WUHBReader::CheckMagicValue() const
 }
 bool WUHBReader::ReadHeader()
 {
-	m_fileIn->SetPosition(0);
-	auto read = m_fileIn->readData(&m_header, sizeof(m_header));
-	auto readSuccess = read == sizeof(m_header);
-	if (!readSuccess)
+	if (!ReadAt(0, &m_header, sizeof(m_header)))
 	{
 		cemuLog_log(LogType::Force, "Failed to read WUHB header");
 		return false;

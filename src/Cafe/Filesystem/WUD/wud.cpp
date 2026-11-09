@@ -6,7 +6,9 @@
 
 wud_t* wud_open(const fs::path& path)
 {
-	FileStream* fs = FileStream::openFile2(path);
+	// mapped where it can be: then a read is one copy from the pages, and the
+	// FST decrypts straight from them (wud_lend)
+	FileStream* fs = FileStream::openFileMapped(path);
 	if( !fs )
 		return nullptr;
 	// allocate wud struct
@@ -15,6 +17,10 @@ wud_t* wud_open(const fs::path& path)
 	wud->fs = fs;
 	// get size of file
 	long long inputFileSize = wud->fs->GetSize();
+	wud->fileSize = (unsigned long long)inputFileSize;
+	const std::span<const uint8> mapped = wud->fs->MappedSpan();
+	if (!mapped.empty() && mapped.size() == wud->fileSize)
+		wud->mapped = mapped.data();
 	// determine whether the WUD is compressed or not
 	wuxHeader_t wuxHeader = {0};
 	if( wud->fs->readData(&wuxHeader, sizeof(wuxHeader_t)) != sizeof(wuxHeader_t))
@@ -44,13 +50,28 @@ wud_t* wud_open(const fs::path& path)
 		wud->offsetSectorArray = wud->offsetSectorArray - (wud->offsetSectorArray%(long long)wud->sectorSize);
 		// read index table
 		unsigned int indexTableSize = sizeof(unsigned int) * wud->indexTableEntryCount;
-		wud->indexTable = (unsigned int*)malloc(indexTableSize);
-		wud->fs->SetPosition(wud->offsetIndexTable);
-		if( wud->fs->readData(wud->indexTable, indexTableSize) != indexTableSize )
+		if (wud->offsetSectorArray > inputFileSize)
 		{
-			// could not read index table
+			// too short for its index table
 			wud_close(wud);
 			return nullptr;
+		}
+		if (wud->mapped)
+		{
+			// read where it lies (the header is 32 octets: it lies aligned)
+			wud->indexTable = (const unsigned int*)(wud->mapped + wud->offsetIndexTable);
+		}
+		else
+		{
+			wud->indexTableCopy = (unsigned int*)malloc(indexTableSize);
+			wud->indexTable = wud->indexTableCopy;
+			wud->fs->SetPosition(wud->offsetIndexTable);
+			if( !wud->indexTableCopy || wud->fs->readData(wud->indexTableCopy, indexTableSize) != indexTableSize )
+			{
+				// could not read index table
+				wud_close(wud);
+				return nullptr;
+			}
 		}
 	}
 	else
@@ -64,14 +85,40 @@ wud_t* wud_open(const fs::path& path)
 void wud_close(wud_t* wud)
 {
 	delete wud->fs;
-	if( wud->indexTable )
-		free(wud->indexTable);
+	free(wud->indexTableCopy);
 	free(wud);
 }
 
 bool wud_isWUXCompressed(wud_t* wud)
 {
 	return wud->isCompressed;
+}
+
+// Where the image's octet at offset lies in the file, and how many follow it
+// there in one piece (to its sector's end in a .wux); false past the end
+static bool wud_locate(wud_t* wud, long long offset, unsigned long long& fileOffset, unsigned long long& run)
+{
+	if (offset < 0 || offset >= wud->uncompressedSize)
+		return false;
+	if (!wud->isCompressed)
+	{
+		fileOffset = (unsigned long long)offset;
+		run = (unsigned long long)(wud->uncompressedSize - offset);
+		return true;
+	}
+	const unsigned int sectorOffset = (unsigned int)(offset % (long long)wud->sectorSize);
+	const unsigned int sectorIndex = wud->indexTable[offset / (long long)wud->sectorSize];
+	fileOffset = (unsigned long long)wud->offsetSectorArray + (unsigned long long)sectorIndex * wud->sectorSize + sectorOffset;
+	run = std::min<unsigned long long>(wud->sectorSize - sectorOffset, (unsigned long long)(wud->uncompressedSize - offset));
+	return true;
+}
+
+const unsigned char* wud_lend(wud_t* wud, unsigned int length, long long offset)
+{
+	unsigned long long at, run;
+	if (!wud->mapped || !wud_locate(wud, offset, at, run) || run < length || at > wud->fileSize || wud->fileSize - at < length)
+		return nullptr;
+	return wud->mapped + at;
 }
 
 /*
@@ -86,33 +133,32 @@ unsigned int wud_readData(wud_t* wud, void* buffer, unsigned int length, long lo
 		return 0;
 	if( fileBytesLeft < (long long)length )
 		length = (unsigned int)fileBytesLeft;
-	// read data
+	// read data, a run in one piece at a time: the whole of it in a .wud, up
+	// to a sector's end in a .wux; from the pages where the file is mapped
 	unsigned int readBytes = 0;
-	if( wud->isCompressed == false )
+	while (length > 0)
 	{
-		// uncompressed read is straight forward
-		wud->fs->SetPosition(offset);
-		readBytes = (unsigned int)wud->fs->readData(buffer, length);
-	}
-	else
-	{
-		// compressed read must be handled on a per-sector level
-		while( length > 0 )
+		unsigned long long at, run;
+		if (!wud_locate(wud, offset, at, run))
+			break;
+		const unsigned int n = (unsigned int)std::min<unsigned long long>(run, length);
+		unsigned int got;
+		if (wud->mapped)
 		{
-			unsigned int sectorOffset = (unsigned int)(offset % (long long)wud->sectorSize);
-			unsigned int remainingSectorBytes = wud->sectorSize - sectorOffset;
-			unsigned int sectorIndex = (unsigned int)(offset / (long long)wud->sectorSize);
-			unsigned int bytesToRead = (remainingSectorBytes<length)?remainingSectorBytes:length; // read only up to the end of the current sector
-			// look up real sector index
-			sectorIndex = wud->indexTable[sectorIndex];
-			wud->fs->SetPosition(wud->offsetSectorArray + (long long)sectorIndex * (long long)wud->sectorSize + (long long)sectorOffset);
-			readBytes += (unsigned int)wud->fs->readData(buffer, bytesToRead);
-			// progress read offset, write pointer and decrease length
-			buffer = (void*)((char*)buffer + bytesToRead);
-			length -= bytesToRead;
-			offset += bytesToRead;
-
+			got = at < wud->fileSize ? (unsigned int)std::min<unsigned long long>(n, wud->fileSize - at) : 0;
+			memcpy(buffer, wud->mapped + at, got);
 		}
+		else
+		{
+			wud->fs->SetPosition(at);
+			got = wud->fs->readData(buffer, n);
+		}
+		readBytes += got;
+		if (got != n)
+			break;
+		buffer = (void*)((char*)buffer + n);
+		length -= n;
+		offset += n;
 	}
 	return readBytes;
 }
