@@ -55,6 +55,7 @@ bool g_libretroVkHasExtendedDynamicState = false;
 bool g_libretroVkHasExtendedDynamicState3Blend = false;
 bool g_libretroVkHasExtendedDynamicState2 = false;
 bool g_libretroVkHasVertexInputDynamicState = false;
+bool g_libretroVkHasGraphicsPipelineLibrary = false;
 
 // The device the core and the frontend share. Made with vkCreateDevice
 // (version 1: the frontend's extensions come in as required ones) or
@@ -164,6 +165,10 @@ static bool CreateDevice(
 		VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,
 		// vertex buffer strides and attribute offsets as dynamic state
 		VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME,
+		// pipelines linked from parts compiled ahead, a link at the draw
+		// (VulkanPipelineLibrary.h)
+		VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+		VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
 	};
 	for (auto ext : cemuExtensions)
 	{
@@ -202,6 +207,7 @@ static bool CreateDevice(
 	VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3Supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
 	VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2Supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
 	VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vidsSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
+	VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gplSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
 	{
 		void* chain = nullptr;
 		const auto query = [&](auto& feature, const char* ext) {
@@ -219,6 +225,8 @@ static bool CreateDevice(
 		query(eds3Supported, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 		query(eds2Supported, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
 		query(vidsSupported, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+		if (enabledExt(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME))
+			query(gplSupported, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
 		supportedFeatures2.pNext = chain;
 	}
 
@@ -330,6 +338,22 @@ static bool CreateDevice(
 		vidsFeatures.vertexInputDynamicState = VK_TRUE;
 		chainFeature(vidsFeatures);
 	}
+	// libraries only where linking them is fast: a slow link at the draw
+	// would be the compile it is there to avoid
+	VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gplFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+	if (enabledExt(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && enabledExt(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+		gplSupported.graphicsPipelineLibrary && vkGetPhysicalDeviceProperties2)
+	{
+		VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gplProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+		VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+		properties2.pNext = &gplProperties;
+		vkGetPhysicalDeviceProperties2(gpu, &properties2);
+		if (gplProperties.graphicsPipelineLibraryFastLinking)
+		{
+			gplFeatures.graphicsPipelineLibrary = VK_TRUE;
+			chainFeature(gplFeatures);
+		}
+	}
 
 	VkDeviceCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -375,6 +399,7 @@ static bool CreateDevice(
 	g_libretroVkHasExtendedDynamicState3Blend = eds3Features.extendedDynamicState3ColorBlendEnable == VK_TRUE;
 	g_libretroVkHasExtendedDynamicState2 = eds2Features.extendedDynamicState2 == VK_TRUE;
 	g_libretroVkHasVertexInputDynamicState = vidsFeatures.vertexInputDynamicState == VK_TRUE;
+	g_libretroVkHasGraphicsPipelineLibrary = gplFeatures.graphicsPipelineLibrary == VK_TRUE;
 	{
 		std::string list;
 		for (const std::string& ext : g_libretroVkDeviceExtensions)

@@ -7,16 +7,23 @@
 // draw the same four overlapping quads of four vertices - a triangle as a
 // list, two as a strip or a fan, covering different halves - read from
 // vertex buffers in a layout from the seed, over the same depth and
-// stencil, and the pictures must match to the byte. Both take their values from the functions the pipeline
+// stencil, and the pictures must match to the byte. So does the pipeline
+// with the state left to the draw linked from graphics pipeline libraries
+// (VK_EXT_graphics_pipeline_library) as the renderer links them
+// (VulkanPipelineLibrary.h): its four parts kept in the renderer's cache and
+// shared by every state, linked as they are and optimized. Both take their values from the functions the pipeline
 // compiler and the draw use (VulkanPipelineKey.h). Skipped, said so,
 // without a device that has the extensions - a failure with
 // VN_REQUIRE_DEVICE set, as the CIs set it.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <gfx/shaders/rslc.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -120,6 +127,9 @@ struct Context
 	VkDeviceMemory vertexMem = VK_NULL_HANDLE;
 	uint8_t* vertexData = nullptr;
 	VkPipelineLayout layout = VK_NULL_HANDLE;
+	// the libraries' and linked pipelines', with independent sets as the
+	// renderer's
+	VkPipelineLayout libraryLayout = VK_NULL_HANDLE;
 	VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
 	VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 };
@@ -167,25 +177,30 @@ static bool CreateContext(Context& c)
 		VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
 		e1.pNext = &e3;
 		e3.pNext = &e2;
+		VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
 		e2.pNext = &vi;
+		vi.pNext = &gpl;
 		VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 		f2.pNext = &e1;
 		uint32_t n = 0;
 		vkEnumerateDeviceExtensionProperties(g, nullptr, &n, nullptr);
 		std::vector<VkExtensionProperties> exts(n);
 		vkEnumerateDeviceExtensionProperties(g, nullptr, &n, exts.data());
-		bool has1 = false, has2 = false, has3 = false, hasVi = false;
+		bool has1 = false, has2 = false, has3 = false, hasVi = false, hasLib = false, hasGpl = false;
 		for (auto& e : exts)
 		{
 			has1 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 			has2 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
 			has3 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 			hasVi |= !strcmp(e.extensionName, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+			hasLib |= !strcmp(e.extensionName, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+			hasGpl |= !strcmp(e.extensionName, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
 		}
-		if (!has1 || !has2 || !has3 || !hasVi)
+		if (!has1 || !has2 || !has3 || !hasVi || !hasLib || !hasGpl)
 			continue;
 		vkGetPhysicalDeviceFeatures2(g, &f2);
-		if (e1.extendedDynamicState && e2.extendedDynamicState2 && vi.vertexInputDynamicState && e3.extendedDynamicState3ColorBlendEnable &&
+		if (e1.extendedDynamicState && e2.extendedDynamicState2 && vi.vertexInputDynamicState && gpl.graphicsPipelineLibrary &&
+			e3.extendedDynamicState3ColorBlendEnable &&
 			e3.extendedDynamicState3ColorBlendEquation && e3.extendedDynamicState3ColorWriteMask)
 		{
 			c.gpu = g;
@@ -221,14 +236,18 @@ static bool CreateContext(Context& c)
 	vi.vertexInputDynamicState = VK_TRUE;
 	e1.pNext = &e3;
 	e3.pNext = &e2;
+	VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+	gpl.graphicsPipelineLibrary = VK_TRUE;
 	e2.pNext = &vi;
+	vi.pNext = &gpl;
 	const char* exts[] = {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
-		VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME};
+		VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME,
+		VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME};
 	VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
 	dci.pNext = &e1;
 	dci.queueCreateInfoCount = 1;
 	dci.pQueueCreateInfos = &qi;
-	dci.enabledExtensionCount = 4;
+	dci.enabledExtensionCount = 6;
 	dci.ppEnabledExtensionNames = exts;
 	if (vkCreateDevice(c.gpu, &dci, nullptr, &c.device) != VK_SUCCESS)
 		return false;
@@ -341,6 +360,8 @@ static bool CreateContext(Context& c)
 	pli.pushConstantRangeCount = 1;
 	pli.pPushConstantRanges = &pcr;
 	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &c.layout));
+	pli.flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT;
+	VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &c.libraryLayout));
 
 	auto module = [&](const std::vector<uint32_t>& words) {
 		VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -363,6 +384,7 @@ static void DestroyContext(Context& c)
 		vkDestroyShaderModule(c.device, c.vs, nullptr);
 		vkDestroyShaderModule(c.device, c.fs, nullptr);
 		vkDestroyPipelineLayout(c.device, c.layout, nullptr);
+		vkDestroyPipelineLayout(c.device, c.libraryLayout, nullptr);
 		vkDestroyBuffer(c.device, c.readback, nullptr);
 		vkDestroyBuffer(c.device, c.vertices, nullptr);
 		vkDestroyFramebuffer(c.device, c.framebuffer, nullptr);
@@ -383,7 +405,17 @@ static void DestroyContext(Context& c)
 }
 
 // a pipeline with the state baked in (dynamicState false) or left to the draw
-static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr, const VertexLayout& layout, bool dynamicState)
+// libraries: linked from parts as the renderer links them (the state left
+// to the draw then), the parts kept in the cache under their keys, or made
+// for this pipeline alone and adopted by it (adopt)
+struct Libraries
+{
+	VulkanPipelineLibraryCache* cache;
+	bool optimize;
+	bool adopt;
+};
+static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr, const VertexLayout& layout, bool dynamicState,
+	const Libraries* libraries = nullptr)
 {
 	const VulkanDepthStencilCull dsc = VulkanPipelineKey_DepthStencilCull(lcr);
 	const VulkanRasterizerEnables re = VulkanPipelineKey_Rasterizer(lcr);
@@ -468,7 +500,9 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 	dsi.dynamicStateCount = (uint32_t)dyn.size();
 	dsi.pDynamicStates = dyn.data();
 	VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-	gp.stageCount = 2;
+	// a pipeline with rasterizer discard baked in has no fragment shader
+	// state, so no pixel shader (VUID-VkGraphicsPipelineCreateInfo-pStages-06894)
+	gp.stageCount = (!dynamicState && re.rasterizerDiscardEnable) ? 1 : 2;
 	gp.pStages = stages;
 	gp.pVertexInputState = &vin;
 	gp.pInputAssemblyState = &ia;
@@ -481,14 +515,42 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 	gp.layout = c.layout;
 	gp.renderPass = c.renderPass;
 	VkPipeline p;
-	VKCHECK(vkCreateGraphicsPipelines(c.device, VK_NULL_HANDLE, 1, &gp, nullptr, &p));
+	if (!libraries)
+	{
+		VKCHECK(vkCreateGraphicsPipelines(c.device, VK_NULL_HANDLE, 1, &gp, nullptr, &p));
+		return p;
+	}
+	// the renderer's identity of the parts: the shaders by hash, the render
+	// pass by compatibility
+	gp.layout = c.libraryLayout;
+	const VulkanPipelineLibraryIdentity identity{0x1111, 0, 0x2222, 0x3333, false};
+	VkPipeline parts[VULKAN_PIPELINE_LIBRARY_PARTS]{};
+	for (int i = 0; i < VULKAN_PIPELINE_LIBRARY_PARTS; i++)
+	{
+		const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)i;
+		const VkPipelineLayout partLayout = (part == VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION || part == VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER) ?
+			c.libraryLayout : VK_NULL_HANDLE;
+		if (libraries->adopt)
+		{
+			VKCHECK(VulkanPipelineLibrary_Create(c.device, VK_NULL_HANDLE, part, gp, partLayout, &parts[i]));
+			libraries->cache->Adopt(parts[i]);
+			continue;
+		}
+		const uint64 key = VulkanPipelineLibrary_Key(part, gp, identity);
+		if (libraries->cache->Find(part, key, parts[i]) == VulkanPipelineLibraryCache::State::Ready)
+			continue;
+		CHECK(libraries->cache->Claim(part, key));
+		VKCHECK(VulkanPipelineLibrary_Create(c.device, VK_NULL_HANDLE, part, gp, partLayout, &parts[i]));
+		libraries->cache->Publish(part, key, parts[i]);
+	}
+	VKCHECK(VulkanPipelineLibrary_Link(c.device, VK_NULL_HANDLE, parts, c.libraryLayout, libraries->optimize, &p));
 	return p;
 }
 
 // four overlapping triangles over a cleared depth and stencil, drawn with
 // the pipeline; the picture
 static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteContextRegister& lcr, const VertexLayout& layout,
-	bool dynamicState)
+	bool dynamicState, bool linked = false)
 {
 	VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
 	cai.commandPool = c.pool;
@@ -510,18 +572,24 @@ static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteCont
 	rbi.pClearValues = clears;
 	vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+	// nor any fragment state to set (VUID-vkCmdDraw-None-08608)
+	const bool fragments = dynamicState || !VulkanPipelineKey_Rasterizer(lcr).rasterizerDiscardEnable;
 	const float constants[4] = {0.25f, 0.5f, 0.75f, 1.0f};
-	vkCmdSetBlendConstants(cb, constants);
+	if (fragments)
+		vkCmdSetBlendConstants(cb, constants);
 	// the stencil reference and masks: dynamic in every pipeline
 	const auto& front = lcr.DB_STENCILREFMASK;
 	const auto& back = lcr.DB_STENCILREFMASK_BF;
 	const bool twoSided = lcr.DB_DEPTH_CONTROL.get_BACK_STENCIL_ENABLE();
-	vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILMASK_F());
-	vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILWRITEMASK_F());
-	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILREF_F());
-	vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILMASK_B() : front.get_STENCILMASK_F());
-	vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILWRITEMASK_B() : front.get_STENCILWRITEMASK_F());
-	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILREF_B() : front.get_STENCILREF_F());
+	if (fragments)
+	{
+		vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILMASK_F());
+		vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILWRITEMASK_F());
+		vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILREF_F());
+		vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILMASK_B() : front.get_STENCILMASK_F());
+		vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILWRITEMASK_B() : front.get_STENCILWRITEMASK_F());
+		vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILREF_B() : front.get_STENCILREF_F());
+	}
 	// the depth bias values: dynamic in every pipeline that may use them
 	// (VulkanRenderer::draw_updateDepthBias)
 	vkCmdSetDepthBias(cb, lcr.PA_SU_POLY_OFFSET_FRONT_OFFSET.get_OFFSET(), lcr.PA_SU_POLY_OFFSET_CLAMP.get_CLAMP(),
@@ -555,7 +623,8 @@ static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteCont
 	vkCmdBindVertexBuffers(cb, layout.instanceBuffer, 1, &buffers[1], &offsets[1]);
 	for (uint32 d = 0; d < 4; d++)
 	{
-		vkCmdPushConstants(cb, c.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(draws[d]), &draws[d]);
+		vkCmdPushConstants(cb, linked ? c.libraryLayout : c.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+			sizeof(draws[d]), &draws[d]);
 		// each draw its four vertices and the instance with its scale
 		vkCmdDraw(cb, 4, 1, d * 4, d);
 	}
@@ -678,13 +747,17 @@ int main()
 	Context c;
 	if (!CreateContext(c))
 	{
-		Skip("no Vulkan device with extended dynamic state, _2, _3's blend states and vertex input dynamic state");
+		Skip("no Vulkan device with extended dynamic state, _2, _3's blend states, vertex input dynamic state and graphics pipeline libraries");
 	}
 	else
 	{
 		std::mt19937 rng(0x5eed);
 		const int states = 400;
-		int differing = 0;
+		int differing = 0, linkedDiffering = 0;
+		std::vector<double> createMicros, fastMicros, optimizedMicros;
+		auto cache = std::make_unique<VulkanPipelineLibraryCache>();
+		auto adopted = std::make_unique<VulkanPipelineLibraryCache>();
+		const Libraries fast{cache.get(), false, false}, optimized{cache.get(), true, false}, alone{adopted.get(), false, true};
 		auto lcr = std::make_unique<LatteContextRegister>();
 		for (int i = 0; i < states; i++)
 		{
@@ -693,7 +766,9 @@ int main()
 			auto layout = std::make_unique<VertexLayout>();
 			RandomLayout(rng, *lcr, *layout, c.vertexData);
 			VkPipeline baked = MakePipeline(c, *lcr, *layout, false);
+			const auto t0 = std::chrono::steady_clock::now();
 			VkPipeline dynamic = MakePipeline(c, *lcr, *layout, true);
+			createMicros.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
 			const std::vector<uint8_t> a = Draw(c, baked, *lcr, *layout, false);
 			const std::vector<uint8_t> b = Draw(c, dynamic, *lcr, *layout, true);
 			if (a != b)
@@ -704,11 +779,51 @@ int main()
 						lcr->GetRawView()[Latte::REGADDR::CB_BLEND0_CONTROL], lcr->GetRawView()[Latte::REGADDR::PA_CL_CLIP_CNTL],
 						lcr->GetRawView()[Latte::REGADDR::PA_CL_VTE_CNTL]);
 			}
+			// linked from the parts: as they are, optimized, and from parts
+			// made for it alone (every 50th state)
+			for (const Libraries* libraries : {&fast, &optimized, &alone})
+			{
+				if (libraries == &alone && i % 50 != 0)
+					continue;
+				const auto t1 = std::chrono::steady_clock::now();
+				VkPipeline linked = MakePipeline(c, *lcr, *layout, true, libraries);
+				const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t1).count();
+				// the parts made by then: the link alone
+				if (i > 0 && libraries == &fast)
+					fastMicros.push_back(us);
+				else if (i > 0 && libraries == &optimized)
+					optimizedMicros.push_back(us);
+				if (Draw(c, linked, *lcr, *layout, true, true) != a)
+				{
+					if (linkedDiffering++ < 5)
+						std::printf("FAIL: state %d draws differently linked from libraries (%s)\n", i,
+							libraries == &fast ? "fast" : libraries == &optimized ? "optimized" : "adopted parts");
+				}
+				vkDestroyPipeline(c.device, linked, nullptr);
+			}
 			vkDestroyPipeline(c.device, baked, nullptr);
 			vkDestroyPipeline(c.device, dynamic, nullptr);
 		}
-		s_failures += differing;
+		s_failures += differing + linkedDiffering;
 		std::printf("%d register states drawn baked and dynamic: %d differ\n", states, differing);
+		std::printf("%d register states linked from libraries (fast, optimized): %d differ\n", states, linkedDiffering);
+		// on this machine's driver, not gated: the whole pipeline compiled,
+		// and the parts linked
+		auto median = [](std::vector<double> v) {
+			std::sort(v.begin(), v.end());
+			return v.empty() ? 0.0 : v[v.size() / 2];
+		};
+		std::printf("median per pipeline (not gated): compiled %.0f us, linked fast %.0f us, linked optimized %.0f us\n",
+			median(createMicros), median(fastMicros), median(optimizedMicros));
+		// the state all left to the draw: one of each part for every state
+		std::printf("libraries made for %d states: %zu vertex input, %zu pre-rasterization, %zu fragment shader, %zu fragment output\n",
+			states, cache->Count(VULKAN_PIPELINE_LIBRARY_VERTEX_INPUT), cache->Count(VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION),
+			cache->Count(VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER), cache->Count(VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT));
+		for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+			CHECK(cache->Count((VulkanPipelineLibraryPart)p) == 1);
+		// the parts last, every pipeline linked from them gone
+		cache->DestroyAll(c.device);
+		adopted->DestroyAll(c.device);
 	}
 	DestroyContext(c);
 	if (s_failures)

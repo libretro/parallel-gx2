@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
+#include "Cafe/HW/Latte/Core/PsoTrace.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -118,6 +119,9 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 PipelineCompiler::PipelineCompiler() {};
 PipelineCompiler::~PipelineCompiler()
 {
+	for (VkPipelineLayout layout : m_partLayout)
+		if (layout != VK_NULL_HANDLE)
+			vkDestroyPipelineLayout(VulkanRenderer::GetInstance()->GetLogicalDevice(), layout, nullptr);
 	if (m_vkrObjPipeline)
 		m_vkrObjPipeline->decRef();
 	if (m_renderPassObj)
@@ -567,8 +571,14 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 
 	// ##########################################################################################################################################
 
+	// with graphics pipeline libraries every pipeline is linked from parts,
+	// each with only its own shaders' sets: the layouts' sets are
+	// independent (a layout's flags are part of what it is compatible with,
+	// so no pipeline is made whole then)
+	const bool libraries = vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library;
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.flags = libraries ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0;
 	pipelineLayoutInfo.setLayoutCount = descriptorSetLayoutCount;
 	pipelineLayoutInfo.pSetLayouts = descriptorSetLayout;
 	pipelineLayoutInfo.pPushConstantRanges = nullptr;
@@ -579,6 +589,27 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 	{
 		cemuLog_log(LogType::Force, "Failed to create pipeline layout: {}", result);
 		return false;
+	}
+	if (libraries)
+	{
+		// the vertex and geometry shaders' sets (0, 2), the pixel shader's (1)
+		VkDescriptorSetLayout pre[3] = {
+			descriptorSetLayoutCount > 0 ? descriptorSetLayout[0] : VK_NULL_HANDLE, VK_NULL_HANDLE,
+			descriptorSetLayoutCount > 2 ? descriptorSetLayout[2] : VK_NULL_HANDLE};
+		VkDescriptorSetLayout frag[2] = {VK_NULL_HANDLE, pipelineInfo->pixelShader ? descriptorSetLayout[1] : VK_NULL_HANDLE};
+		VkPipelineLayoutCreateInfo partInfo = pipelineLayoutInfo;
+		partInfo.setLayoutCount = (uint32)descriptorSetLayoutCount;
+		partInfo.pSetLayouts = pre;
+		result = vkCreatePipelineLayout(vkRenderer->m_logicalDevice, &partInfo, nullptr, &m_partLayout[VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION]);
+		partInfo.setLayoutCount = pipelineInfo->pixelShader ? 2 : 0;
+		partInfo.pSetLayouts = frag;
+		if (result == VK_SUCCESS)
+			result = vkCreatePipelineLayout(vkRenderer->m_logicalDevice, &partInfo, nullptr, &m_partLayout[VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER]);
+		if (result != VK_SUCCESS)
+		{
+			cemuLog_log(LogType::Force, "Failed to create pipeline library layout: {}", result);
+			return false;
+		}
 	}
 
 	// ###################################################
@@ -670,6 +701,9 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 
 	pipelineInfo.pNext = prevStruct;
 
+	if (vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library)
+		return CompileFromLibraries(pipelineInfo, forceCompile, isRenderThread);
+
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	VkResult result;
 	uint8 retryCount = 0;
@@ -724,6 +758,144 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	}
 	vkRenderer->m_pipeline_cache_semaphore.notify();
 
+	return true;
+}
+
+// pipelines the compile threads linked optimized, for the GPU thread to put
+// in the fast-linked ones' place
+static MpmcQueue<PipelineCompiler::OptimizedPipeline> s_optimizedPipelines;
+
+bool PipelineCompiler::TakeOptimizedPipeline(OptimizedPipeline& result)
+{
+	return s_optimizedPipelines.peek2(result);
+}
+
+// The pipeline from its four parts (VulkanPipelineLibrary.h): each found
+// made, or made here and kept for the pipelines after it, then linked.
+// Without forceCompile nothing is compiled: a part not made yet - or only
+// made by the driver's cache - leaves it to a compile thread (false). On
+// the GPU thread the parts are linked as they are, a link and no compile,
+// and a compile thread links them optimized, which then takes its place;
+// on a compile thread they are linked optimized at once.
+bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread)
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	VulkanPipelineLibraryCache& cache = *vkRenderer->m_pipelineLibraries;
+	const VkDevice device = vkRenderer->m_logicalDevice;
+	auto shaderHash = [](RendererShaderVk* shader) {
+		return shader ? shader->GetBaseHash() * 0x9E3779B97F4A7C15ull + shader->GetAuxHash() + 1 : 0;
+	};
+	VulkanPipelineLibraryIdentity identity{};
+	identity.vertexShader = shaderHash(m_vkVertexShader);
+	// the rect emulation geometry shader is made for this pipeline: its part
+	// is too, under a number no other part has (one per compiler, so that a
+	// compile thread's try finds the GPU thread's)
+	static std::atomic<uint64> s_rectEmulationSerial{0};
+	if (m_rectEmulationGS && m_rectEmulationSerial == 0)
+		m_rectEmulationSerial = (1ull << 63) | s_rectEmulationSerial.fetch_add(1, std::memory_order_relaxed);
+	identity.geometryShader = m_vkGeometryShader ? shaderHash(m_vkGeometryShader) : m_rectEmulationSerial;
+	identity.pixelShader = shaderHash(m_vkPixelShader);
+	identity.renderPass = m_renderPassObj->m_hashForPipeline;
+	identity.robustBufferAccess = m_requestRobustBufferAccess;
+
+	VkPipeline libraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
+	bool ok = true;
+	for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS && ok; p++)
+	{
+		const VulkanPipelineLibraryPart part = (VulkanPipelineLibraryPart)p;
+		const uint64 key = VulkanPipelineLibrary_Key(part, full, identity);
+		VkPipeline library = VK_NULL_HANDLE;
+		const VulkanPipelineLibraryCache::State state = cache.Find(part, key, library);
+		if (state == VulkanPipelineLibraryCache::State::Ready)
+		{
+			libraries[p] = library;
+			continue;
+		}
+		const bool claimed = state == VulkanPipelineLibraryCache::State::Missing && cache.Claim(part, key);
+		if (!forceCompile && !claimed)
+		{
+			ok = false; // being made elsewhere
+			break;
+		}
+		// made here: under the claim, or adopted by the cache when the key is
+		// another thread's (a pipeline needs its parts for as long as it
+		// lives); without forceCompile only out of the driver's cache
+		VkGraphicsPipelineCreateInfo ci = full;
+		if (!forceCompile)
+			ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+		else
+			ci.flags &= ~VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+		PSO_TRACE_SCOPE(isRenderThread ? (forceCompile ? "pipeline library sync" : "pipeline library from cache") : "pipeline library", key);
+		vkRenderer->m_pipeline_cache_builds.Enter();
+		const VkResult result = VulkanPipelineLibrary_Create(device, vkRenderer->m_pipeline_cache, part, ci, m_partLayout[p], &library);
+		vkRenderer->m_pipeline_cache_builds.Leave();
+		if (result != VK_SUCCESS)
+			library = VK_NULL_HANDLE;
+		if (claimed)
+			cache.Publish(part, key, library);
+		else if (library != VK_NULL_HANDLE)
+			cache.Adopt(library);
+		if (library == VK_NULL_HANDLE)
+		{
+			if (result != VK_PIPELINE_COMPILE_REQUIRED_EXT)
+			{
+				cemuLog_log(LogType::Force, "Failed to create graphics pipeline library part {}: {}", p, (sint32)result);
+				return true; // no use trying again
+			}
+			ok = false;
+			break;
+		}
+		libraries[p] = library;
+	}
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	if (ok)
+	{
+		// linked as they are on the GPU thread, optimized elsewhere
+		const bool optimize = !isRenderThread;
+		PSO_TRACE_SCOPE(optimize ? "pipeline link optimized" : "pipeline fast link", (uint64)m_vkrObjPipeline);
+		vkRenderer->m_pipeline_cache_builds.Enter();
+		const VkResult result = VulkanPipelineLibrary_Link(device, vkRenderer->m_pipeline_cache, libraries, m_pipelineLayout, optimize, &pipeline);
+		vkRenderer->m_pipeline_cache_builds.Leave();
+		if (result != VK_SUCCESS)
+		{
+			cemuLog_log(LogType::Force, "Failed to link graphics pipeline libraries: {}", (sint32)result);
+			pipeline = VK_NULL_HANDLE;
+		}
+	}
+	if (!ok)
+		return false;
+	if (pipeline == VK_NULL_HANDLE)
+		return true;
+	m_vkrObjPipeline->SetPipeline(pipeline);
+	vkRenderer->m_pipeline_cache_semaphore.notify();
+	if (isRenderThread)
+	{
+		// the optimized one, from the same parts, on a compile thread
+		PipelineCompiler* job = new PipelineCompiler();
+		job->m_linkOptimizedOnly = true;
+		job->m_vkrObjPipeline = m_vkrObjPipeline;
+		m_vkrObjPipeline->incRef();
+		std::copy(std::begin(libraries), std::end(libraries), job->m_linkLibraries);
+		job->m_pipelineLayout = m_pipelineLayout;
+		CompileThreadPool_QueueCompilation(job);
+	}
+	return true;
+}
+
+// a compile thread's: the parts linked optimized, handed to the GPU thread
+bool PipelineCompiler::LinkOptimized()
+{
+	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	vkRenderer->m_pipeline_cache_builds.Enter();
+	const VkResult result = VulkanPipelineLibrary_Link(vkRenderer->m_logicalDevice, vkRenderer->m_pipeline_cache, m_linkLibraries,
+		m_pipelineLayout, true, &pipeline);
+	vkRenderer->m_pipeline_cache_builds.Leave();
+	if (result != VK_SUCCESS)
+		return true; // the fast-linked one stays
+	m_vkrObjPipeline->incRef();
+	s_optimizedPipelines.push({m_vkrObjPipeline, pipeline});
+	vkRenderer->m_pipeline_cache_semaphore.notify();
 	return true;
 }
 
@@ -782,7 +954,10 @@ static void compilePipeline_thread(sint32 threadIndex)
 		PipelineCompiler* request = s_pipelineCompileRequests.pop();
 		if (!request)
 			continue;
-		request->Compile(true, false, true);
+		if (request->m_linkOptimizedOnly)
+			request->LinkOptimized();
+		else
+			request->Compile(true, false, true);
 		delete request;
 	}
 }

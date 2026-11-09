@@ -21,9 +21,11 @@ endif
 LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/gfx/shaders/rslc_dxbc.c \
 	$(LRC)/compat/compat_strl.c
 SRCS := dynstate_test.cpp stubs.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp
 
-dynstate_test$(EXE): $(SRCS) $(LRC_SRCS) $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h
+dynstate_test$(EXE): $(SRCS) $(LRC_SRCS) $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(SRCS) *.o $(LIBS) -o $@
 	rm -f *.o

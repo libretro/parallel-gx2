@@ -22,3 +22,4 @@ extern bool g_libretroVkHasExtendedDynamicState;
 extern bool g_libretroVkHasExtendedDynamicState3Blend;
 extern bool g_libretroVkHasExtendedDynamicState2;
 extern bool g_libretroVkHasVertexInputDynamicState;
+extern bool g_libretroVkHasGraphicsPipelineLibrary;

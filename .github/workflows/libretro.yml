@@ -171,26 +171,32 @@ jobs:
 
       - name: "Vulkan pipeline key"
         # state the pipelines take as dynamic state makes no new pipeline,
-        # and everything a pipeline bakes in still does: plain, then under
-        # ASan + UBSan. The core's precompiled header wants fmt and glm, the
-        # state the draw sets the Vulkan headers.
+        # and everything a pipeline bakes in still does; the pipeline
+        # library parts' keys and their lock-free cache: plain, under ASan +
+        # UBSan, and the cache's threads under TSan. The core's precompiled
+        # header wants fmt and glm, the state the draw sets the Vulkan headers.
         run: |
           git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
           ./test/pipeline_key/run_tests.sh
           make -C test/pipeline_key clean
           SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
+          make -C test/pipeline_key clean
+          SANITIZER=thread ./test/pipeline_key/run_tests.sh
 
       - name: "Dynamic state drawn"
-        # register states from a seed drawn on lavapipe with the depth,
-        # stencil, cull and blend state baked into the pipeline and left to
-        # the draw: the pictures match to the byte; plain, then under ASan +
-        # UBSan
+        # register states from a seed drawn on lavapipe with the state the
+        # draw can set baked into the pipeline, left to the draw, and linked
+        # from graphics pipeline libraries: the pictures match to the byte;
+        # plain, under ASan + UBSan, and under the Khronos validation layer,
+        # where any error fails
         run: |
           git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
-          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
           VN_REQUIRE_DEVICE=1 ./test/dynstate/run_tests.sh
           make -C test/dynstate clean
           VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined ./test/dynstate/run_tests.sh
+          make -C test/dynstate clean
+          VN_REQUIRE_DEVICE=1 VN_VALIDATE=1 ./test/dynstate/run_tests.sh
 
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings

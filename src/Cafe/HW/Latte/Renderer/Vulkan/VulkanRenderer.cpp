@@ -324,6 +324,7 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 		extern bool g_libretroVkHasPipelineRobustness, g_libretroVkHasDepthClipEnable;
 		extern bool g_libretroVkHasExtendedDynamicState, g_libretroVkHasExtendedDynamicState3Blend;
 		extern bool g_libretroVkHasExtendedDynamicState2, g_libretroVkHasVertexInputDynamicState;
+		extern bool g_libretroVkHasGraphicsPipelineLibrary;
 		const auto enabled = [](const char* name) {
 			return std::find(g_libretroVkDeviceExtensions.begin(), g_libretroVkDeviceExtensions.end(), name) != g_libretroVkDeviceExtensions.end();
 		};
@@ -367,6 +368,10 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 		ext.extended_dynamic_state3_blend = g_libretroVkHasExtendedDynamicState3Blend && enabled(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 		ext.extended_dynamic_state2 = g_libretroVkHasExtendedDynamicState2 && enabled(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
 		ext.vertex_input_dynamic_state = g_libretroVkHasVertexInputDynamicState && enabled(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+		// with rasterizer discard dynamic (_2): baked in, a pipeline would
+		// have no fragment shader state and take only two of the parts
+		ext.graphics_pipeline_library = g_libretroVkHasGraphicsPipelineLibrary && enabled(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+			enabled(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && ext.extended_dynamic_state2;
 	}
 
 	memoryManager.reset(new VKRMemoryManager(this));
@@ -421,6 +426,8 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 	// there is: a black screen that never fills in, for as long as the title
 	// runs.
 	RendererShaderVk::Init();                    // shaders
+	if (m_featureControl.deviceExtensions.graphics_pipeline_library)
+		m_pipelineLibraries = std::make_unique<VulkanPipelineLibraryCache>();
 	PipelineCompiler::CompileThreadPool_Start(); // pipelines
 	cemuLog_log(LogType::Force, "VulkanRenderer (libretro shared device) initialized successfully");
 }
@@ -702,6 +709,9 @@ VulkanRenderer::~VulkanRenderer()
 
 	while (m_destructionQueueSize.load(std::memory_order_relaxed) != 0)
 		ProcessDestructionQueue();
+	// the pipelines' parts, once no pipeline linked from them is left
+	if (m_pipelineLibraries)
+		m_pipelineLibraries->DestroyAll(m_logicalDevice);
 
 	// destroy memory manager
 	memoryManager.reset();
@@ -1317,6 +1327,15 @@ void VulkanRenderer::Shutdown()
 	// stop compilation threads
 	RendererShaderVk::Shutdown();
 	PipelineCompiler::CompileThreadPool_Stop();
+	// optimized pipelines no draw took (the device is idle, no compile
+	// thread runs); the parts they were linked from go last, in the
+	// destructor
+	PipelineCompiler::OptimizedPipeline optimized;
+	while (PipelineCompiler::TakeOptimizedPipeline(optimized))
+	{
+		vkDestroyPipeline(m_logicalDevice, optimized.pipeline, nullptr);
+		optimized.object->decRef();
+	}
 
 	Renderer::Shutdown();
 	RendererShaderVk::Shutdown();

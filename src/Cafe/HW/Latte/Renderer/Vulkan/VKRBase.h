@@ -215,6 +215,14 @@ public:
 
 	void SetPipeline(VkPipeline newPipeline);
 	VkPipeline GetPipeline() const { return m_pipeline; }
+	// the optimized pipeline in the fast-linked one's place; the GPU
+	// thread's only. The one replaced, for the caller to release
+	VkPipeline ReplacePipeline(VkPipeline newPipeline)
+	{
+		VkPipeline old = m_pipeline;
+		m_pipeline = newPipeline;
+		return old;
+	}
 
 	VkDescriptorSetLayout m_vertexDSL = VK_NULL_HANDLE, m_pixelDSL = VK_NULL_HANDLE, m_geometryDSL = VK_NULL_HANDLE;
 	VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;

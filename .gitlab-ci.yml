@@ -249,10 +249,13 @@ test-pipeline-key:
     - ./test/pipeline_key/run_tests.sh
     - make -C test/pipeline_key clean
     - SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
+    - make -C test/pipeline_key clean
+    - SANITIZER=thread ./test/pipeline_key/run_tests.sh
 
-# Register states from a seed drawn on lavapipe with the depth, stencil, cull
-# and blend state baked into the pipeline and left to the draw: the pictures
-# match to the byte.
+# Register states from a seed drawn on lavapipe with the state the draw can
+# set baked into the pipeline, left to the draw, and linked from graphics
+# pipeline libraries: the pictures match to the byte; plain, under ASan +
+# UBSan, and under the Khronos validation layer, where any error fails.
 test-dynstate:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
@@ -265,11 +268,13 @@ test-dynstate:
     VN_REQUIRE_DEVICE: "1"
   before_script:
     - apt-get update -qq
-    - apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+    - apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-validationlayers
   script:
     - ./test/dynstate/run_tests.sh
     - make -C test/dynstate clean
     - SANITIZER=address,undefined ./test/dynstate/run_tests.sh
+    - make -C test/dynstate clean
+    - VN_VALIDATE=1 ./test/dynstate/run_tests.sh
 
 # The core's XML layer over libretro-common's rxml and the settings files on
 # it. The core's precompiled header wants fmt and glm.

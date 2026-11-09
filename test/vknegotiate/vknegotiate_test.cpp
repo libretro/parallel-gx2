@@ -201,6 +201,32 @@ static void TestDevices()
 		else
 			CHECK(!g_libretroVkHasVertexInputDynamicState);
 		std::printf("dynamic vertex input: %s\n", gpuVi ? (g_libretroVkHasVertexInputDynamicState ? "on" : "NOT ON") : "the GPU has none");
+		// graphics pipeline libraries where the GPU has them and links them fast
+		bool gpuGpl = false, gpuLib = false;
+		for (auto& e : exts)
+		{
+			gpuGpl = gpuGpl || !strcmp(e.extensionName, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+			gpuLib = gpuLib || !strcmp(e.extensionName, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+		}
+		gpuGpl = gpuGpl && gpuLib;
+		if (gpuGpl)
+		{
+			VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT fg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+			VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			f2.pNext = &fg;
+			vkGetPhysicalDeviceFeatures2(gpu, &f2);
+			VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT pg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+			VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+			p2.pNext = &pg;
+			vkGetPhysicalDeviceProperties2(gpu, &p2);
+			gpuGpl = fg.graphicsPipelineLibrary == VK_TRUE && pg.graphicsPipelineLibraryFastLinking == VK_TRUE;
+		}
+		if (gpuGpl)
+			CHECK(g_libretroVkHasGraphicsPipelineLibrary && Has(w.asked, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+				Has(w.asked, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME));
+		else
+			CHECK(!g_libretroVkHasGraphicsPipelineLibrary);
+		std::printf("graphics pipeline libraries: %s\n", gpuGpl ? (g_libretroVkHasGraphicsPipelineLibrary ? "on" : "NOT ON") : "the GPU has none with fast linking");
 		const char* own = nullptr;
 		for (auto& e : exts)
 			if (!Has(w.asked, e.extensionName))

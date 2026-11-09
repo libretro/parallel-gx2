@@ -431,6 +431,7 @@ ifeq ($(HAVE_VULKAN),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
+	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanQuery.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp \

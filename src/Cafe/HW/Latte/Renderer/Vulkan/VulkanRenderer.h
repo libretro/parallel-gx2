@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureViewVk.h"
@@ -486,6 +487,7 @@ private:
 			bool extended_dynamic_state3_blend = false; // VK_EXT_extended_dynamic_state3: color blend enable, equation and write mask
 			bool extended_dynamic_state2 = false; // VK_EXT_extended_dynamic_state2: depth bias enable, rasterizer discard
 			bool vertex_input_dynamic_state = false; // VK_EXT_vertex_input_dynamic_state: vertex buffer strides, attribute offsets
+			bool graphics_pipeline_library = false; // VK_EXT_graphics_pipeline_library with fast linking: pipelines linked from parts
 			bool pipeline_robustness = false; // VK_EXT_pipeline_robustness
 			bool attachment_feedback_loop_layout = false; // VK_EXT_attachment_feedback_loop_layout
 			bool attachment_feedback_loop_dynamic_state = false; // VK_EXT_attachment_feedback_loop_dynamic_state (this is forced to false if VK_EXT_attachment_feedback_loop_layout is not supported)
@@ -554,6 +556,7 @@ private:
 	void draw_updateRasterizer(bool forceUpdate);
 	void draw_updateVertexInput(bool forceUpdate, const PipelineInfo* pipelineInfo);
 	void draw_updateInputAssembly(bool forceUpdate);
+	void draw_takeOptimizedPipelines();
 #ifdef PSO_TRACE
 	void draw_record();
 #endif
@@ -623,6 +626,8 @@ private:
 	// Its wake also ends the save thread's waits when the renderer goes away.
 	IdleWait m_pipeline_cache_builds;
 	VkPipelineCache m_pipeline_cache{ nullptr };
+	// the parts of pipelines made so far, with graphics pipeline libraries
+	std::unique_ptr<VulkanPipelineLibraryCache> m_pipelineLibraries;
 	std::unordered_map<uint64, VkDescriptorSet> m_backbufferBlitDescriptorSetCache;
 	VkPipelineLayout m_pipelineLayout{nullptr};
 	VkCommandPool m_commandPool{ nullptr };

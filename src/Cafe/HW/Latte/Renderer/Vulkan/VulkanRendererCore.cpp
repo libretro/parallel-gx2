@@ -1451,8 +1451,30 @@ void VulkanRenderer::draw_beginSequence()
 		m_state.drawSequenceSkip = true;
 }
 
+// The pipelines the compile threads linked optimized, each in the place of
+// the fast-linked one a draw has been using; that one is released once the
+// command buffers that may use it are done
+void VulkanRenderer::draw_takeOptimizedPipelines()
+{
+	PipelineCompiler::OptimizedPipeline optimized;
+	while (PipelineCompiler::TakeOptimizedPipeline(optimized))
+	{
+		const VkPipeline old = optimized.object->ReplacePipeline(optimized.pipeline);
+		if (old != VK_NULL_HANDLE)
+		{
+			VKRObjectPipeline* released = new VKRObjectPipeline();
+			released->SetPipeline(old);
+			released->flagForCurrentCommandBuffer();
+			ReleaseDestructibleObject(released);
+		}
+		optimized.object->decRef();
+	}
+}
+
 void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, const LatteDrawcallContext& drawcallContext)
 {
+	if (m_pipelineLibraries)
+		draw_takeOptimizedPipelines();
 	if (m_state.drawSequenceSkip)
 	{
 		return;

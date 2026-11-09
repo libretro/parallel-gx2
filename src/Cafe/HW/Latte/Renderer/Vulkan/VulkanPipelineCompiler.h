@@ -1,6 +1,7 @@
 #pragma once
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "VKRBase.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 
 class PipelineCompiler : public VKRMoveableRefCounter
 {
@@ -89,5 +90,31 @@ public:
 
 	// returns true if the shader was compiled (even if errors occurred)
 	bool Compile(bool forceCompile, bool isRenderThread, bool showInOverlay);
+
+	/* graphics pipeline libraries (VulkanPipelineLibrary.h) */
+
+	// the parts' own layouts: the pre-rasterization shaders' sets and the
+	// pixel shader's (the whole pipeline's is m_pipelineLayout)
+	VkPipelineLayout m_partLayout[VULKAN_PIPELINE_LIBRARY_PARTS]{};
+	// a job for a compile thread that only links the parts, optimized, and
+	// hands the pipeline to the GPU thread to take the fast-linked one's
+	// place (VulkanRenderer::draw_takeOptimizedPipelines)
+	bool m_linkOptimizedOnly{false};
+	uint64 m_rectEmulationSerial{0};
+	VkPipeline m_linkLibraries[VULKAN_PIPELINE_LIBRARY_PARTS]{};
+	// a pipeline the compile threads linked optimized, for the GPU thread
+	struct OptimizedPipeline
+	{
+		VKRObjectPipeline* object; // a reference held until taken
+		VkPipeline pipeline;
+	};
+	static bool TakeOptimizedPipeline(OptimizedPipeline& result);
+
+	// the compile threads' part of m_linkOptimizedOnly
+	bool LinkOptimized();
+
+private:
+	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);
+public:
 
 };

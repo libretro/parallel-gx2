@@ -16,13 +16,21 @@
 //    attribute offsets make no new key, with _2 rasterizer discard none
 //    either, with dynamic topology a primitive type of the same class none,
 //    and the vertex input, topology and restart the draw sets are what a
-//    pipeline baked in.
+//    pipeline baked in;
+//  - graphics pipeline libraries (VulkanPipelineLibrary.h): each dynamic
+//    state the renderer sets goes to the part that takes it, a part's key
+//    leaves out exactly what its dynamic states make the draw's, and the
+//    lock-free cache of parts gives each key to one maker however many
+//    threads race for it.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <cstdio>
 #include <memory>
 #include <set>
+#include <thread>
+#include <vector>
 
 static int s_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
@@ -464,6 +472,219 @@ int main()
 		attrs[2].fetchType = LatteConst::INSTANCE_DATA;
 		fs.bufferGroups.clear();
 		fs2.bufferGroups.clear();
+	}
+	// graphics pipeline libraries: the part each dynamic state the renderer
+	// sets belongs to
+	{
+		struct Want { VkDynamicState state; int part; };
+		const Want want[] = {
+			{VK_DYNAMIC_STATE_VIEWPORT, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_SCISSOR, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_DEPTH_BIAS, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_CULL_MODE_EXT, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_FRONT_FACE_EXT, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_PRE_RASTERIZATION},
+			{VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_STENCIL_REFERENCE, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_STENCIL_OP_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER},
+			{VK_DYNAMIC_STATE_BLEND_CONSTANTS, VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT},
+			{VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT},
+			{VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT},
+			{VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT, VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT},
+			{VK_DYNAMIC_STATE_VERTEX_INPUT_EXT, VULKAN_PIPELINE_LIBRARY_VERTEX_INPUT},
+			{VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT, VULKAN_PIPELINE_LIBRARY_VERTEX_INPUT},
+			{VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT, VULKAN_PIPELINE_LIBRARY_VERTEX_INPUT},
+		};
+		for (const Want& w : want)
+			if (VulkanPipelineLibrary_DynamicStatePart(w.state) != w.part)
+			{
+				std::printf("FAIL: dynamic state %d belongs to part %d, not %d\n", (int)w.state,
+					VulkanPipelineLibrary_DynamicStatePart(w.state), w.part);
+				s_failures++;
+			}
+	}
+	// a part's key: what it bakes in, not what its dynamic states leave to
+	// the draw, nor the other parts' state
+	{
+		VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+		VkVertexInputBindingDescription binding{0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+		vi.vertexBindingDescriptionCount = 1;
+		vi.pVertexBindingDescriptions = &binding;
+		VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+		ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+		vp.viewportCount = vp.scissorCount = 1;
+		VkPipelineRasterizationDepthClipStateCreateInfoEXT clip{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT};
+		VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+		rs.pNext = &clip;
+		rs.cullMode = VK_CULL_MODE_BACK_BIT;
+		rs.lineWidth = 1.0f;
+		VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+		ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+		VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+		ds.depthTestEnable = VK_TRUE;
+		ds.depthCompareOp = VK_COMPARE_OP_LESS;
+		VkPipelineColorBlendAttachmentState att{};
+		att.blendEnable = VK_TRUE;
+		att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+		att.colorWriteMask = 0xF;
+		VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+		cb.attachmentCount = 1;
+		cb.pAttachments = &att;
+		std::vector<VkDynamicState> dyn = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+		VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+		VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+		gp.pVertexInputState = &vi;
+		gp.pInputAssemblyState = &ia;
+		gp.pViewportState = &vp;
+		gp.pRasterizationState = &rs;
+		gp.pMultisampleState = &ms;
+		gp.pDepthStencilState = &ds;
+		gp.pColorBlendState = &cb;
+		gp.pDynamicState = &dsi;
+		const VulkanPipelineLibraryIdentity id{1, 0, 2, 3, false};
+		auto keys = [&](const VulkanPipelineLibraryIdentity& identity) {
+			dsi.dynamicStateCount = (uint32)dyn.size();
+			dsi.pDynamicStates = dyn.data();
+			std::vector<uint64> k;
+			for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+				k.push_back(VulkanPipelineLibrary_Key((VulkanPipelineLibraryPart)p, gp, identity));
+			return k;
+		};
+		// which parts a change moves: a bit per part
+		auto moved = [&](const std::vector<uint64>& before, const std::vector<uint64>& after) {
+			uint32 m = 0;
+			for (int p = 0; p < VULKAN_PIPELINE_LIBRARY_PARTS; p++)
+				m |= (before[p] != after[p]) << p;
+			return m;
+		};
+		const uint32 VI = 1, PRS = 2, FS = 4, FO = 8;
+		const std::vector<uint64> k0 = keys(id);
+		std::set<uint64> distinct(k0.begin(), k0.end());
+		CHECK(distinct.size() == 4);
+		// the shaders, the render pass and robustness
+		CHECK(moved(k0, keys({9, 0, 2, 3, false})) == PRS);
+		CHECK(moved(k0, keys({1, 7, 2, 3, false})) == PRS);
+		CHECK(moved(k0, keys({1, 0, 9, 3, false})) == FS);
+		CHECK(moved(k0, keys({1, 0, 2, 9, false})) == (PRS | FS | FO));
+		CHECK(moved(k0, keys({1, 0, 2, 3, true})) == (PRS | FS));
+		// baked state moves its own part only
+		binding.stride = 20;
+		CHECK(moved(k0, keys(id)) == VI);
+		binding.stride = 16;
+		rs.cullMode = VK_CULL_MODE_NONE;
+		CHECK(moved(k0, keys(id)) == PRS);
+		rs.cullMode = VK_CULL_MODE_BACK_BIT;
+		clip.depthClipEnable = VK_TRUE;
+		CHECK(moved(k0, keys(id)) == PRS);
+		clip.depthClipEnable = VK_FALSE;
+		ds.depthCompareOp = VK_COMPARE_OP_GREATER;
+		CHECK(moved(k0, keys(id)) == FS);
+		ds.depthCompareOp = VK_COMPARE_OP_LESS;
+		att.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		CHECK(moved(k0, keys(id)) == FO);
+		att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+		ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+		CHECK(moved(k0, keys(id)) == (FS | FO));
+		ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+		CHECK(moved(k0, keys(id)) == 0);
+		// with the state dynamic, its baked value keys nothing
+		dyn.insert(dyn.end(), {VK_DYNAMIC_STATE_VERTEX_INPUT_EXT, VK_DYNAMIC_STATE_CULL_MODE_EXT,
+			VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT});
+		const std::vector<uint64> kd = keys(id);
+		CHECK(moved(k0, kd) == (VI | PRS | FS | FO)); // the dynamic states themselves are keyed
+		binding.stride = 20;
+		rs.cullMode = VK_CULL_MODE_NONE;
+		ds.depthCompareOp = VK_COMPARE_OP_GREATER;
+		att.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+		CHECK(moved(kd, keys(id)) == 0);
+		// a topology of another class still keys the vertex input
+		ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+		CHECK(moved(kd, keys(id)) == VI);
+		ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		// and what stays baked still does
+		rs.polygonMode = VK_POLYGON_MODE_LINE;
+		CHECK(moved(kd, keys(id)) == PRS);
+		rs.polygonMode = VK_POLYGON_MODE_FILL;
+		att.blendEnable = VK_FALSE;
+		CHECK(moved(kd, keys(id)) == FO);
+		att.blendEnable = VK_TRUE;
+		ds.stencilTestEnable = VK_TRUE;
+		CHECK(moved(kd, keys(id)) == FS);
+	}
+	// the cache: one maker per key, however many threads race for it
+	{
+		auto cache = std::make_unique<VulkanPipelineLibraryCache>();
+		const VulkanPipelineLibraryPart part = VULKAN_PIPELINE_LIBRARY_FRAGMENT_SHADER;
+		VkPipeline found;
+		CHECK(cache->Find(part, 42, found) == VulkanPipelineLibraryCache::State::Missing);
+		CHECK(cache->Claim(part, 42));
+		CHECK(!cache->Claim(part, 42));
+		CHECK(cache->Find(part, 42, found) == VulkanPipelineLibraryCache::State::Pending);
+		// a part that failed: missing again, and claimed again
+		cache->Publish(part, 42, VK_NULL_HANDLE);
+		CHECK(cache->Find(part, 42, found) == VulkanPipelineLibraryCache::State::Missing);
+		CHECK(cache->Claim(part, 42));
+		cache->Publish(part, 42, (VkPipeline)(uintptr_t)0x4200);
+		CHECK(cache->Find(part, 42, found) == VulkanPipelineLibraryCache::State::Ready && found == (VkPipeline)(uintptr_t)0x4200);
+		CHECK(!cache->Claim(part, 42));
+		// other parts are other tables
+		CHECK(cache->Find(VULKAN_PIPELINE_LIBRARY_FRAGMENT_OUTPUT, 42, found) == VulkanPipelineLibraryCache::State::Missing);
+		cache->DestroyAll(VK_NULL_HANDLE);
+		CHECK(cache->Find(part, 42, found) == VulkanPipelineLibraryCache::State::Missing && cache->Count(part) == 0);
+
+		// eight threads claiming the same 4000 keys, colliding in the table:
+		// each key made once, every thread then finds every part
+		const int threads = 8, keys = 4000;
+		std::vector<std::atomic<int>> makers(keys);
+		std::vector<std::thread> pool;
+		std::atomic<int> wrong{0};
+		for (int t = 0; t < threads; t++)
+			pool.emplace_back([&, t] {
+				for (int n = 0; n < keys; n++)
+				{
+					const int i = (n * 7 + t * 613) % keys;
+					const uint64 key = 0x100000000ull * (uint64)(i % 61) + (uint64)i + 1; // shared low bits
+					if (cache->Claim(part, key))
+					{
+						makers[i].fetch_add(1);
+						cache->Publish(part, key, (VkPipeline)(uintptr_t)(0x1000 + i));
+					}
+				}
+				for (int i = 0; i < keys; i++)
+				{
+					const uint64 key = 0x100000000ull * (uint64)(i % 61) + (uint64)i + 1;
+					VkPipeline f;
+					// made, or still being made by another thread
+					const auto state = cache->Find(part, key, f);
+					if (state == VulkanPipelineLibraryCache::State::Missing ||
+						(state == VulkanPipelineLibraryCache::State::Ready && f != (VkPipeline)(uintptr_t)(0x1000 + i)))
+						wrong++;
+				}
+			});
+		for (auto& t : pool)
+			t.join();
+		int once = 0;
+		for (auto& m : makers)
+			once += m.load() == 1;
+		std::printf("library cache: %d keys claimed by %d threads, %d made once, %zu kept\n", keys, threads, once, cache->Count(part));
+		CHECK(once == keys && wrong == 0 && cache->Count(part) == (size_t)keys);
+		cache->DestroyAll(VK_NULL_HANDLE);
+		// a full table: no claim, the part adopted instead
+		for (size_t i = 0; i < VulkanPipelineLibraryCache::kCapacity; i++)
+			CHECK(cache->Claim(part, i + 1));
+		CHECK(!cache->Claim(part, VulkanPipelineLibraryCache::kCapacity + 7));
+		CHECK(cache->Find(part, VulkanPipelineLibraryCache::kCapacity + 7, found) == VulkanPipelineLibraryCache::State::Missing);
+		cache->Adopt((VkPipeline)(uintptr_t)0x77);
+		cache->DestroyAll(VK_NULL_HANDLE);
+		CHECK(cache->Claim(part, 5));
 	}
 	// the blend state the draw sets and the pipeline bakes in
 	{

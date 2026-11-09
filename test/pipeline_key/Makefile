@@ -12,16 +12,18 @@ CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_H
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
 endif
-LIBS := -ldl
+LIBS := -ldl -lpthread
 ifneq (,$(findstring mingw,$(CXX)))
    LIBS := -static
    EXE := .exe
 endif
 # the loader's entry points the key's dynamic state setters call through
 SRCS := pipeline_key_test.cpp stubs.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp
 
-pipeline_key_test$(EXE): $(SRCS) $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h
+pipeline_key_test$(EXE): $(SRCS) $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(SRCS) $(LIBS) -o $@
 
 clean:

@@ -80,10 +80,13 @@ Where the core still does, as of `204bbde5`:
 
 - **Async Shader Compile off**: every new pipeline is compiled on the GPU
   thread while its draw waits (`draw_createGraphicsPipeline`,
-  `Compile(true, ...)`), its shaders with it (`PreponeCompilation`).
+  `Compile(true, ...)`), its shaders with it (`PreponeCompilation`). With
+  graphics pipeline libraries, only the parts no pipeline before it had
+  (below); a new combination of parts already made is linked, not
+  compiled.
 - **Async on (the default), a draw judged essential**
   (`IsAsyncPipelineAllowed`: no depth buffer, six indices or fewer, the
-  1600x1600 targets): the same.
+  1600x1600 targets): the same, libraries included.
 - **Async on, any other draw**: not compiled on the draw path, but the
   draw is skipped until the pipeline lands - not a fallback either.
 - **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
@@ -94,7 +97,12 @@ Where the core still does, as of `204bbde5`:
   thread while the copy waits (`copySurface_getOrCreateGraphicsPipeline`).
   Their few states are known up front: they can be built ahead.
 
-M2 removes them; it comes before anything else in this document.
+M2 removes them; it comes before anything else in this document. What is
+left with graphics pipeline libraries is the first pipeline for each new
+shader and render pass compatibility class, or new baked state of a part:
+the parts are made when a pipeline first needs them, and only from the
+second pipeline on is there nothing to compile. Making them earlier is the
+next step (M2, below).
 
 ## Milestones
 
@@ -237,6 +245,35 @@ pipeline libraries (M2), measured on titles' recordings.
 - Gate: pipelines per replayed sequence go down; GPU results unchanged.
 
 ### M2: a first draw that never waits (the top priority)
+
+Done: graphics pipeline libraries where the device has
+`VK_EXT_graphics_pipeline_library` with fast linking and `_2`
+(`VulkanPipelineLibrary.h`; enabled on the core's device). Every pipeline
+is linked from four parts - vertex input, pre-rasterization shaders,
+fragment shader, fragment output - made from the create info the compiler
+fills, each keyed by its shaders' hashes, the render pass's compatibility
+and its own state without the fields its dynamic states make the draw's,
+and kept in an insert-only lock-free cache the GPU thread and the compile
+threads share (one thread claims a key and makes the part, the others find
+it pending). On the GPU thread a pipeline whose parts are all made is
+linked as they are - a link, not a compile - and a compile thread links
+them optimized, which takes the fast-linked one's place at the next draw
+(the old one released after the command buffers that may use it). The
+layouts' sets are independent, each part with its own shaders' sets. The
+parts outlive every pipeline linked from them: lavapipe draws wrong with a
+pipeline whose parts were destroyed, so a part made without a claim is
+adopted by the cache, and all go with the renderer, after the last
+pipeline. `test/dynstate` links every state's pipeline from the cache's
+parts, fast and optimized, and requires the baked pipeline's picture (one
+part of each kind for 400 states); under the Khronos validation layer in
+both CIs, where any error fails. `test/pipeline_key` checks which part
+each dynamic state goes to, what moves each part's key, and the cache with
+eight threads racing for 4000 keys (each made once; under TSan in CI).
+
+Next: make the parts before a pipeline needs them, so that the first
+pipeline of a new shader links too (the shader's parts for the render
+passes seen so far, on the compile threads, as soon as its module is
+compiled); then the draws async skips.
 
 - **Graphics pipeline libraries** where the device has them
   (`VK_EXT_graphics_pipeline_library`): vertex input, pre-rasterization
