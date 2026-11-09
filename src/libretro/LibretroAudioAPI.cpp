@@ -1,4 +1,5 @@
 #include "LibretroAudioAPI.h"
+#include "audio/AudioMix.h"
 
 #include <algorithm>
 #include <atomic>
@@ -95,12 +96,7 @@ bool LibretroAudioAPI::FeedBlock(sint16* data)
 				}
 				else if (in == 6 && out == 2)
 				{
-					// Centre and surrounds at -3 dB, LFE left out
-					const float c = s[2] * 0.7071f;
-					const float l = s[0] + c + s[4] * 0.7071f;
-					const float r = s[1] + c + s[5] * 0.7071f;
-					d[0] = (int16_t)std::clamp(l, -32768.0f, 32767.0f);
-					d[1] = (int16_t)std::clamp(r, -32768.0f, 32767.0f);
+					AudioMix::Downmix51(s, d);
 				}
 				else
 				{

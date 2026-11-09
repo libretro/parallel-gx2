@@ -199,6 +199,21 @@ test-handoff:
     - make -C test/handoff clean
     - SANITIZER=address,undefined ./test/handoff/run_tests.sh
 
+# The core's audio arithmetic between AX and the frontend: the 5.1 downmix's
+# rounding and the GamePad's sound paired with the TV's frames.
+test-audio-mix:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/audio_mix/run_tests.sh
+    - make -C test/audio_mix clean
+    - SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
+
 # The core's Wii U archive reader over libretro-common's zar, against archives
 # zar's writer makes. The core's precompiled header wants fmt and glm.
 test-zarchive:

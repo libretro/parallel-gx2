@@ -144,6 +144,14 @@ jobs:
           make -C test/video_views clean
           SANITIZER=address,undefined ./test/video_views/run_tests.sh
 
+      - name: "Audio arithmetic"
+        # the 5.1 downmix's rounding and the GamePad's sound paired with the
+        # TV's frames: plain, then under ASan + UBSan
+        run: |
+          ./test/audio_mix/run_tests.sh
+          make -C test/audio_mix clean
+          SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
+
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.

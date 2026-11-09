@@ -3,6 +3,7 @@
 #include "Cafe/HW/MMU/MMU.h"
 #include "audio/IAudioAPI.h"
 #include "libretro/LibretroAudioAPI.h"
+#include "audio/AudioMix.h"
 
 #include <atomic>
 //#include "ax.h"
@@ -165,8 +166,14 @@ namespace snd_core
 	sint16 tempDRCChannelData[AX_SAMPLES_MAX * 6 * AX_FRAMES_PER_GROUP] = {};
 	sint32 tempDRCAudioBlockCounter = 0;
 
-	static bool s_drcMixBlockReady = false;
-	static sint16 s_drcMixBlock[AX_SAMPLES_MAX * AX_TV_CHANNEL_COUNT * AX_FRAMES_PER_GROUP] = {};
+	// The GamePad's sound onto the TV's, the same frames of each together
+	static AudioMix::TvPadMixer s_tvPadMixer;
+	static void FeedTV(sint16* block)
+	{
+		AudioDevicesUse devices;
+		if (devices && g_tvAudio)
+			g_tvAudio->FeedBlock(block);
+	}
 
 	void AIInitDMA(sint16* sampleData, sint32 size)
 	{
@@ -190,36 +197,7 @@ namespace snd_core
 		if (tempAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
 			if (devices && g_tvAudio)
-			{
-				if (s_drcMixBlockReady)
-				{
-					// The GamePad's stereo onto the TV's front pair (both on
-					// a mono TV), whatever the TV's channel count
-					const size_t frames = (size_t)AX_SAMPLES_PER_3MS_48KHZ * (size_t)AX_FRAMES_PER_GROUP;
-					auto mix = [](sint16& out, int add) {
-						int v = (int)out + add;
-						if (v > 32767) v = 32767;
-						else if (v < -32768) v = -32768;
-						out = (sint16)v;
-					};
-					for (size_t f = 0; f < frames; ++f)
-					{
-						sint16* tv = tempTVChannelData + f * channels;
-						const int l = s_drcMixBlock[f * 2], r = s_drcMixBlock[f * 2 + 1];
-						if (channels == 1)
-						{
-							mix(tv[0], (l + r) / 2);
-						}
-						else
-						{
-							mix(tv[0], l);
-							mix(tv[1], r);
-						}
-					}
-					s_drcMixBlockReady = false;
-				}
-				g_tvAudio->FeedBlock(tempTVChannelData);
-			}
+				s_tvPadMixer.TvGroup(tempTVChannelData, (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP, channels, FeedTV);
 
 			tempAudioBlockCounter = 0;
 		}
@@ -358,13 +336,7 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			{
-				constexpr size_t kChannels = 2;
-				const size_t samplesToCopy = (size_t)AX_SAMPLES_PER_3MS_48KHZ * (size_t)AX_FRAMES_PER_GROUP * kChannels;
-				for (size_t i = 0; i < samplesToCopy; ++i)
-					s_drcMixBlock[i] = tempDRCChannelData[i];
-				s_drcMixBlockReady = true;
-			}
+			s_tvPadMixer.PadGroup(tempDRCChannelData, (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP, FeedTV);
 
 			tempDRCAudioBlockCounter = 0;
 		}
