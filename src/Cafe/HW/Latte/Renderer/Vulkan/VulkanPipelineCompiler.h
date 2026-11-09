@@ -124,3 +124,33 @@ private:
 public:
 
 };
+
+// A pipeline compiled on a compile thread for a draw that could be skipped
+// meanwhile (Async Shader Compile), owned by its PipelineInfo. A later draw
+// that may not be skipped compiles it itself when no compile thread has
+// started on it, as it would have for a new pipeline, or waits for the one
+// that has, rather than being skipped as well
+// (VulkanRenderer::draw_awaitAsyncPipeline). Destroyed with the
+// PipelineInfo: a compile not started is dropped, one under way finished.
+struct AsyncPipelineCompile
+{
+	explicit AsyncPipelineCompile(PipelineCompiler* job) : m_job(job) {}
+	~AsyncPipelineCompile()
+	{
+		prepared.Retire();
+		delete m_job; // nullptr once compiled
+	}
+	AsyncPipelineCompile(const AsyncPipelineCompile&) = delete;
+	AsyncPipelineCompile& operator=(const AsyncPipelineCompile&) = delete;
+
+	PipelineCompiler* m_job;
+	// last, so that it is destroyed first
+	PreparedPipeline prepared{[](void* self, bool onCompileThread) {
+		AsyncPipelineCompile* c = (AsyncPipelineCompile*)self;
+		c->m_job->Compile(true, !onCompileThread, true);
+		const VkPipeline pipeline = c->m_job->m_vkrObjPipeline->GetPipeline();
+		delete c->m_job;
+		c->m_job = nullptr;
+		return pipeline;
+	}, this};
+};

@@ -123,7 +123,7 @@ struct CopySurfacePipelineInfo
 
 	// built on a compile thread from the members above, which it reads; last,
 	// so that it is destroyed first
-	PreparedPipeline prepared{[](void* self) {
+	PreparedPipeline prepared{[](void* self, bool) {
 		return VulkanRenderer::GetInstance()->copySurface_buildPipeline(*(CopySurfacePipelineInfo*)self);
 	}, this};
 };

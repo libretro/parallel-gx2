@@ -168,7 +168,8 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 		{
 			// shaders or pipeline not cached -> asynchronous compilation
 			PSO_TRACE_EVENT("pipeline async, draws skipped until it lands", pipelineHash);
-			PipelineCompiler::CompileThreadPool_QueueCompilation(pipelineCompiler);
+			pipelineInfo->m_asyncCompile = new AsyncPipelineCompile(pipelineCompiler);
+			PipelineCompiler::CompileThreadPool_QueuePrepared(pipelineInfo->m_asyncCompile->prepared);
 		}
 		else
 		{
@@ -184,6 +185,26 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 	}
 
 	return pipelineInfo;
+}
+
+// A draw that may be skipped is, until the compile lands. One that may not -
+// essential (IsAsyncPipelineAllowed), or with Async Shader Compile turned off
+// since - compiles it here when no compile thread has started on it, as it
+// would a new pipeline, or waits for the one that has: skipping it could
+// leave the result wrong for good, and compiling it twice gains nothing
+bool VulkanRenderer::draw_awaitAsyncPipeline(PipelineInfo* pipelineInfo, uint32 indexCount)
+{
+	AsyncPipelineCompile* async = pipelineInfo->m_asyncCompile;
+	if (!async)
+		return false;
+	if (!async->prepared.IsBuilt())
+	{
+		if (GetConfig().async_compile && IsAsyncPipelineAllowed(indexCount))
+			return false;
+		PSO_TRACE_SCOPE("pipeline async, taken by an essential draw", pipelineInfo->stateHash);
+		async->prepared.Take();
+	}
+	return pipelineInfo->m_vkrObjPipeline->GetPipeline() != VK_NULL_HANDLE;
 }
 
 PipelineInfo* VulkanRenderer::draw_getOrCreateGraphicsPipeline(uint32 indexCount)
@@ -1565,7 +1586,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 	m_state.activePipelineInfo = pipeline_info;
 
 	auto vkObjPipeline = pipeline_info->m_vkrObjPipeline;
-	if (vkObjPipeline->GetPipeline() == VK_NULL_HANDLE)
+	if (vkObjPipeline->GetPipeline() == VK_NULL_HANDLE && !draw_awaitAsyncPipeline(pipeline_info, count))
 	{
 		// invalid/uninitialized pipeline
 		m_state.activeVertexDS = nullptr;
@@ -1769,7 +1790,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 	}
 
 	auto vkObjPipeline = pipeline_info->m_vkrObjPipeline;
-	if (vkObjPipeline->GetPipeline() == VK_NULL_HANDLE)
+	if (vkObjPipeline->GetPipeline() == VK_NULL_HANDLE && !draw_awaitAsyncPipeline(pipeline_info, count))
 	{
 		// invalid/uninitialized pipeline
 		//m_state.activeVertexDS = nullptr;

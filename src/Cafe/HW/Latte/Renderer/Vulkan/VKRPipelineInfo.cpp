@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
@@ -49,6 +50,10 @@ PipelineInfo::PipelineInfo(uint64 minimalStateHash, uint64 pipelineHash, LatteFe
 
 PipelineInfo::~PipelineInfo()
 {
+	// before what its compile reads (the rect emulation shader) goes
+	delete m_asyncCompile;
+	m_asyncCompile = nullptr;
+
 	if (rectEmulationGS)
 	{
 		delete rectEmulationGS;

@@ -146,6 +146,8 @@ public:
 
 	// primitive rects emulation
 	RendererShaderVk* rectEmulationGS = nullptr;
+	// its compile on a compile thread, while one is pending or under way (VulkanPipelineCompiler.h)
+	struct AsyncPipelineCompile* m_asyncCompile = nullptr;
 
 	// hack - accurate barrier needed for this pipeline
 	bool neverSkipAccurateBarrier{false};
@@ -557,6 +559,9 @@ private:
 	// drawcall emulation
 	PipelineInfo* draw_createGraphicsPipeline(uint32 indexCount);
 	PipelineInfo* draw_getOrCreateGraphicsPipeline(uint32 indexCount);
+	// whether the draw has its pipeline after all, when it is still being
+	// compiled for an earlier draw that could be skipped (AsyncPipelineCompile)
+	bool draw_awaitAsyncPipeline(PipelineInfo* pipelineInfo, uint32 indexCount);
 
 	void draw_updateVkBlendConstants();
 	void draw_updateDepthBias(bool forceUpdate);

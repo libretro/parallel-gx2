@@ -15,7 +15,8 @@
 class PreparedPipeline
 {
 public:
-	using BuildFn = VkPipeline (*)(void* context);
+	// onCompileThread: built by a compile thread, not by the thread taking it
+	using BuildFn = VkPipeline (*)(void* context, bool onCompileThread);
 	using Ticket = ClaimTicket<PreparedPipeline>;
 
 	PreparedPipeline(BuildFn build, void* context) : m_build(build), m_context(context) {}
@@ -34,7 +35,7 @@ public:
 	static void Run(Ticket* ticket)
 	{
 		if (PreparedPipeline* p = ticket->Claim())
-			p->BuildHere();
+			p->BuildHere(true);
 		ticket->Release();
 	}
 	// A ticket destroyed with the queue, unrun
@@ -48,7 +49,7 @@ public:
 		{
 			if (!m_ticket || m_ticket->Claim())
 			{
-				BuildHere();
+				BuildHere(false);
 				if (builtHere)
 					*builtHere = true;
 			}
@@ -74,9 +75,9 @@ public:
 	}
 
 private:
-	void BuildHere()
+	void BuildHere(bool onCompileThread)
 	{
-		m_pipeline = m_build(m_context);
+		m_pipeline = m_build(m_context, onCompileThread);
 		m_built.store(true, std::memory_order_release);
 		// not this object's: the GPU thread may destroy it as soon as it sees
 		// it built, while this thread is still in the notify

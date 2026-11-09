@@ -5,6 +5,8 @@
 // counted, not compiled:
 //  - made ahead: once the compile threads are through, every take finds its
 //    pipeline built and builds nothing;
+//  - a build is told whether it runs on a compile thread or on the thread
+//    taking it (the pipeline compiler links differently on each);
 //  - takes racing the compile threads: each built exactly once, by one side,
 //    and every take gets that one;
 //  - retired before a compile thread got to it: never built, and the ticket
@@ -29,11 +31,13 @@ struct Entry
 	std::atomic<int> builds{0};
 	std::atomic<bool> hold{false}; // a build waits while set
 	std::atomic<bool> started{false};
+	std::atomic<int> onCompileThread{-1}; // what the build was told
 	uint64_t id = 0;
 	// last: destroyed first, before what its build reads
-	PreparedPipeline prepared{[](void* self) {
+	PreparedPipeline prepared{[](void* self, bool onCompileThread) {
 		Entry* e = (Entry*)self;
 		e->started = true;
+		e->onCompileThread = onCompileThread;
 		while (e->hold.load())
 			std::this_thread::yield();
 		e->builds++;
@@ -93,6 +97,7 @@ static void MadeAhead()
 		builtHere += here;
 		CHECK(p == (VkPipeline)(uintptr_t)(e->id + 1));
 		CHECK(e->builds == 1);
+		CHECK(e->onCompileThread == 1);
 	}
 	CHECK(builtHere == 0);
 }
@@ -119,6 +124,8 @@ static void Racing()
 			builtHere += here;
 			CHECK(p == (VkPipeline)(uintptr_t)(entries[i]->id + 1));
 			CHECK(entries[i]->prepared.Take() == p);
+			// the build knew which side it was on
+			CHECK(entries[i]->onCompileThread == (here ? 0 : 1));
 		}
 		for (auto& e : entries)
 			CHECK(e->builds == 1);

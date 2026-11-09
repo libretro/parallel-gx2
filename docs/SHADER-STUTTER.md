@@ -88,7 +88,19 @@ Where the core still does, as of `204bbde5`:
   (`IsAsyncPipelineAllowed`: no depth buffer, six indices or fewer, the
   1600x1600 targets): the same, libraries included.
 - **Async on, any other draw**: not compiled on the draw path, but the
-  draw is skipped until the pipeline lands - not a fallback either.
+  draw is skipped until the pipeline lands - not a fallback either. A later
+  draw of the same pipeline that may not be skipped (essential, or with
+  Async Shader Compile turned off since) is not skipped with it: it
+  compiles the pipeline itself when no compile thread has started on it,
+  as it would a new one, or waits for the compile thread that has
+  (`draw_awaitAsyncPipeline`, `AsyncPipelineCompile`; traced as `pipeline
+  async, taken by an essential draw`). It was skipped as well, which could
+  leave what it draws wrong for good.
+- **Without graphics pipeline libraries**, this is where it stays until
+  pipelines are made ahead of their first draw (M3's learned state): a
+  draw that may be skipped is, rather than wait for its compile, and one
+  that may not compiles or waits, rather than be skipped. Neither is a
+  fallback; there is none to draw with yet.
 - **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
   synchronous (`PipelineCompiler::Compile`).
 - **Surface copies** (color to depth and back, `VulkanSurfaceCopy.cpp`):
