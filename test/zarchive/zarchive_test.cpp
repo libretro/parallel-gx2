@@ -10,7 +10,11 @@
 //    what it found instead (the reason the user is shown);
 //  - a title's meta.xml as Breath of the Wild's (a BOM, twelve languages,
 //    Japanese) parses, and one that will not says why: not XML (where),
-//    no <menu>, no title_id, empty.
+//    no <menu>, no title_id, empty;
+//  - a directory out of order with a name in it twice, as Breath of the
+//    Wild's .wua holds its meta/ (meta.xml first and last, the rest unsorted
+//    between): every name is found, the first of the two the one a lookup
+//    gives, as Cemu's reader takes it.
 // VFSFileStream is the stdio one below, counting what the reader opens and
 // reads, in place of the frontend's VFS.
 #include "Cafe/Filesystem/ZArchiveVFS.h"
@@ -18,6 +22,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <thread>
 
@@ -285,7 +290,7 @@ static void TestBroken(const fs::path& good)
 	fs::remove(bad);
 }
 
-static void TestMetaXml()
+static std::string BotwMetaXml()
 {
 	std::string xml = "\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<menu type=\"complex\" access=\"777\">\n"
 		"  <version type=\"unsignedInt\" length=\"4\">33</version>\n"
@@ -301,6 +306,12 @@ static void TestMetaXml()
 	for (int i = 0; i < 300; i++) // BotW's is long: padded out with other elements
 		xml += fmt::format("  <pc_e{0} type=\"unsignedInt\" length=\"4\">{0}</pc_e{0}>\n", i);
 	xml += "</menu>\n";
+	return xml;
+}
+
+static void TestMetaXml()
+{
+	const std::string xml = BotwMetaXml();
 	auto parse = [](std::string text, std::string* why) {
 		std::vector<uint8> buf(text.begin(), text.end());
 		return std::unique_ptr<ParsedMetaXml>(ParsedMetaXml::Parse(buf.data(), buf.size(), why));
@@ -321,9 +332,118 @@ static void TestMetaXml()
 	CHECK(!parse("", &why) && why == "it is empty");
 }
 
+static uint32 Be32(const uint8* p)
+{
+	return ((uint32)p[0] << 24) | ((uint32)p[1] << 16) | ((uint32)p[2] << 8) | p[3];
+}
+
+static uint64 Be64(const uint8* p)
+{
+	return ((uint64)Be32(p) << 32) | Be32(p + 4);
+}
+
+static void TestUnordered()
+{
+	const char* meta = "00050000101c9400_v0/meta/";
+	const std::string xml = BotwMetaXml();
+	const std::vector<std::pair<std::string, std::string>> files = {
+		{"meta.xml", xml}, {"bootTvTex.tga", std::string(3000, 'T')}, {"iconTex.tga", std::string(900, 'I')},
+		{"Manual.bfma", std::string(5000, 'M')}, {"PEGI_en.jpg", "J"}, {"USK_de.jpg", "U"}};
+	const fs::path path = fs::temp_directory_path() / "parallel_gx2_zarchive_test_unordered.wua";
+	FILE* out = std::fopen(path.string().c_str(), "wb");
+	CHECK(out != nullptr);
+	zar_writer_t* w = zar_writer_new(WriteToFile, out, 3);
+	CHECK(zar_writer_file(w, "00050000101c9400_v0/code/app.xml") == ZAR_OK);
+	for (const auto& f : files)
+	{
+		CHECK(zar_writer_file(w, (meta + f.first).c_str()) == ZAR_OK);
+		CHECK(zar_writer_append(w, f.second.data(), f.second.size()) == ZAR_OK);
+	}
+	CHECK(zar_writer_finish(w) == ZAR_OK);
+	zar_writer_free(w);
+	std::fclose(out);
+
+	// the index as the writer left it: meta/'s entries sorted
+	std::vector<uint8> bytes;
+	{
+		FILE* f = std::fopen(path.string().c_str(), "rb");
+		std::fseek(f, 0, SEEK_END);
+		bytes.resize(std::ftell(f));
+		std::fseek(f, 0, SEEK_SET);
+		CHECK(std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size());
+		std::fclose(f);
+	}
+	const uint8* footer = bytes.data() + bytes.size() - 144;
+	const uint8* names = bytes.data() + Be64(footer + 32);
+	uint8* tree = bytes.data() + Be64(footer + 48);
+	auto nameOf = [&](const uint8* node) {
+		const uint8* n = names + (Be32(node) & 0x7FFFFFFF);
+		return std::string((const char*)n + 1, n[0] & 0x7F);
+	};
+	auto child = [&](uint32 dir, const char* name) {
+		for (uint32 i = 0; i < Be32(tree + dir * 16 + 8); i++)
+			if (nameOf(tree + (Be32(tree + dir * 16 + 4) + i) * 16) == name)
+				return Be32(tree + dir * 16 + 4) + i;
+		return 0u;
+	};
+	const uint32 metaDir = child(child(0, "00050000101c9400_v0"), "meta");
+	const uint32 first = Be32(tree + metaDir * 16 + 4), count = Be32(tree + metaDir * 16 + 8);
+	CHECK(metaDir && count == files.size());
+	// reversed, and the last - the first sorted, bootTvTex.tga - named
+	// meta.xml, a second one after the real one
+	for (uint32 i = 0; i < count / 2; i++)
+		for (int k = 0; k < 16; k++)
+			std::swap(tree[(first + i) * 16 + k], tree[(first + count - 1 - i) * 16 + k]);
+	uint8* last = tree + (first + count - 1) * 16;
+	CHECK(nameOf(last) == "bootTvTex.tga");
+	uint32 metaXml = 0;
+	for (uint32 i = 0; i < count; i++)
+		if (nameOf(tree + (first + i) * 16) == "meta.xml")
+			metaXml = first + i;
+	CHECK(metaXml && metaXml < first + count - 1);
+	std::memcpy(last, tree + metaXml * 16, 4);
+	{
+		FILE* f = std::fopen(path.string().c_str(), "wb");
+		CHECK(std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size());
+		std::fclose(f);
+	}
+
+	std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+	CHECK(zar != nullptr);
+	if (zar)
+	{
+		std::optional<ZArchive::Node> n = zar->LookUp(std::string(meta) + "META.XML");
+		CHECK(n && n->size == xml.size());
+		if (n)
+		{
+			std::vector<uint8> buf(n->size);
+			ZArchiveFile file(*zar, *n);
+			CHECK(file.Read(0, buf.data(), buf.size()) == xml.size());
+			std::unique_ptr<ParsedMetaXml> parsed(ParsedMetaXml::Parse(buf.data(), buf.size()));
+			CHECK(parsed && parsed->GetTitleId() == 0x00050000101C9400ull);
+		}
+		// bootTvTex.tga is no more; every other name is found
+		CHECK(!zar->LookUp(std::string(meta) + "bootTvTex.tga"));
+		bool all = true;
+		for (const auto& f : files)
+			if (f.first != "bootTvTex.tga")
+			{
+				n = zar->LookUp(meta + f.first);
+				all = all && n && n->size == f.second.size();
+			}
+		CHECK(all);
+		std::vector<ZArchive::DirEntry> entries;
+		CHECK(zar->ListDir(std::string(meta), entries) && entries.size() == files.size());
+		CHECK(entries.size() == files.size() && entries.front().name == "USK_de.jpg" && entries.back().name == "meta.xml");
+	}
+	zar.reset();
+	fs::remove(path);
+}
+
 int main()
 {
 	TestMetaXml();
+	TestUnordered();
 	std::vector<TestFile> files;
 	const fs::path path = MakeArchive(files);
 	std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
