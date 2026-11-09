@@ -172,9 +172,10 @@ jobs:
       - name: "Vulkan pipeline key"
         # state the pipelines take as dynamic state makes no new pipeline,
         # and everything a pipeline bakes in still does: plain, then under
-        # ASan + UBSan. The core's precompiled header wants fmt and glm.
+        # ASan + UBSan. The core's precompiled header wants fmt and glm, the
+        # state the draw sets the Vulkan headers.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
           ./test/pipeline_key/run_tests.sh
           make -C test/pipeline_key clean
           SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh

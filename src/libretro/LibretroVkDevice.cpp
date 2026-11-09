@@ -51,6 +51,7 @@ bool g_libretroVkHasPipelineCreationCacheControl = false;
 bool g_libretroVkHasCustomBorderColors = false;
 bool g_libretroVkHasPipelineRobustness = false;
 bool g_libretroVkHasDepthClipEnable = false;
+bool g_libretroVkHasExtendedDynamicState = false;
 
 // The device the core and the frontend share. Made with vkCreateDevice
 // (version 1: the frontend's extensions come in as required ones) or
@@ -151,6 +152,9 @@ static bool CreateDevice(
 		VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME,
 		VK_EXT_FILTER_CUBIC_EXTENSION_NAME,
 		VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME,
+		// cull mode, front face and the depth and stencil tests as dynamic
+		// state: fewer pipelines (VulkanPipelineKey.h)
+		VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
 	};
 	for (auto ext : cemuExtensions)
 	{
@@ -185,6 +189,7 @@ static bool CreateDevice(
 	VkPhysicalDeviceCustomBorderColorFeaturesEXT bcfSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
 	VkPhysicalDevicePipelineRobustnessFeaturesEXT robustSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
 	VkPhysicalDeviceDepthClipEnableFeaturesEXT clipSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+	VkPhysicalDeviceExtendedDynamicStateFeaturesEXT edsSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
 	{
 		void* chain = nullptr;
 		const auto query = [&](auto& feature, const char* ext) {
@@ -198,6 +203,7 @@ static bool CreateDevice(
 		query(bcfSupported, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
 		query(robustSupported, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
 		query(clipSupported, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+		query(edsSupported, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 		supportedFeatures2.pNext = chain;
 	}
 
@@ -255,6 +261,7 @@ static bool CreateDevice(
 	VkPhysicalDeviceCustomBorderColorFeaturesEXT bcfFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
 	VkPhysicalDevicePipelineRobustnessFeaturesEXT robustFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
 	VkPhysicalDeviceDepthClipEnableFeaturesEXT clipFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+	VkPhysicalDeviceExtendedDynamicStateFeaturesEXT edsFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
 	void* featureChain = nullptr;
 	const auto chainFeature = [&](auto& feature) {
 		feature.pNext = featureChain;
@@ -280,6 +287,11 @@ static bool CreateDevice(
 	{
 		clipFeatures.depthClipEnable = VK_TRUE;
 		chainFeature(clipFeatures);
+	}
+	if (enabledExt(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) && edsSupported.extendedDynamicState)
+	{
+		edsFeatures.extendedDynamicState = VK_TRUE;
+		chainFeature(edsFeatures);
 	}
 
 	VkDeviceCreateInfo createInfo{};
@@ -322,6 +334,7 @@ static bool CreateDevice(
 	g_libretroVkHasCustomBorderColors = bcfFeatures.customBorderColors == VK_TRUE;
 	g_libretroVkHasPipelineRobustness = robustFeatures.pipelineRobustness == VK_TRUE;
 	g_libretroVkHasDepthClipEnable = clipFeatures.depthClipEnable == VK_TRUE;
+	g_libretroVkHasExtendedDynamicState = edsFeatures.extendedDynamicState == VK_TRUE;
 	{
 		std::string list;
 		for (const std::string& ext : g_libretroVkDeviceExtensions)

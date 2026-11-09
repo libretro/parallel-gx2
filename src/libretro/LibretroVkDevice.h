@@ -18,3 +18,4 @@ extern bool g_libretroVkHasPipelineCreationCacheControl;
 extern bool g_libretroVkHasCustomBorderColors;
 extern bool g_libretroVkHasPipelineRobustness;
 extern bool g_libretroVkHasDepthClipEnable;
+extern bool g_libretroVkHasExtendedDynamicState;

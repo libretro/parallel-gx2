@@ -126,6 +126,16 @@ that each state a pipeline still bakes in keeps a key of its own.
 Pipelines are built from the state they are handed, never the live
 registers (`tools/check_pipeline_registers.sh`).
 
+Done with `VK_EXT_extended_dynamic_state` (enabled on the core's device
+where the GPU has it): cull mode, front face, depth test, write and compare
+and the stencil test and operations are set by the draw
+(`draw_updateDepthStencilCull`) from the same function the pipeline
+compiler uses (`VulkanPipelineKey_DepthStencilCull`), and out of the key;
+`test/pipeline_key` replays 4096 such states (one key) and checks the
+values against what a pipeline baked in. Next: `_2` (primitive restart,
+depth bias enable), blend state with `_3` where present, dynamic vertex
+input, and the lavapipe replay that checks pipelines and pictures.
+
 
 - Make the state that only multiplies pipelines dynamic where the device
   has it: `VK_EXT_extended_dynamic_state` (cull, front face, topology,

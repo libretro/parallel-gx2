@@ -77,7 +77,7 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 
 	stateHash = std::rotl<uint64>(stateHash, 13);
 
-	stateHash += VulkanPipelineKey_RenderState(lcr);
+	stateHash += VulkanPipelineKey_RenderState(lcr, VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state);
 	stateHash = std::rotl<uint64>(stateHash, 17);
 	stateHash += renderPassObj->m_hashForPipeline;
 
@@ -1153,6 +1153,35 @@ void VulkanRenderer::draw_updateStencilState(bool forceUpdate)
 	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, back.get_STENCILREF_B());
 }
 
+// The cull mode, front face and depth and stencil tests, dynamic in every
+// pipeline with VK_EXT_extended_dynamic_state: set when the registers they
+// come from changed, and with every pipeline bound
+void VulkanRenderer::draw_updateDepthStencilCull(bool forceUpdate)
+{
+	if (!m_featureControl.deviceExtensions.extended_dynamic_state)
+		return;
+	const LatteContextRegister& lcr = LatteGPUState.contextNew;
+	const uint32 polygonCtrl = lcr.PA_SU_SC_MODE_CNTL.getRawValue();
+	const uint32 depthControl = lcr.DB_DEPTH_CONTROL.getRawValue();
+	const uint32 primitiveType = lcr.VGT_PRIMITIVE_TYPE.getRawValue();
+	if (!forceUpdate && m_state.prevPolygonCtrlU32 == polygonCtrl && m_state.prevDepthControlU32 == depthControl &&
+		m_state.prevPrimitiveTypeU32 == primitiveType)
+		return;
+	m_state.prevPolygonCtrlU32 = polygonCtrl;
+	m_state.prevDepthControlU32 = depthControl;
+	m_state.prevPrimitiveTypeU32 = primitiveType;
+	const VulkanDepthStencilCull s = VulkanPipelineKey_DepthStencilCull(lcr);
+	VkCommandBuffer cb = m_state.currentCommandBuffer;
+	vkCmdSetCullModeEXT(cb, s.cullMode);
+	vkCmdSetFrontFaceEXT(cb, s.frontFace);
+	vkCmdSetDepthTestEnableEXT(cb, s.depthTestEnable);
+	vkCmdSetDepthWriteEnableEXT(cb, s.depthWriteEnable);
+	vkCmdSetDepthCompareOpEXT(cb, s.depthCompareOp);
+	vkCmdSetStencilTestEnableEXT(cb, s.stencilTestEnable);
+	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_FRONT_BIT, s.frontFailOp, s.frontPassOp, s.frontDepthFailOp, s.frontCompareOp);
+	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_BACK_BIT, s.backFailOp, s.backPassOp, s.backDepthFailOp, s.backCompareOp);
+}
+
 void VulkanRenderer::draw_updateDepthBias(bool forceUpdate)
 {
 	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
@@ -1456,12 +1485,14 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(true);
 		draw_updateStencilState(true);
+		draw_updateDepthStencilCull(true);
 	}
 	else
 	{
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(false);
 		draw_updateStencilState(false);
+		draw_updateDepthStencilCull(false);
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1653,12 +1684,14 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(true);
 		draw_updateStencilState(true);
+		draw_updateDepthStencilCull(true);
 	}
 	else
 	{
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(false);
 		draw_updateStencilState(false);
+		draw_updateDepthStencilCull(false);
 	}
 
 	// update blend constants

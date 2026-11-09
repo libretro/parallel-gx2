@@ -164,6 +164,13 @@ VKFUNC_DEVICE(vkCmdSetDepthBias);
 VKFUNC_DEVICE(vkCmdSetStencilCompareMask);
 VKFUNC_DEVICE(vkCmdSetStencilWriteMask);
 VKFUNC_DEVICE(vkCmdSetStencilReference);
+VKFUNC_DEVICE(vkCmdSetCullModeEXT);
+VKFUNC_DEVICE(vkCmdSetFrontFaceEXT);
+VKFUNC_DEVICE(vkCmdSetDepthTestEnableEXT);
+VKFUNC_DEVICE(vkCmdSetDepthWriteEnableEXT);
+VKFUNC_DEVICE(vkCmdSetDepthCompareOpEXT);
+VKFUNC_DEVICE(vkCmdSetStencilTestEnableEXT);
+VKFUNC_DEVICE(vkCmdSetStencilOpEXT);
 
 // synchronization2
 

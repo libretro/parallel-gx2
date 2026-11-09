@@ -4,8 +4,9 @@
 SRC := ../../src
 DEP := ../../dependencies
 CXX ?= g++
-FLAGS := -O1 -g -I$(SRC)
-# what the core's precompiled header, which the register definitions want, wants
+FLAGS := -O1 -g -I$(SRC) -I$(DEP)/Vulkan-Headers/include -DVK_NO_PROTOTYPES
+# what the core's precompiled header, which the register definitions want, wants;
+# the Vulkan headers for the state the draw sets
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)

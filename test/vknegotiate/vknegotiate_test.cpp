@@ -140,6 +140,14 @@ static void TestDevices()
 		// what the core enabled
 		for (const std::string& e : g_libretroVkDeviceExtensions)
 			CHECK(Has(w.asked, e.c_str()));
+		// cull, front face, depth and stencil as dynamic state where the GPU
+		// has it: on, with its feature
+		bool gpuEds = false;
+		for (auto& e : exts)
+			gpuEds = gpuEds || !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+		if (gpuEds)
+			CHECK(g_libretroVkHasExtendedDynamicState && Has(w.asked, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME));
+		std::printf("extended dynamic state: %s\n", gpuEds ? (g_libretroVkHasExtendedDynamicState ? "on" : "NOT ON") : "the GPU has none");
 		const char* own = nullptr;
 		for (auto& e : exts)
 			if (!Has(w.asked, e.extensionName))

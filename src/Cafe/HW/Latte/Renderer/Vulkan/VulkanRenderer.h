@@ -395,11 +395,18 @@ private:
 		// stencil reference and masks
 		uint32 prevStencilFrontU32{ 0xFFFFFFFF };
 		uint32 prevStencilBackU32{ 0xFFFFFFFF };
+		// cull mode, front face, depth and stencil tests (extended dynamic state)
+		uint32 prevPolygonCtrlU32{ 0xFFFFFFFF };
+		uint32 prevDepthControlU32{ 0xFFFFFFFF };
+		uint32 prevPrimitiveTypeU32{ 0xFFFFFFFF };
 
 		void resetCommandBufferState()
 		{
 			prevStencilFrontU32 = 0xFFFFFFFF;
 			prevStencilBackU32 = 0xFFFFFFFF;
+			prevPolygonCtrlU32 = 0xFFFFFFFF;
+			prevDepthControlU32 = 0xFFFFFFFF;
+			prevPrimitiveTypeU32 = 0xFFFFFFFF;
 			prevPolygonFrontOffsetU32 = 0xFFFFFFFF;
 			prevPolygonFrontScaleU32 = 0xFFFFFFFF;
 			prevPolygonFrontClampU32 = 0xFFFFFFFF;
@@ -457,6 +464,7 @@ private:
 			bool shader_float_controls = false; // VK_KHR_shader_float_controls
 			bool present_wait = false; // VK_KHR_present_wait
 			bool depth_clip_enable = false; // VK_EXT_depth_clip_enable
+			bool extended_dynamic_state = false; // VK_EXT_extended_dynamic_state
 			bool pipeline_robustness = false; // VK_EXT_pipeline_robustness
 			bool attachment_feedback_loop_layout = false; // VK_EXT_attachment_feedback_loop_layout
 			bool attachment_feedback_loop_dynamic_state = false; // VK_EXT_attachment_feedback_loop_dynamic_state (this is forced to false if VK_EXT_attachment_feedback_loop_layout is not supported)
@@ -520,6 +528,7 @@ private:
 	void draw_updateVkBlendConstants();
 	void draw_updateDepthBias(bool forceUpdate);
 	void draw_updateStencilState(bool forceUpdate);
+	void draw_updateDepthStencilCull(bool forceUpdate);
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();

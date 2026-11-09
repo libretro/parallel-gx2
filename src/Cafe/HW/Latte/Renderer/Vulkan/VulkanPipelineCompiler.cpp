@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
@@ -489,9 +490,6 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 {
 	// polygon control
 	const auto& polygonControlReg = latteRegister.PA_SU_SC_MODE_CNTL;
-	const auto frontFace = polygonControlReg.get_FRONT_FACE();
-	uint32 cullFront = polygonControlReg.get_CULL_FRONT();
-	uint32 cullBack = polygonControlReg.get_CULL_BACK();
 	uint32 polyOffsetFrontEnable = polygonControlReg.get_OFFSET_FRONT_ENABLED();
 
 	cemu_assert_debug(latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_NEAR_DISABLE() == latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE()); // near or far clipping can be disabled individually
@@ -529,29 +527,9 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 	else
 		rasterizer.depthBiasEnable = VK_FALSE;
 
-	// todo - how does culling behave with rects?
-	// right now we just assume that their winding is always CW
-	if (isPrimitiveRect)
-	{
-		if (frontFace == Latte::LATTE_PA_SU_SC_MODE_CNTL::E_FRONTFACE::CW)
-			cullFront = cullBack;
-		else
-			cullBack = cullFront;
-	}
-
-	if (cullFront && cullBack)
-		rasterizer.cullMode = VK_CULL_MODE_FRONT_AND_BACK;
-	else if (cullFront)
-		rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
-	else if (cullBack)
-		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-	else
-		rasterizer.cullMode = VK_CULL_MODE_NONE;
-
-	if (frontFace == Latte::LATTE_PA_SU_SC_MODE_CNTL::E_FRONTFACE::CCW)
-		rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	else
-		rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	const VulkanDepthStencilCull dsc = VulkanPipelineKey_DepthStencilCull(latteRegister);
+	rasterizer.cullMode = dsc.cullMode;
+	rasterizer.frontFace = dsc.frontFace;
 
 	// multisampling
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -709,81 +687,28 @@ void PipelineCompiler::InitDescriptorSetLayouts(VulkanRenderer* vkRenderer, Pipe
 
 void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRegister)
 {
-	// get depth control parameters
-	bool depthEnable = latteRegister.DB_DEPTH_CONTROL.get_Z_ENABLE();
-	auto depthFunc = latteRegister.DB_DEPTH_CONTROL.get_Z_FUNC();
-	bool depthWriteEnable = latteRegister.DB_DEPTH_CONTROL.get_Z_WRITE_ENABLE();
-
-	// setup VkPipelineDepthStencilStateCreateInfo
+	const VulkanDepthStencilCull dsc = VulkanPipelineKey_DepthStencilCull(latteRegister);
 	depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-	depthStencilState.depthTestEnable = depthEnable ? VK_TRUE : VK_FALSE;
-	depthStencilState.depthWriteEnable = depthWriteEnable ? VK_TRUE : VK_FALSE;
-
-	static const VkCompareOp vkDepthCompareTable[8] =
-	{
-		VK_COMPARE_OP_NEVER,
-		VK_COMPARE_OP_LESS,
-		VK_COMPARE_OP_EQUAL,
-		VK_COMPARE_OP_LESS_OR_EQUAL,
-		VK_COMPARE_OP_GREATER,
-		VK_COMPARE_OP_NOT_EQUAL,
-		VK_COMPARE_OP_GREATER_OR_EQUAL,
-		VK_COMPARE_OP_ALWAYS
-	};
-
-	depthStencilState.depthCompareOp = vkDepthCompareTable[(size_t)depthFunc];
-
+	depthStencilState.depthTestEnable = dsc.depthTestEnable;
+	depthStencilState.depthWriteEnable = dsc.depthWriteEnable;
+	depthStencilState.depthCompareOp = dsc.depthCompareOp;
 	depthStencilState.depthBoundsTestEnable = false; // todo
 	depthStencilState.minDepthBounds = 0.0f;
 	depthStencilState.maxDepthBounds = 1.0f;
-
-	// get stencil control parameters
-	bool stencilEnable = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ENABLE();
-	bool backStencilEnable = latteRegister.DB_DEPTH_CONTROL.get_BACK_STENCIL_ENABLE();
-	auto frontStencilFunc = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FUNC_F();
-	auto frontStencilZPass = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_F();
-	auto frontStencilZFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_F();
-	auto frontStencilFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FAIL_F();
-	auto backStencilFunc = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FUNC_B();
-	auto backStencilZPass = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_B();
-	auto backStencilZFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_B();
-	auto backStencilFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FAIL_B();
+	depthStencilState.stencilTestEnable = dsc.stencilTestEnable;
+	depthStencilState.front.compareOp = dsc.frontCompareOp;
+	depthStencilState.front.passOp = dsc.frontPassOp;
+	depthStencilState.front.depthFailOp = dsc.frontDepthFailOp;
+	depthStencilState.front.failOp = dsc.frontFailOp;
+	depthStencilState.back.compareOp = dsc.backCompareOp;
+	depthStencilState.back.passOp = dsc.backPassOp;
+	depthStencilState.back.depthFailOp = dsc.backDepthFailOp;
+	depthStencilState.back.failOp = dsc.backFailOp;
 	// The stencil reference, compare mask and write mask are dynamic state
 	// (InitDynamicState), set by the draw (draw_updateStencilState): a
-	// pipeline per value of them was a new driver compile for each.
-
-	static const VkStencilOp stencilOpTable[8] = {
-		VK_STENCIL_OP_KEEP,
-		VK_STENCIL_OP_ZERO,
-		VK_STENCIL_OP_REPLACE,
-		VK_STENCIL_OP_INCREMENT_AND_CLAMP,
-		VK_STENCIL_OP_DECREMENT_AND_CLAMP,
-		VK_STENCIL_OP_INVERT,
-		VK_STENCIL_OP_INCREMENT_AND_WRAP,
-		VK_STENCIL_OP_DECREMENT_AND_WRAP
-	};
-
-	depthStencilState.stencilTestEnable = stencilEnable ? VK_TRUE : VK_FALSE;
-
-	depthStencilState.front.compareOp = vkDepthCompareTable[(size_t)frontStencilFunc];
-	depthStencilState.front.depthFailOp = stencilOpTable[(size_t)frontStencilZFail];
-	depthStencilState.front.failOp = stencilOpTable[(size_t)frontStencilFail];
-	depthStencilState.front.passOp = stencilOpTable[(size_t)frontStencilZPass];
-
-	if (backStencilEnable)
-	{
-		depthStencilState.back.compareOp = vkDepthCompareTable[(size_t)backStencilFunc];
-		depthStencilState.back.depthFailOp = stencilOpTable[(size_t)backStencilZFail];
-		depthStencilState.back.failOp = stencilOpTable[(size_t)backStencilFail];
-		depthStencilState.back.passOp = stencilOpTable[(size_t)backStencilZPass];
-	}
-	else
-	{
-		depthStencilState.back.compareOp = vkDepthCompareTable[(size_t)frontStencilFunc];
-		depthStencilState.back.depthFailOp = stencilOpTable[(size_t)frontStencilZFail];
-		depthStencilState.back.failOp = stencilOpTable[(size_t)frontStencilFail];
-		depthStencilState.back.passOp = stencilOpTable[(size_t)frontStencilZPass];
-	}
+	// pipeline per value of them was a new driver compile for each. With
+	// VK_EXT_extended_dynamic_state the rest of this is dynamic state too
+	// (draw_updateDepthStencilCull), what is set here then ignored.
 }
 
 void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBlendConstants, bool usesDepthBias)
@@ -807,6 +732,16 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
 	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
 	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state)
+	{
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_CULL_MODE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_FRONT_FACE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_OP_EXT);
+	}
 
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamicState.dynamicStateCount = dynamicStates.size();
