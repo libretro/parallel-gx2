@@ -79,6 +79,12 @@ jobs:
         # point in the core: the frontend owns the context and the surface
         run: ./tools/check_no_wsi.sh
 
+      - name: "Pipelines from the state they are handed"
+        # no live GPU registers read where a pipeline is built or keyed: one
+        # loaded from the cache on a compile thread baked in the depth,
+        # stencil and clip state the GPU thread was drawing with
+        run: ./tools/check_pipeline_registers.sh
+
       - name: "No absolute paths written for the compiler"
         # MSYS2's make makes /c/... paths, which MinGW's g++ cannot open
         # inside a file (the precompiled header's stub broke the Windows build)

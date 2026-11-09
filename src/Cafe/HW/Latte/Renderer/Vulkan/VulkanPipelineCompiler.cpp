@@ -494,8 +494,8 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 	uint32 cullBack = polygonControlReg.get_CULL_BACK();
 	uint32 polyOffsetFrontEnable = polygonControlReg.get_OFFSET_FRONT_ENABLED();
 
-	cemu_assert_debug(LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_ZCLIP_NEAR_DISABLE() == LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE()); // near or far clipping can be disabled individually
-	bool zClipEnable = LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE() == false;
+	cemu_assert_debug(latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_NEAR_DISABLE() == latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE()); // near or far clipping can be disabled individually
+	bool zClipEnable = latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE() == false;
 
 	// z-clipping
 	rasterizerExt.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT;
@@ -503,10 +503,10 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 	rasterizerExt.flags = 0;
 
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	rasterizer.rasterizerDiscardEnable = LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
+	rasterizer.rasterizerDiscardEnable = latteRegister.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
 	rasterizer.pNext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.depth_clip_enable ? &rasterizerExt : nullptr;
 	// GX2SetSpecialState(0, true) workaround
-	if (!LatteGPUState.contextNew.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
+	if (!latteRegister.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
 		rasterizer.rasterizerDiscardEnable = false;
 
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
@@ -707,12 +707,12 @@ void PipelineCompiler::InitDescriptorSetLayouts(VulkanRenderer* vkRenderer, Pipe
 	}
 }
 
-void PipelineCompiler::InitDepthStencilState()
+void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRegister)
 {
 	// get depth control parameters
-	bool depthEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_ENABLE();
-	auto depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
-	bool depthWriteEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_WRITE_ENABLE();
+	bool depthEnable = latteRegister.DB_DEPTH_CONTROL.get_Z_ENABLE();
+	auto depthFunc = latteRegister.DB_DEPTH_CONTROL.get_Z_FUNC();
+	bool depthWriteEnable = latteRegister.DB_DEPTH_CONTROL.get_Z_WRITE_ENABLE();
 
 	// setup VkPipelineDepthStencilStateCreateInfo
 	depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -738,23 +738,23 @@ void PipelineCompiler::InitDepthStencilState()
 	depthStencilState.maxDepthBounds = 1.0f;
 
 	// get stencil control parameters
-	bool stencilEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ENABLE();
-	bool backStencilEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_BACK_STENCIL_ENABLE();
-	auto frontStencilFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_FUNC_F();
-	auto frontStencilZPass = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_F();
-	auto frontStencilZFail = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_F();
-	auto frontStencilFail = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_FAIL_F();
-	auto backStencilFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_FUNC_B();
-	auto backStencilZPass = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_B();
-	auto backStencilZFail = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_B();
-	auto backStencilFail = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_FAIL_B();
+	bool stencilEnable = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ENABLE();
+	bool backStencilEnable = latteRegister.DB_DEPTH_CONTROL.get_BACK_STENCIL_ENABLE();
+	auto frontStencilFunc = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FUNC_F();
+	auto frontStencilZPass = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_F();
+	auto frontStencilZFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_F();
+	auto frontStencilFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FAIL_F();
+	auto backStencilFunc = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FUNC_B();
+	auto backStencilZPass = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_B();
+	auto backStencilZFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_B();
+	auto backStencilFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FAIL_B();
 	// get stencil control parameters
-	uint32 stencilCompareMaskFront = LatteGPUState.contextNew.DB_STENCILREFMASK.get_STENCILMASK_F();
-	uint32 stencilWriteMaskFront = LatteGPUState.contextNew.DB_STENCILREFMASK.get_STENCILWRITEMASK_F();
-	uint32 stencilRefFront = LatteGPUState.contextNew.DB_STENCILREFMASK.get_STENCILREF_F();
-	uint32 stencilCompareMaskBack = LatteGPUState.contextNew.DB_STENCILREFMASK_BF.get_STENCILMASK_B();
-	uint32 stencilWriteMaskBack = LatteGPUState.contextNew.DB_STENCILREFMASK_BF.get_STENCILWRITEMASK_B();
-	uint32 stencilRefBack = LatteGPUState.contextNew.DB_STENCILREFMASK_BF.get_STENCILREF_B();
+	uint32 stencilCompareMaskFront = latteRegister.DB_STENCILREFMASK.get_STENCILMASK_F();
+	uint32 stencilWriteMaskFront = latteRegister.DB_STENCILREFMASK.get_STENCILWRITEMASK_F();
+	uint32 stencilRefFront = latteRegister.DB_STENCILREFMASK.get_STENCILREF_F();
+	uint32 stencilCompareMaskBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILMASK_B();
+	uint32 stencilWriteMaskBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILWRITEMASK_B();
+	uint32 stencilRefBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILREF_B();
 
 	static const VkStencilOp stencilOpTable[8] = {
 		VK_STENCIL_OP_KEEP,
@@ -877,7 +877,7 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 
 	// ###################################################
 
-	InitDepthStencilState();
+	InitDepthStencilState(latteRegister);
 
 	// ##########################################################################################################################################
 

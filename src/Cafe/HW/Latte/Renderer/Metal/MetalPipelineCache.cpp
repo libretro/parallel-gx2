@@ -238,7 +238,7 @@ uint64 MetalPipelineCache::CalculatePipelineHash(const LatteFetchShader* fetchSh
 	}
 
 	// Mesh pipeline
-	const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(LatteGPUState.contextRegister[mmVGT_PRIMITIVE_TYPE]);
+	const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(ctxRegister[mmVGT_PRIMITIVE_TYPE]);
     bool isPrimitiveRect = (primitiveMode == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS);
 
     bool usesGeometryShader = (geometryShader != nullptr || isPrimitiveRect);

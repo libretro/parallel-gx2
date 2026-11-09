@@ -403,6 +403,18 @@ test-no-wsi:
   script:
     - ./tools/check_no_wsi.sh
 
+# No live GPU registers read where a pipeline is built or keyed: one loaded
+# from the cache on a compile thread baked in the depth, stencil and clip
+# state the GPU thread was drawing with.
+test-pipeline-registers:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_pipeline_registers.sh
+
 # No path make made absolute written into a file the compiler reads: MinGW's
 # g++ cannot open MSYS2's /c/... paths (the precompiled header's stub).
 test-build-paths:
