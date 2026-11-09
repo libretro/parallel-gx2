@@ -118,6 +118,15 @@ pipelines on lavapipe from a replayed draw sequence, which arrive with M1.
 
 ### M1: fewer pipelines (cut the permutations)
 
+Done: the stencil reference, compare mask and write mask are core dynamic
+state on every device, set by the draw (`draw_updateStencilState`) and out
+of the key (`VulkanPipelineKey.cpp`); `test/pipeline_key` replays 1024
+stencil states (one key, where there were as many as values) and checks
+that each state a pipeline still bakes in keeps a key of its own.
+Pipelines are built from the state they are handed, never the live
+registers (`tools/check_pipeline_registers.sh`).
+
+
 - Make the state that only multiplies pipelines dynamic where the device
   has it: `VK_EXT_extended_dynamic_state` (cull, front face, topology,
   depth test/write/compare, stencil), `_2` (depth bias enable, primitive

@@ -169,6 +169,16 @@ jobs:
           make -C test/vknegotiate clean
           VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined ./test/vknegotiate/run_tests.sh
 
+      - name: "Vulkan pipeline key"
+        # state the pipelines take as dynamic state makes no new pipeline,
+        # and everything a pipeline bakes in still does: plain, then under
+        # ASan + UBSan. The core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/pipeline_key/run_tests.sh
+          make -C test/pipeline_key clean
+          SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
+
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
         # files on it: plain, then under ASan + UBSan. The core's precompiled

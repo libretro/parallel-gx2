@@ -161,6 +161,9 @@ VKFUNC_DEVICE(vkCmdBlitImage);
 VKFUNC_DEVICE(vkCmdPushConstants);
 VKFUNC_DEVICE(vkCmdSetBlendConstants);
 VKFUNC_DEVICE(vkCmdSetDepthBias);
+VKFUNC_DEVICE(vkCmdSetStencilCompareMask);
+VKFUNC_DEVICE(vkCmdSetStencilWriteMask);
+VKFUNC_DEVICE(vkCmdSetStencilReference);
 
 // synchronization2
 

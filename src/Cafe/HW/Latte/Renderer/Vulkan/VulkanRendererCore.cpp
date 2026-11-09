@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -61,8 +62,6 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 	stateHash = draw_calculateMinimalGraphicsPipelineHash(fetchShader, lcr);
 	stateHash = (stateHash >> 8) + (stateHash * 0x370531ull) % 0x7F980D3BF9B4639Dull;
 
-	uint32* ctxRegister = lcr.GetRawView();
-
 	if (vertexShader)
 		stateHash += vertexShader->baseHash;
 
@@ -78,59 +77,9 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 
 	stateHash = std::rotl<uint64>(stateHash, 13);
 
-	uint32 polygonCtrl = lcr.PA_SU_SC_MODE_CNTL.getRawValue();
-	stateHash += polygonCtrl;
-	stateHash = std::rotl<uint64>(stateHash, 7);
-
-	stateHash += ctxRegister[Latte::REGADDR::PA_CL_CLIP_CNTL];
-	stateHash = std::rotl<uint64>(stateHash, 7);
-
-	const auto colorControlReg = ctxRegister[Latte::REGADDR::CB_COLOR_CONTROL];
-	stateHash += colorControlReg;
-
-	stateHash += ctxRegister[Latte::REGADDR::CB_TARGET_MASK];
-
-	const uint32 blendEnableMask = (colorControlReg >> 8) & 0xFF;
-	if (blendEnableMask)
-	{
-		for (auto i = 0; i < 8; ++i)
-		{
-			if (((blendEnableMask & (1 << i))) == 0)
-				continue;
-			stateHash = std::rotl<uint64>(stateHash, 7);
-			stateHash += ctxRegister[Latte::REGADDR::CB_BLEND0_CONTROL + i];
-		}
-	}
-
-	stateHash += renderPassObj->m_hashForPipeline;
-
-	uint32 depthControl = ctxRegister[Latte::REGADDR::DB_DEPTH_CONTROL];
-	bool stencilTestEnable = depthControl & 1;
-	if (stencilTestEnable)
-	{
-		stateHash += ctxRegister[mmDB_STENCILREFMASK];
-		stateHash = std::rotl<uint64>(stateHash, 17);
-		if(depthControl & (1<<7)) // back stencil enable
-		{
-			stateHash += ctxRegister[mmDB_STENCILREFMASK_BF];
-			stateHash = std::rotl<uint64>(stateHash, 13);
-		}
-	}
-	else
-	{
-		// zero out stencil related bits (8-31)
-		depthControl &= 0xFF;
-	}
-
+	stateHash += VulkanPipelineKey_RenderState(lcr);
 	stateHash = std::rotl<uint64>(stateHash, 17);
-	stateHash += depthControl;
-
-	// polygon offset
-	if (polygonCtrl & (1 << 11))
-	{
-		// front offset enabled
-		stateHash += 0x1111;
-	}
+	stateHash += renderPassObj->m_hashForPipeline;
 
 	return stateHash;
 }
@@ -1171,6 +1120,39 @@ void VulkanRenderer::draw_updateVkBlendConstants()
 	vkCmdSetBlendConstants(m_state.currentCommandBuffer, (const float*)blendColorConstant);
 }
 
+// The stencil reference and masks, dynamic in every pipeline: set when they
+// changed, and with every pipeline bound (one bound in between that does not
+// have them dynamic leaves them undefined)
+void VulkanRenderer::draw_updateStencilState(bool forceUpdate)
+{
+	const auto& depthControl = LatteGPUState.contextNew.DB_DEPTH_CONTROL;
+	if (!depthControl.get_STENCIL_ENABLE())
+		return;
+	const auto& front = LatteGPUState.contextNew.DB_STENCILREFMASK;
+	const auto& back = LatteGPUState.contextNew.DB_STENCILREFMASK_BF;
+	const bool twoSided = depthControl.get_BACK_STENCIL_ENABLE();
+	const uint32 frontU32 = front.getRawValue();
+	const uint32 backU32 = twoSided ? back.getRawValue() : 0xFFFFFFFF;
+	if (!forceUpdate && m_state.prevStencilFrontU32 == frontU32 && m_state.prevStencilBackU32 == backU32)
+		return;
+	m_state.prevStencilFrontU32 = frontU32;
+	m_state.prevStencilBackU32 = backU32;
+	VkCommandBuffer cb = m_state.currentCommandBuffer;
+	if (!twoSided)
+	{
+		vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, front.get_STENCILMASK_F());
+		vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, front.get_STENCILWRITEMASK_F());
+		vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, front.get_STENCILREF_F());
+		return;
+	}
+	vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILMASK_F());
+	vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILWRITEMASK_F());
+	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_BIT, front.get_STENCILREF_F());
+	vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, back.get_STENCILMASK_B());
+	vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, back.get_STENCILWRITEMASK_B());
+	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, back.get_STENCILREF_B());
+}
+
 void VulkanRenderer::draw_updateDepthBias(bool forceUpdate)
 {
 	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
@@ -1473,11 +1455,13 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		// depth bias
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(true);
+		draw_updateStencilState(true);
 	}
 	else
 	{
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(false);
+		draw_updateStencilState(false);
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1668,11 +1652,13 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		// depth bias
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(true);
+		draw_updateStencilState(true);
 	}
 	else
 	{
 		if (pipeline_info->usesDepthBias)
 			draw_updateDepthBias(false);
+		draw_updateStencilState(false);
 	}
 
 	// update blend constants

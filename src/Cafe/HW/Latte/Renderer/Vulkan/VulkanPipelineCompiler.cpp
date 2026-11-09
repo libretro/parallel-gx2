@@ -748,13 +748,9 @@ void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRe
 	auto backStencilZPass = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZPASS_B();
 	auto backStencilZFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_ZFAIL_B();
 	auto backStencilFail = latteRegister.DB_DEPTH_CONTROL.get_STENCIL_FAIL_B();
-	// get stencil control parameters
-	uint32 stencilCompareMaskFront = latteRegister.DB_STENCILREFMASK.get_STENCILMASK_F();
-	uint32 stencilWriteMaskFront = latteRegister.DB_STENCILREFMASK.get_STENCILWRITEMASK_F();
-	uint32 stencilRefFront = latteRegister.DB_STENCILREFMASK.get_STENCILREF_F();
-	uint32 stencilCompareMaskBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILMASK_B();
-	uint32 stencilWriteMaskBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILWRITEMASK_B();
-	uint32 stencilRefBack = latteRegister.DB_STENCILREFMASK_BF.get_STENCILREF_B();
+	// The stencil reference, compare mask and write mask are dynamic state
+	// (InitDynamicState), set by the draw (draw_updateStencilState): a
+	// pipeline per value of them was a new driver compile for each.
 
 	static const VkStencilOp stencilOpTable[8] = {
 		VK_STENCIL_OP_KEEP,
@@ -769,9 +765,6 @@ void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRe
 
 	depthStencilState.stencilTestEnable = stencilEnable ? VK_TRUE : VK_FALSE;
 
-	depthStencilState.front.reference = stencilRefFront;
-	depthStencilState.front.compareMask = stencilCompareMaskFront;
-	depthStencilState.front.writeMask = stencilWriteMaskFront;
 	depthStencilState.front.compareOp = vkDepthCompareTable[(size_t)frontStencilFunc];
 	depthStencilState.front.depthFailOp = stencilOpTable[(size_t)frontStencilZFail];
 	depthStencilState.front.failOp = stencilOpTable[(size_t)frontStencilFail];
@@ -779,9 +772,6 @@ void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRe
 
 	if (backStencilEnable)
 	{
-		depthStencilState.back.reference = stencilRefBack;
-		depthStencilState.back.compareMask = stencilCompareMaskBack;
-		depthStencilState.back.writeMask = stencilWriteMaskBack;
 		depthStencilState.back.compareOp = vkDepthCompareTable[(size_t)backStencilFunc];
 		depthStencilState.back.depthFailOp = stencilOpTable[(size_t)backStencilZFail];
 		depthStencilState.back.failOp = stencilOpTable[(size_t)backStencilFail];
@@ -789,9 +779,6 @@ void PipelineCompiler::InitDepthStencilState(const LatteContextRegister& latteRe
 	}
 	else
 	{
-		depthStencilState.back.reference = stencilRefFront;
-		depthStencilState.back.compareMask = stencilCompareMaskFront;
-		depthStencilState.back.writeMask = stencilWriteMaskFront;
 		depthStencilState.back.compareOp = vkDepthCompareTable[(size_t)frontStencilFunc];
 		depthStencilState.back.depthFailOp = stencilOpTable[(size_t)frontStencilZFail];
 		depthStencilState.back.failOp = stencilOpTable[(size_t)frontStencilFail];
@@ -816,6 +803,10 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 	{
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT);
 	}
+	// core Vulkan, every device
+	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
+	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
+	dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
 
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamicState.dynamicStateCount = dynamicStates.size();

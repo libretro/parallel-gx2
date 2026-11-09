@@ -234,6 +234,22 @@ test-vknegotiate:
     - make -C test/vknegotiate clean
     - SANITIZER=address,undefined ./test/vknegotiate/run_tests.sh
 
+# The Vulkan pipelines' key: state the pipelines take as dynamic state makes
+# no new pipeline, and everything a pipeline bakes in still does.
+test-pipeline-key:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/pipeline_key/run_tests.sh
+    - make -C test/pipeline_key clean
+    - SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
+
 # The core's XML layer over libretro-common's rxml and the settings files on
 # it. The core's precompiled header wants fmt and glm.
 test-xml:

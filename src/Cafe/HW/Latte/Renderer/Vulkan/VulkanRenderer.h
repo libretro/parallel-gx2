@@ -392,9 +392,14 @@ private:
 		uint32 prevPolygonFrontOffsetU32{ 0xFFFFFFFF };
 		uint32 prevPolygonFrontScaleU32{ 0xFFFFFFFF };
 		uint32 prevPolygonFrontClampU32{ 0xFFFFFFFF };
+		// stencil reference and masks
+		uint32 prevStencilFrontU32{ 0xFFFFFFFF };
+		uint32 prevStencilBackU32{ 0xFFFFFFFF };
 
 		void resetCommandBufferState()
 		{
+			prevStencilFrontU32 = 0xFFFFFFFF;
+			prevStencilBackU32 = 0xFFFFFFFF;
 			prevPolygonFrontOffsetU32 = 0xFFFFFFFF;
 			prevPolygonFrontScaleU32 = 0xFFFFFFFF;
 			prevPolygonFrontClampU32 = 0xFFFFFFFF;
@@ -514,6 +519,7 @@ private:
 
 	void draw_updateVkBlendConstants();
 	void draw_updateDepthBias(bool forceUpdate);
+	void draw_updateStencilState(bool forceUpdate);
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();
