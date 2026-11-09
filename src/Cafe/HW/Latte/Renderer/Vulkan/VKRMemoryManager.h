@@ -304,7 +304,6 @@ public:
 	void DeleteBuffer(VkBuffer& buffer, VkDeviceMemory& deviceMem) const;
 
 	// overlay info
-	void appendOverlayHeapDebugInfo();
 
 	private:
 		class VulkanRenderer* m_vkr;

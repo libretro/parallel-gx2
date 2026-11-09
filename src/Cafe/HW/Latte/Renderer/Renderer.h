@@ -12,9 +12,6 @@
 #include "util/DXGIWrapper/DXGIWrapper.h"
 #endif
 
-// imgui forward declarations
-struct ImFontAtlas;
-struct ImGuiContext;
 
 enum class GfxVendor
 {
@@ -37,8 +34,6 @@ enum class RendererAPI
 
 	MAX
 };
-
-using ImTextureID = void*;
 
 class Renderer
 {
@@ -80,20 +75,13 @@ public:
 	virtual bool BeginFrame(bool mainWindow) = 0;
 
 	// flush control
-	virtual void Flush(bool waitIdle = false) = 0; // called when explicit flush is required (e.g. by imgui)
+	virtual void Flush(bool waitIdle = false) = 0; // called when explicit flush is required
 	virtual void NotifyLatteCommandProcessorIdle() = 0; // called when command processor has no more commands available or when stalled
 	virtual void SurfaceSync(Latte::E_COHER_CNTL coher, MPTR address, uint32 size) {} // triggered by game via GX2Invalidate, can be utilized by the render backend as an optimization hint
 
-	// imgui
-	virtual bool ImguiBegin(bool mainWindow);
-	virtual void ImguiEnd() = 0;
-	virtual ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) = 0;
-	virtual void DeleteTexture(ImTextureID id) = 0;
-	virtual void DeleteFontTextures() = 0;
 
 	GfxVendor GetVendor() const { return m_vendor; }
 	virtual bool UseTFViaSSBO() const { return false; }
-	virtual void AppendOverlayDebugInfo() = 0;
 
 	// rendertarget
 	virtual void renderTarget_setViewport(float x, float y, float width, float height, float nearZ, float farZ, bool halfZ = false) = 0;
@@ -193,9 +181,6 @@ protected:
 	void SaveScreenshot(const std::vector<uint8>& rgb_data, int width, int height, bool mainWindow);
 
 
-	ImFontAtlas* imguiFontAtlas{};
-	ImGuiContext* imguiTVContext{};
-	ImGuiContext* imguiPadContext{};
 
 #if BOOST_OS_WINDOWS
 	std::unique_ptr<DXGIWrapper> m_dxgi_wrapper{};

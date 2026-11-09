@@ -44,6 +44,7 @@
 #include "Cafe/TitleList/TitleConverter.h"
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/HW/Latte/Core/LatteOverlay.h"
 #include "Cafe/OS/libs/h264_avc/h264dec.h"
 #include "Cafe/HW/Espresso/Const.h"
 #include "Cafe/HW/Espresso/PPCState.h"
@@ -3321,24 +3322,8 @@ static void libretro_apply_core_options()
 		libretro_set_log_to_file(toFile);
 	}
 
-	// Cemu's own on-screen notifications cannot appear in this core at all, so
-	// they are held off rather than offered as a setting.
-	//
-	// Both renderers refuse the imgui frame they would be drawn in.
-	// OpenGLRenderer::ImguiBegin returns false on its first line under
-	// ENABLE_LIBRETRO - there is no GL context on the GPU thread - and
-	// VulkanRenderer::ImguiBegin gets there through AcquireNextSwapchainImage,
-	// which fails because a core that presents into an image the frontend owns
-	// has no swapchain. So nothing imgui ever reaches the screen either way.
-	//
-	// Leaving the position set only made LatteOverlay_wantsToDraw() say yes on
-	// every presented frame, for an ImguiBegin that returns false. Disabled, it
-	// says no and the call goes away.
-	//
-	// The notifications themselves are still worth having - the async shader
-	// compile warning is the one that matters - but through the frontend's own
-	// OSD, which is a different piece of work: forward
-	// LatteOverlay_pushNotification to SET_MESSAGE_EXT.
+	// Cemu's notifications are shown by the frontend (retro_run takes them
+	// from LatteOverlay); its own overlay is not built in this core.
 	cfg.notification.position = ScreenPosition::kDisabled;
 
 	if (const char* v = libretro_get_option_value("cemu_show_game_fps"))
@@ -6602,9 +6587,8 @@ RETRO_API void retro_deinit()
 // ============================================================================
 
 // The Wii U's software keyboard (a name to type in Wind Waker HD, say). Cemu
-// draws it with imgui, which never reaches the screen in this core (see
-// cfg.notification.position), so the title sat waiting on a keyboard nobody
-// could see or use (NNshi). Its input, though, is Cemu's own: standalone
+// draws it with imgui, which this core does not have, so the title sat
+// waiting on a keyboard nobody could see or use (NNshi). Its input, though, is Cemu's own: standalone
 // feeds it the host keyboard, and so does this, from RetroArch's keyboard
 // callback - with the text so far shown in RetroArch's OSD. Keys reach the
 // core only with Game Focus on (Scroll Lock by default) where the keyboard
@@ -6666,9 +6650,8 @@ static void libretro_update_software_keyboard()
 
 // Rename Active Account: a name typed inside the core, since a core option
 // cannot hold free text and a frontend's own keyboard is not offered to cores
-// (Shoegzer, #28). Nothing of the core's is drawn over the picture (imgui
-// never reaches the screen here), so the name so far is shown as the
-// frontend's notification. A pad picks it a character at a time, the way an
+// (Shoegzer, #28). Nothing of the core's is drawn over the picture, so the
+// name so far is shown as the frontend's notification. A pad picks it a character at a time, the way an
 // arcade's initials are entered; a keyboard types it, through the frontend's
 // keyboard callback. The game gets no input while the entry is open.
 static struct
@@ -7559,6 +7542,11 @@ RETRO_API void retro_run()
 {
 	// an H.264 decoder the GPU was behind on tries again
 	H264::FrameTick();
+	// Cemu's notifications, the error viewer's text among them, from whatever
+	// thread they came from, to the frontend's messages here on its own
+	LatteOverlay_takeNotifications([](const std::string& text, sint32 durationMs) {
+		libretro_show_message(RETRO_LOG_INFO, (unsigned)std::max<sint32>(durationMs, 1000), text);
+	});
 
 	if (s_ppc_process_exited.exchange(false, std::memory_order_acq_rel) && environ_cb)
 	{

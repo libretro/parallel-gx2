@@ -23,10 +23,6 @@
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "config/CemuConfig.h"
 
-#define IMGUI_IMPL_METAL_CPP
-#include "imgui/imgui_extension.h"
-#include "imgui/imgui_impl_metal.h"
-
 #define EVENT_VALUE_WRAP 4096
 
 extern bool hasValidFramebufferAttached;
@@ -334,7 +330,6 @@ void MetalRenderer::Initialize()
 void MetalRenderer::Shutdown()
 {
     // TODO: should shutdown both layers
-    ImGui_ImplMetal_Shutdown();
     CommitCommandBuffer();
     Renderer::Shutdown();
     RendererShaderMtl::Shutdown();
@@ -543,152 +538,6 @@ void MetalRenderer::NotifyLatteCommandProcessorIdle()
 {
     //if (m_commitOnIdle)
     //    CommitCommandBuffer();
-}
-
-bool MetalRenderer::ImguiBegin(bool mainWindow)
-{
-    if (!Renderer::ImguiBegin(mainWindow))
-		return false;
-
-	if (!AcquireDrawable(mainWindow))
-		return false;
-
-	EnsureImGuiBackend();
-
-	// Check if the font texture needs to be built
-	ImGuiIO& io = ImGui::GetIO();
-    if (!io.Fonts->IsBuilt())
-        ImGui_ImplMetal_CreateFontsTexture(m_device);
-
-	auto& layer = GetLayer(mainWindow);
-
-	// Render pass descriptor
-	NS_STACK_SCOPED MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
-    auto colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
-    colorAttachment->setTexture(layer.GetDrawable()->texture());
-    colorAttachment->setLoadAction(MTL::LoadActionLoad);
-    colorAttachment->setStoreAction(MTL::StoreActionStore);
-
-    // New frame
-	ImGui_ImplMetal_NewFrame(renderPassDescriptor);
-	ImGui_UpdateWindowInformation(mainWindow);
-	ImGui::NewFrame();
-
-	if (m_encoderType != MetalEncoderType::Render)
-	    GetTemporaryRenderCommandEncoder(renderPassDescriptor);
-
-	return true;
-}
-
-void MetalRenderer::ImguiEnd()
-{
-    EnsureImGuiBackend();
-
-    if (m_encoderType != MetalEncoderType::Render)
-    {
-        cemuLog_logOnce(LogType::Force, "no render command encoder, cannot draw ImGui");
-        return;
-    }
-
-    ImGui::Render();
-	ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), GetCurrentCommandBuffer(), (MTL::RenderCommandEncoder*)m_commandEncoder);
-	//ImGui::EndFrame();
-
-	EndEncoding();
-}
-
-ImTextureID MetalRenderer::GenerateTexture(const std::vector<uint8>& data, const Vector2i& size)
-{
-    try
-	{
-		std::vector <uint8> tmp(size.x * size.y * 4);
-		for (size_t i = 0; i < data.size() / 3; ++i)
-		{
-			tmp[(i * 4) + 0] = data[(i * 3) + 0];
-			tmp[(i * 4) + 1] = data[(i * 3) + 1];
-			tmp[(i * 4) + 2] = data[(i * 3) + 2];
-			tmp[(i * 4) + 3] = 0xFF;
-		}
-
-		NS_STACK_SCOPED MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
-		desc->setTextureType(MTL::TextureType2D);
-		desc->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
-		desc->setWidth(size.x);
-		desc->setHeight(size.y);
-		desc->setStorageMode(m_isAppleGPU ? MTL::StorageModeShared : MTL::StorageModeManaged);
-		desc->setUsage(MTL::TextureUsageShaderRead);
-
-		MTL::Texture* texture = m_device->newTexture(desc);
-
-		// TODO: do a GPU copy?
-		texture->replaceRegion(MTL::Region(0, 0, size.x, size.y), 0, 0, tmp.data(), size.x * 4, 0);
-
-		return (ImTextureID)texture;
-	}
-	catch (const std::exception& ex)
-	{
-		cemuLog_log(LogType::Force, "can't generate imgui texture: {}", ex.what());
-		return nullptr;
-	}
-}
-
-void MetalRenderer::DeleteTexture(ImTextureID id)
-{
-    EnsureImGuiBackend();
-
-    ((MTL::Texture*)id)->release();
-}
-
-void MetalRenderer::DeleteFontTextures()
-{
-    EnsureImGuiBackend();
-
-    ImGui_ImplMetal_DestroyFontsTexture();
-}
-
-void MetalRenderer::AppendOverlayDebugInfo()
-{
-    ImGui::Text("--- GPU info ---");
-    ImGui::Text("GPU                        %s", m_device->name()->utf8String());
-    ImGui::Text("Is Apple GPU               %s", (m_isAppleGPU ? "yes" : "no"));
-    ImGui::Text("Supports framebuffer fetch %s", (m_supportsFramebufferFetch ? "yes" : "no"));
-    ImGui::Text("Has unified memory         %s", (m_hasUnifiedMemory ? "yes" : "no"));
-    ImGui::Text("Supports Metal3            %s", (m_supportsMetal3 ? "yes" : "no"));
-
-    ImGui::Text("--- Metal info ---");
-    ImGui::Text("Render pipeline states     %zu", m_pipelineCache->GetPipelineCacheSize());
-
-    ImGui::Text("--- Metal info (per frame) ---");
-    ImGui::Text("Command buffers            %u", m_performanceMonitor.m_commandBuffers);
-    ImGui::Text("Render passes              %u", m_performanceMonitor.m_renderPasses);
-    ImGui::Text("Clears                     %u", m_performanceMonitor.m_clears);
-    ImGui::Text("Manual vertex fetch draws  %u (mesh draws: %u)", m_performanceMonitor.m_manualVertexFetchDraws, m_performanceMonitor.m_meshDraws);
-    ImGui::Text("Triangle fans              %u", m_performanceMonitor.m_triangleFans);
-
-    ImGui::Text("--- Cache debug info ---");
-
-	uint32 bufferCacheHeapSize = 0;
-	uint32 bufferCacheAllocationSize = 0;
-	uint32 bufferCacheNumAllocations = 0;
-
-	LatteBufferCache_getStats(bufferCacheHeapSize, bufferCacheAllocationSize, bufferCacheNumAllocations);
-
-	ImGui::Text("Buffer");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Allocs: %u", (uint32)(bufferCacheAllocationSize + 1023) / 1024, ((uint32)bufferCacheHeapSize + 1023) / 1024, (uint32)bufferCacheNumAllocations);
-
-	uint32 numBuffers;
-	size_t totalSize, freeSize;
-
-	m_memoryManager->GetStagingAllocator().GetStats(numBuffers, totalSize, freeSize);
-	ImGui::Text("Staging");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Buffers: %u", ((uint32)(totalSize - freeSize) + 1023) / 1024, ((uint32)totalSize + 1023) / 1024, (uint32)numBuffers);
-
-	m_memoryManager->GetIndexAllocator().GetStats(numBuffers, totalSize, freeSize);
-	ImGui::Text("Index");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Buffers: %u", ((uint32)(totalSize - freeSize) + 1023) / 1024, ((uint32)totalSize + 1023) / 1024, (uint32)numBuffers);
 }
 
 void MetalRenderer::renderTarget_setViewport(float x, float y, float width, float height, float nearZ, float farZ, bool halfZ)
@@ -2312,15 +2161,6 @@ void MetalRenderer::SwapBuffer(bool mainWindow)
 
     auto commandBuffer = GetCommandBuffer();
     GetLayer(mainWindow).PresentDrawable(commandBuffer);
-}
-
-void MetalRenderer::EnsureImGuiBackend()
-{
-    if (!ImGui::GetIO().BackendRendererUserData)
-    {
-        ImGui_ImplMetal_Init(m_device);
-        //ImGui_ImplMetal_CreateFontsTexture(m_device);
-    }
 }
 
 void MetalRenderer::StartCapture()

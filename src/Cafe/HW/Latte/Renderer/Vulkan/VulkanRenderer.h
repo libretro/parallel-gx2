@@ -208,9 +208,7 @@ public:
 	void QueryMemoryInfo();
 	void QueryAvailableFormats();
 
-	void AppendOverlayDebugInfo() override;
 
-	void ImguiInit();
 	VkInstance GetVkInstance() const { return m_instance; }
 	VkDevice GetLogicalDevice() const { return m_logicalDevice; }
 	VkPhysicalDevice GetPhysicalDevice() const { return m_physicalDevice; }
@@ -420,7 +418,6 @@ private:
 		bool drawSequenceSkip; // if true, skip draw_execute()
 	}m_state;
 
-	VkRenderPass m_imguiRenderPass = VK_NULL_HANDLE;
 
 	VkDescriptorPool m_descriptorPool;
 
@@ -504,12 +501,6 @@ private:
 
 	uint64 GetDescriptorSetStateHash(LatteDecompilerShader* shader);
 
-	// imgui
-	bool ImguiBegin(bool mainWindow) override;
-	void ImguiEnd() override;
-	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
-	void DeleteTexture(ImTextureID id) override;
-	void DeleteFontTextures() override;
 	bool BeginFrame(bool mainWindow) override;
 
 	bool UseTFViaSSBO() const override

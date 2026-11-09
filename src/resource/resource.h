@@ -5,7 +5,6 @@
 #include "Common/version.h"
 #define IDI_ICON2                       102
 #define IDI_ICON3                       103
-#define IDR_FONTAWESOME                 116
 
 // Next default values for new objects
 // 

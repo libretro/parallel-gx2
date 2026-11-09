@@ -12,9 +12,8 @@
 #include "Cafe/IOSU/nn/iosu_nn_service.h"
 #include "Common/socket.h"
 #include "Common/CafeString.h"
+#include "Cafe/HW/Latte/Core/LatteOverlay.h"
 
-std::mutex g_friend_notification_mutex;
-std::vector< std::pair<std::string, int> > g_friend_notifications;
 
 namespace iosu
 {
@@ -85,13 +84,12 @@ namespace iosu
 			cemuLog_logDebug(LogType::Force, "Friends::Notification {:02x} pid {:08x}", type, pid);
 			if(!GetConfig().notification.friends)
 				return;
-			std::unique_lock lock(g_friend_notification_mutex);
 			std::string message;
 			if(type == NexFriends::NOTIFICATION_TYPE::NOTIFICATION_TYPE_ONLINE)
 			{
-				g_friend_notifications.emplace_back("Connected to friend service", 5000);
+				LatteOverlay_pushNotification("Connected to friend service", 5000);
 				if(g_fpd.nexFriendSession && g_fpd.nexFriendSession->getPendingFriendRequestCount() > 0)
-					g_friend_notifications.emplace_back(fmt::format("You have {} pending friend request(s)", g_fpd.nexFriendSession->getPendingFriendRequestCount()), 5000);
+					LatteOverlay_pushNotification(fmt::format("You have {} pending friend request(s)", g_fpd.nexFriendSession->getPendingFriendRequestCount()), 5000);
 			}
 			else
 			{
@@ -119,7 +117,7 @@ namespace iosu
 						if (!tmp.empty())
 							name = tmp;
 					}
-					g_friend_notifications.emplace_back(fmt::format(fmt::runtime(msg_format), name), 5000);
+					LatteOverlay_pushNotification(fmt::format(fmt::runtime(msg_format), name), 5000);
 				}
 			}
 		}

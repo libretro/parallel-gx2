@@ -3,10 +3,7 @@
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 
-#include <imgui.h>
-#include "imgui/imgui_extension.h"
 #include "util/helpers/helpers.h"
-#include "resource/IconsFontAwesome5.h"
 
 #define SWKBD_FORM_STRING_MAX_LENGTH	(4096) // counted in 16-bit characters
 
@@ -79,7 +76,7 @@ typedef struct
 	SwkbdKeyboardArg_t keyboardArg;
 	// input form appear args
 	sint32 maxTextLength;
-	// imgui keyboard drawing stuff
+	// state of the keyboard drawn by standalone Cemu, unused here
 	bool shiftActivated;
 	bool returnState;
 	bool cancelState;
@@ -397,167 +394,6 @@ void SwkbdCalc(void* controllerInfo)
 }
 
 void swkbd_keyInput(uint32 keyCode);
-void swkbd_render(bool mainWindow)
-{
-	// only render if active
-	if( swkbdInternalState == NULL || swkbdInternalState->isActive == false)
-		return;
-	
-	auto& io = ImGui::GetIO();
-	const auto font = ImGui_GetFont(48.0f);
-	const auto textFont = ImGui_GetFont(24.0f);
-	if (!font || !textFont)
-		return;
-
-	const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
-
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
-
-	ImGui::SetNextWindowPos({ 0,0 }, ImGuiCond_Always);
-	ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0,0 });
-	ImGui::SetNextWindowBgAlpha(0.8f);
-	ImGui::Begin("Background overlay", nullptr, kPopupFlags | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus);
-	ImGui::End();
-	ImGui::PopStyleVar(2);
-
-	ImVec2 position = { io.DisplaySize.x / 2.0f, io.DisplaySize.y / 3.0f };
-	ImVec2 pivot = { 0.5f, 0.5f };
-
-	const auto button_len = font->GetCharAdvance('W');
-	const float len = button_len * std::max(4, std::max(swkbdInternalState->maxTextLength, (sint32)swkbdInternalState->keyboardArg.receiverArg.stringBufSize));
-
-	ImVec2 box_size = { std::min(io.DisplaySize.x * 0.9f, len + 90), 0 };
-	ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
-	ImGui::SetNextWindowSize(box_size, ImGuiCond_Always);
-	ImGui::SetNextWindowBgAlpha(0.9f);
-	ImGui::PushFont(font);
-	if (ImGui::Begin("Keyboard Input", nullptr, kPopupFlags))
-	{
-		ImGui::Text("%s", _utf8WrapperPtr(ICON_FA_KEYBOARD));
-		ImGui::SameLine(70);
-		auto text = boost::nowide::narrow(fmt::format(L"{}", swkbdInternalState->formStringBuffer));
-
-		static std::chrono::steady_clock::time_point s_last_tick = tick_cached();
-		static bool s_blink_state = false;
-		const auto now = tick_cached();
-
-		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - s_last_tick).count() >= 500)
-		{
-			s_blink_state = !s_blink_state;
-			s_last_tick = now;
-		}
-
-		if (s_blink_state)
-			text += "|";
-
-		ImGui::PushTextWrapPos();
-		ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
-		ImGui::PopTextWrapPos();
-
-		position.y += ImGui::GetWindowSize().y + 100.0f;
-	}
-	ImGui::End();
-	ImGui::PopFont();
-
-	ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
-	//ImGui::SetNextWindowSize({ io.DisplaySize.x * 0.9f , 0.0f}, ImGuiCond_Always);
-	ImGui::SetNextWindowBgAlpha(0.9f);
-	ImGui::PushFont(textFont);
-
-	if (ImGui::Begin(fmt::format("Software keyboard##SoftwareKeyboard{}",mainWindow).c_str(), nullptr, kPopupFlags))
-	{
-		if(swkbdInternalState->shiftActivated)
-		{
-			const char* keys[] =
-			{
-				"#", "[", "]", "$", "%", "^", "&", "*", "(", ")", "_", _utf8WrapperPtr(ICON_FA_ARROW_CIRCLE_LEFT), "\n",
-				"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "@", "\n",
-				"A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "\"", "\n",
-				"Z", "X", "C", "V", "B", "N", "M", "<", ">", "+", "=", "\n",
-				_utf8WrapperPtr(ICON_FA_ARROW_UP), " ", _utf8WrapperPtr(ICON_FA_CHECK)
-			};
-			for (auto key : keys)
-			{
-				if (*key != '\n')
-				{
-					if (ImGui::Button(key, { *key == ' ' ? 537 : (button_len + 5), 0}))
-					{
-						if (strcmp(key, _utf8WrapperPtr(ICON_FA_ARROW_CIRCLE_LEFT)) == 0)
-							swkbd_keyInput(8);
-						else if (strcmp(key, _utf8WrapperPtr(ICON_FA_ARROW_UP)) == 0)
-							swkbdInternalState->shiftActivated = !swkbdInternalState->shiftActivated;
-						else if (strcmp(key, _utf8WrapperPtr(ICON_FA_CHECK)) == 0)
-							swkbd_keyInput(13);
-						else
-							swkbd_keyInput(*key);
-					}
-
-					ImGui::SameLine();
-				}
-				else
-					ImGui::NewLine();
-			}
-		}
-		else
-		{
-			const char* keys[] =
-			{
-				"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", _utf8WrapperPtr(ICON_FA_ARROW_CIRCLE_LEFT), "\n",
-				"q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "/", "\n",
-				"a", "s", "d", "f", "g", "h", "j", "k", "l", ":", "'", "\n",
-				"z", "x", "c", "v", "b", "n", "m", ",", ".", "?", "!", "\n",
-				_utf8WrapperPtr(ICON_FA_ARROW_UP), " ", _utf8WrapperPtr(ICON_FA_CHECK)
-			};
-			for (auto key : keys)
-			{
-				if (*key != '\n')
-				{
-					if (ImGui::Button(key, { *key == ' ' ? 537 : (button_len + 5), 0 }))
-					{
-						if (strcmp(key, _utf8WrapperPtr(ICON_FA_ARROW_CIRCLE_LEFT)) == 0)
-							swkbd_keyInput(8);
-						else if (strcmp(key, _utf8WrapperPtr(ICON_FA_ARROW_UP)) == 0)
-							swkbdInternalState->shiftActivated = !swkbdInternalState->shiftActivated;
-						else if (strcmp(key, _utf8WrapperPtr(ICON_FA_CHECK)) == 0)
-							swkbd_keyInput(13);
-						else
-							swkbd_keyInput(*key);
-					}
-
-					ImGui::SameLine();
-				}
-				else
-					ImGui::NewLine();
-			}
-		}
-		ImGui::NewLine();
-	}
-	ImGui::End();
-
-	if (io.NavInputs[ImGuiNavInput_Cancel] > 0)
-	{
-		if(!swkbdInternalState->cancelState)
-			swkbd_keyInput(8); // backspace
-		swkbdInternalState->cancelState = true;
-	}
-	else
-		swkbdInternalState->cancelState = false;
-
-	if (io.NavInputs[ImGuiNavInput_Input] > 0)
-	{
-		if (!swkbdInternalState->returnState)
-			swkbd_keyInput(13); // return
-		swkbdInternalState->returnState = true;
-	}
-	else
-		swkbdInternalState->returnState = false;
-
-	ImGui::PopFont();
-	ImGui::PopStyleColor();
-}
-
 // What has been typed so far, for a frontend that cannot draw the keyboard
 std::wstring swkbd_getInputText()
 {

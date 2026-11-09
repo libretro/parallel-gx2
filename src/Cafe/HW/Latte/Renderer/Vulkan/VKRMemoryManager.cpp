@@ -1,6 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRMemoryManager.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
-#include <imgui.h>
 
 /* VKRSynchronizedMemoryBuffer */
 
@@ -635,17 +634,3 @@ void VKRMemoryManager::imageMemoryFree(VkImageMemAllocation* imageMemAllocation)
 	delete imageMemAllocation;
 }
 
-void VKRMemoryManager::appendOverlayHeapDebugInfo()
-{
-	for (auto& itr : map_textureHeap)
-	{
-		uint32 heapSize;
-		uint32 allocatedBytes;
-		itr.second->getStatistics(heapSize, allocatedBytes);
-
-		uint32 heapSizeMB = (heapSize / 1024 / 1024);
-		uint32 allocatedBytesMB = (allocatedBytes / 1024 / 1024);
-
-		ImGui::Text("%s", fmt::format("{0:#08x} Size: {1}MB/{2}MB", itr.first, allocatedBytesMB, heapSizeMB).c_str());
-	}
-}

@@ -68,12 +68,6 @@ public:
 
 	static OpenGLRenderer* GetInstance();
 
-	// imgui
-	bool ImguiBegin(bool mainWindow) override;
-	void ImguiEnd() override;
-	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
-	void DeleteTexture(ImTextureID id) override;
-	void DeleteFontTextures() override;
 
 	void Initialize() override;
 	bool IsPadWindowActive() override;
@@ -91,10 +85,6 @@ public:
 
 	void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground) override;
 
-	void AppendOverlayDebugInfo() override
-	{
-		// does nothing currently
-	}
 
 	// rendertarget
 	void renderTarget_setViewport(float x, float y, float width, float height, float nearZ, float farZ, bool halfZ = false) override;

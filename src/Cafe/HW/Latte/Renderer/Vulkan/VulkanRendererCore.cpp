@@ -10,7 +10,6 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
-#include "imgui/imgui_impl_vulkan.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/helpers/helpers.h"
 

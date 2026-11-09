@@ -184,18 +184,10 @@ public:
 	bool BeginFrame(bool mainWindow) override;
 
 	// flush control
-	void Flush(bool waitIdle = false) override;		// called when explicit flush is required (e.g. by imgui)
+	void Flush(bool waitIdle = false) override;		// called when explicit flush is required
 	void NotifyLatteCommandProcessorIdle() override; // called when command processor has no more commands available or when stalled
 
-	// imgui
-	bool ImguiBegin(bool mainWindow) override;
-	void ImguiEnd() override;
-	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
-	void DeleteTexture(ImTextureID id) override;
-	void DeleteFontTextures() override;
-
 	bool UseTFViaSSBO() const override { return true; }
-	void AppendOverlayDebugInfo() override;
 
 	// rendertarget
 	void renderTarget_setViewport(float x, float y, float width, float height, float nearZ, float farZ, bool halfZ = false) override;
@@ -553,8 +545,6 @@ private:
 	}
 
 	void SwapBuffer(bool mainWindow);
-
-	void EnsureImGuiBackend();
 
 	// GPU capture
 	void StartCapture();

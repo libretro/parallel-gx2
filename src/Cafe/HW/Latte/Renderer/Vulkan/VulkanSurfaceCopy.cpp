@@ -125,8 +125,6 @@ struct VkCopySurfaceState_t
 	sint32 height;
 };
 
-extern std::atomic_int g_compiling_pipelines;
-
 uint64 VulkanRenderer::copySurface_getPipelineStateHash(VkCopySurfaceState_t& state)
 {
 	uint64 h = 0;

@@ -6,7 +6,6 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cemu/FileCache/FileCache.h"
 #include "Cafe/GameProfile/GameProfile.h"
-#include "WindowSystem.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #ifdef ENABLE_OPENGL
@@ -21,8 +20,6 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h"
 #endif
 
-#include <imgui.h>
-#include "imgui/imgui_extension.h"
 
 #include "config/ActiveSettings.h"
 #include "Cafe/TitleList/GameInfo.h"
@@ -56,8 +53,6 @@ struct
 
 struct
 {
-	ImTextureID textureTVId;
-	ImTextureID textureDRCId;
 	// shader loading
 	sint32 loadedShaderFiles;
 	sint32 shaderFileCount;
@@ -122,48 +117,6 @@ void LatteShaderCache_updateCompileQueue(sint32 maxRemainingEntries)
 			LatteShader_FinishCompilation(shader);
 		LatteShaderCache_removeFromCompileQueue(0);
 	}
-}
-
-typedef struct
-{
-	unsigned char imageTypeCode;
-	short int imageWidth;
-	short int imageHeight;
-	unsigned char bitCount;
-	std::vector<uint8> imageData;
-} TGAFILE;
-
-bool LoadTGAFile(const std::vector<uint8>& buffer, TGAFILE *tgaFile)
-{
-	if (buffer.size() <= 18)
-		return false;
-
-	tgaFile->imageTypeCode = buffer[2];
-	if (tgaFile->imageTypeCode != 2 && tgaFile->imageTypeCode != 3)
-		return false;
-
-	tgaFile->imageWidth = *(uint16*)(buffer.data() + 12);
-	tgaFile->imageHeight = *(uint16*)(buffer.data() + 14);
-	tgaFile->bitCount = buffer[16];
-
-	// Color mode -> 3 = BGR, 4 = BGRA.
-	const uint8 colorMode = tgaFile->bitCount / 8;
-	if (colorMode != 3)
-		return false;
-
-	const uint32 imageSize = tgaFile->imageWidth * tgaFile->imageHeight * colorMode;
-	if (imageSize + 18 >= buffer.size())
-		return false;
-
-	tgaFile->imageData.resize(imageSize);
-	std::copy(buffer.data() + 18, buffer.data() + 18 + imageSize, tgaFile->imageData.begin());
-	// Change from BGR to RGB so OpenGL can read the image data.
-	for (uint32 imageIdx = 0; imageIdx < imageSize; imageIdx += colorMode)
-	{
-		std::swap(tgaFile->imageData[imageIdx], tgaFile->imageData[imageIdx + 2]);
-	}
-
-	return true;
 }
 
 class BootSoundPlayer
@@ -315,44 +268,6 @@ uint32 LatteShaderCache_getPipelineCacheExtraVersion(uint64 titleId)
 	return extraVersion;
 }
 
-void LatteShaderCache_drawBackgroundImage(ImTextureID texture, int width, int height)
-{
-	// clear framebuffers and clean up
-	const auto kPopupFlags =
-			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
-			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize |
-			ImGuiWindowFlags_NoBringToFrontOnFocus;
-	auto& io = ImGui::GetIO();
-	ImGui::SetNextWindowPos({0, 0}, ImGuiCond_Always);
-	ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-	if (ImGui::Begin("Background texture", nullptr, kPopupFlags))
-	{
-		if (texture)
-		{
-			float imageDisplayWidth = io.DisplaySize.x;
-			float imageDisplayHeight = height * imageDisplayWidth / width;
-
-			float paddingLeftAndRight = 0.0f;
-			float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight) / 2.0f;
-			if (imageDisplayHeight > io.DisplaySize.y)
-			{
-				imageDisplayHeight = io.DisplaySize.y;
-				imageDisplayWidth = width * imageDisplayHeight / height;
-				paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth) / 2.0f;
-				paddingTopAndBottom = 0.0f;
-			}
-
-			ImGui::GetWindowDrawList()->AddImage(texture, ImVec2(paddingLeftAndRight, paddingTopAndBottom),
-												 ImVec2(io.DisplaySize.x - paddingLeftAndRight,
-														io.DisplaySize.y - paddingTopAndBottom), {0, 1}, {1, 0});
-		}
-	}
-	ImGui::End();
-	ImGui::PopStyleVar(2);
-}
-
 void LatteShaderCache_Load()
 {
 	shaderCacheScreenStats.compiledShaderCount = 0;
@@ -425,42 +340,6 @@ void LatteShaderCache_Load()
 	sint32 entryCount = s_shaderCacheGeneric->GetMaximumFileIndex();
 	g_shaderCacheLoaderState.shaderFileCount = s_shaderCacheGeneric->GetFileCount();
 	g_shaderCacheLoaderState.loadedShaderFiles = 0;
-
-	// get game background loading image
-	auto loadBackgroundTexture = [](bool isTV, ImTextureID& out)
-	{
-		TGAFILE file{};
-		out = nullptr;
-
-		std::string fileName = isTV ? "bootTvTex.tga" : "bootDRCTex.tga";
-
-		std::string texPath = fmt::format("{}/meta/{}", CafeSystem::GetMlcStoragePath(CafeSystem::GetForegroundTitleId()), fileName);
-		sint32 status;
-		auto fscfile = fsc_open(texPath.c_str(), FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &status);
-		if (fscfile)
-		{
-			uint32 size = fsc_getFileSize(fscfile);
-			if (size > 0)
-			{
-				std::vector<uint8> tmpData(size);
-				fsc_readFile(fscfile, tmpData.data(), size);
-				const bool backgroundLoaded = LoadTGAFile(tmpData, &file);
-
-				if (backgroundLoaded)
-					out = g_renderer->GenerateTexture(file.imageData, { file.imageWidth, file.imageHeight });
-			}
-
-			fsc_close(fscfile);
-		}
-	};
-
-	// The pictures are only ever used by the loading screen, which draws
-	// nowhere in a libretro core (see LatteShaderCache_ShowProgress). Reading
-	// and decoding two TGAs out of the title to hand them to a GenerateTexture
-	// that returns nullptr is work with no output at all.
-	g_shaderCacheLoaderState.textureTVId = nullptr;
-	g_shaderCacheLoaderState.textureDRCId = nullptr;
-	(void)loadBackgroundTexture;
 
 	if(GetConfig().play_boot_sound)
 		g_bootSndPlayer.StartSound();
@@ -549,10 +428,7 @@ void LatteShaderCache_Load()
 
 void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateFunc, bool isPipelines)
 {
-	const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize;
-	const auto textColor = 0xFF888888;
-
-	auto lastFrameUpdate = tick_cached();
+	(void)isPipelines;
 
 	while (true)
 	{
@@ -580,135 +456,9 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 		if (!r)
 			break;
 
-		// Everything below draws the loading screen, and in a libretro core it
-		// reaches nobody: the renderer has no swapchain of its own, so
-		// ImguiBegin fails on every pass and the whole screen - background
-		// image, progress bar, shader counts - is built and thrown away. The
-		// cost is not thrown away with it. Twenty times a second for the length
-		// of the cache load this does a BeginFrame, two font lookups and a
-		// SwapBuffers, and those renderer calls are the only thing on this path
-		// that can fault when the content is closed underneath it.
-		//
-		// The progress used to be handed to the frontend instead, and that had
-		// a reader for as long as the title started on a thread of its own. It
-		// does not now: the load runs inside the first retro_run, so the call
-		// that would pass the numbers on is the call that is blocked here. What
-		// reaches the user is the log.
-		continue;
-
-		// in order to slightly speed up shader loading, we don't update the display if little time passed
-		// this also avoids delayed loading in case third party software caps the framerate at 30
-		if ((tick_cached() - lastFrameUpdate) < std::chrono::milliseconds(1000 / 20)) // -> aim for 20 FPS
-			continue;
-
-		int w, h;
-		WindowSystem::GetWindowPhysSize(w, h);
-		const Vector2f window_size{ (float)w,(float)h };
-
-		ImGui_GetFont(window_size.y / 32.0f); // = 24 by default
-		ImGui_GetFont(window_size.y / 48.0f); // = 16
-
-		renderer->BeginFrame(true);
-		if (renderer->ImguiBegin(true))
-		{
-			auto& io = ImGui::GetIO();
-
-			// render background texture
-			LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureTVId, 1280, 720);
-
-			const auto progress_font = ImGui_GetFont(window_size.y / 32.0f); // = 24 by default
-			const auto shader_count_font = ImGui_GetFont(window_size.y / 48.0f); // = 16
-
-			ImVec2 position = { window_size.x / 2.0f, window_size.y / 2.0f };
-			ImVec2 pivot = { 0.5f, 0.5f };
-			ImVec2 progress_size = { io.DisplaySize.x * 0.5f, 0 };
-			ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
-			ImGui::SetNextWindowSize(progress_size, ImGuiCond_Always);
-			ImGui::SetNextWindowBgAlpha(0.8f);
-			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, textColor);
-			ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
-			ImGui::PushFont(progress_font);
-
-			std::string titleText = "Shader progress";
-
-			if (ImGui::Begin(titleText.c_str(), nullptr, kPopupFlags))
-			{
-				const float width = ImGui::GetWindowSize().x / 2.0f;
-
-				std::string text;
-				if (isPipelines)
-				{
-					text = "Loading cached pipelines...";
-				}
-				else
-				{
-					if (shaderCacheScreenStats.compiledShaderCount >= 3)
-						text = "Compiling cached shaders...";
-					else
-						text = "Loading cached shaders...";
-				}
-
-				ImGui::SetCursorPosX(width - ImGui::CalcTextSize(text.c_str()).x / 2);
-				ImGui::Text("%s", text.c_str());
-
-				float percentLoaded;
-				if(isPipelines)
-					percentLoaded = (float)g_shaderCacheLoaderState.loadedPipelines / (float)g_shaderCacheLoaderState.pipelineFileCount;
-				else
-					percentLoaded = (float)g_shaderCacheLoaderState.loadedShaderFiles / (float)g_shaderCacheLoaderState.shaderFileCount;
-				ImGui::ProgressBar(percentLoaded, { -1, 0 }, "");
-
-				if (isPipelines)
-					text = fmt::format("{}/{} ({}%)", g_shaderCacheLoaderState.loadedPipelines, g_shaderCacheLoaderState.pipelineFileCount, (int)(percentLoaded * 100));
-				else
-					text = fmt::format("{}/{} ({}%)", g_shaderCacheLoaderState.loadedShaderFiles, g_shaderCacheLoaderState.shaderFileCount, (int)(percentLoaded * 100));
-				ImGui::SetCursorPosX(width - ImGui::CalcTextSize(text.c_str()).x / 2);
-				ImGui::Text("%s", text.c_str());
-			}
-			ImGui::End();
-			ImGui::PopFont();
-			ImGui::PopStyleColor(2);
-
-			if (!isPipelines)
-			{
-				position = { 10, window_size.y - 10 };
-				pivot = { 0, 1 };
-				ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
-				ImGui::SetNextWindowBgAlpha(0.8f);
-				ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
-				ImGui::PushFont(shader_count_font);
-				if (ImGui::Begin("Shader count", nullptr, kPopupFlags))
-				{
-					const float offset = shader_count_font->FallbackAdvanceX * 25.f;
-					ImGui::Text("Vertex shaders");
-					ImGui::SameLine(offset);
-					ImGui::Text("%d", shaderCacheScreenStats.vertexShaderCount);
-
-					ImGui::Text("Pixel shaders");
-					ImGui::SameLine(offset);
-					ImGui::Text("%d", shaderCacheScreenStats.pixelShaderCount);
-
-					ImGui::Text("Geometry shaders");
-					ImGui::SameLine(offset);
-					ImGui::Text("%d", shaderCacheScreenStats.geometryShaderCount);
-				}
-				ImGui::End();
-				ImGui::PopStyleColor();
-				ImGui::PopFont();
-			}
-			renderer->ImguiEnd();
-			lastFrameUpdate = tick_cached();
-		}
-
-		renderer->BeginFrame(false);
-		if (renderer->ImguiBegin(false))
-		{
-			LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureDRCId, 854, 480);
-			renderer->ImguiEnd();
-		}
-
-		// finish frame
-		renderer->SwapBuffers(true, true);
+		// The loading screen this loop used to draw reached nobody in a
+		// libretro core (the renderer has no swapchain of its own), and imgui,
+		// which drew it, is gone. The progress reaches the user through the log.
 	}
 }
 

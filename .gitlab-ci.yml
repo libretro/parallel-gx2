@@ -214,6 +214,21 @@ test-audio-mix:
     - make -C test/audio_mix clean
     - SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+# The Wii U's error viewer answered through the frontend: its dialog as the
+# frontend's message and its answer from the game's controllers.
+test-erreula:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/erreula/run_tests.sh
+    - make -C test/erreula clean
+    - SANITIZER=address,undefined ./test/erreula/run_tests.sh
+
 # h264.rpl's decoder engine over rh264 and a frontend's decoder, against
 # ffmpeg's pictures of test/h264/streams. The core's precompiled header wants
 # fmt and glm.

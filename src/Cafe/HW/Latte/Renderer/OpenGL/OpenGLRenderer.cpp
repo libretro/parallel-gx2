@@ -14,8 +14,6 @@
 
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 
-#include "imgui/imgui_impl_opengl3.h"
-#include "imgui/imgui_extension.h"
 
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -177,57 +175,6 @@ OpenGLRenderer* OpenGLRenderer::GetInstance()
 {
 	cemu_assert_debug(g_renderer && dynamic_cast<OpenGLRenderer*>(g_renderer.get()));
 	return (OpenGLRenderer*)g_renderer.get();
-}
-
-bool OpenGLRenderer::ImguiBegin(bool mainWindow)
-{
-	return false; // Skip ImGui in libretro mode - no GL context in GPU thread
-}
-
-void OpenGLRenderer::ImguiEnd()
-{
-	ImGui::Render();
-	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-	if (m_isPadViewContext)
-	{
-		GLCanvas_MakeCurrent(false);
-		m_isPadViewContext = false;
-	}
-
-	if (glClipControl)
-		glClipControl(GL_UPPER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
-}
-
-ImTextureID OpenGLRenderer::GenerateTexture(const std::vector<uint8>& data, const Vector2i& size)
-{
-	GLuint textureId;
-	glGenTextures(1, &textureId);
-
-	glBindTexture(GL_TEXTURE_2D, textureId);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-
-	glActiveTexture(GL_TEXTURE0);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB, size.x, size.y, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
-	return (ImTextureID)(uintptr_t)textureId;
-}
-
-void OpenGLRenderer::DeleteTexture(ImTextureID id)
-{
-	if (id)
-	{
-		GLuint textureId = (GLuint)(uintptr_t)id;
-		glDeleteTextures(1, &textureId);
-	}
-}
-
-void OpenGLRenderer::DeleteFontTextures()
-{
-	ImGui_ImplOpenGL3_DestroyFontsTexture();
 }
 
 typedef void(*GL_IMPORT)();

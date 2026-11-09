@@ -113,9 +113,6 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 
 /* pipeline compiler and cache helper */
 
-extern std::atomic_int g_compiling_pipelines;
-extern std::atomic_int g_compiling_pipelines_async;
-extern std::atomic_uint64_t g_compiling_pipelines_syncTimeSum;
 
 PipelineCompiler::PipelineCompiler() {};
 PipelineCompiler::~PipelineCompiler()
@@ -952,26 +949,6 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 
 	void* prevStruct = nullptr;
 
-	VkPipelineCreationFeedbackCreateInfoEXT creationFeedbackInfo;
-	VkPipelineCreationFeedbackEXT creationFeedback;
-	boost::container::static_vector<VkPipelineCreationFeedbackEXT, 3> creationStageFeedback;
-	if (vkRenderer->m_featureControl.deviceExtensions.pipeline_feedback)
-	{
-		creationFeedback = {};
-		creationFeedback.flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT;
-
-		for (uint32_t i = 0; i < pipelineInfo.stageCount; ++i)
-			creationStageFeedback.push_back({VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT, 0});
-
-		creationFeedbackInfo = {};
-		creationFeedbackInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT;
-		creationFeedbackInfo.pPipelineCreationFeedback = &creationFeedback;
-		creationFeedbackInfo.pPipelineStageCreationFeedbacks = creationStageFeedback.data();
-		creationFeedbackInfo.pipelineStageCreationFeedbackCount = pipelineInfo.stageCount;
-		creationFeedbackInfo.pNext = prevStruct;
-		prevStruct = &creationFeedbackInfo;
-	}
-
 	VkPipelineRobustnessCreateInfoEXT pipelineRobustnessCreateInfo{};
 	if (vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness && m_requestRobustBufferAccess)
 	{
@@ -1041,24 +1018,6 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	}
 	vkRenderer->m_pipeline_cache_semaphore.notify();
 
-	if (vkRenderer->m_featureControl.deviceExtensions.pipeline_feedback)
-	{
-		if (HAS_FLAG(creationFeedback.flags, VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT))
-		{
-			bool hasCacheHit = HAS_FLAG(creationFeedback.flags, VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
-			if (!hasCacheHit)
-			{
-				if (showInOverlay)
-				{
-					if (isRenderThread)
-						g_compiling_pipelines_syncTimeSum += creationFeedback.duration;
-					else
-						g_compiling_pipelines_async++;
-					g_compiling_pipelines++;
-				}
-			}
-		}
-	}
 	return true;
 }
 

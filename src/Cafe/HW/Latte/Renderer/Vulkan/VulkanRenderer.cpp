@@ -25,8 +25,6 @@
 #include "config/CemuConfig.h"
 #include "WindowSystem.h"
 
-#include "imgui/imgui_extension.h"
-#include "imgui/imgui_impl_vulkan.h"
 
 #include "Cafe/TitleList/GameInfo.h"
 
@@ -38,8 +36,6 @@
 #define VK_API_VERSION_MAJOR(version) (((uint32_t)(version) >> 22) & 0x7FU)
 #define VK_API_VERSION_MINOR(version) (((uint32_t)(version) >> 12) & 0x3FFU)
 #endif
-
-extern std::atomic_int g_compiling_pipelines;
 
 const  std::vector<const char*> kOptionalDeviceExtensions =
 {
@@ -646,9 +642,6 @@ VulkanRenderer::~VulkanRenderer()
 	if(m_occlusionQueries.queryPool != VK_NULL_HANDLE)
 		vkDestroyQueryPool(m_logicalDevice, m_occlusionQueries.queryPool, nullptr);
 
-
-	// shut down imgui
-	ImGui_ImplVulkan_Shutdown();
 
 	// delete null objects
 	DeleteNullObjects();
@@ -1295,12 +1288,6 @@ void VulkanRenderer::DeleteNullObjects()
 	DeleteNullTexture(nullTexture2D);
 }
 
-// The overlay draws into the frontend's image or not at all: there is no
-// swapchain of the core's own to give imgui a render pass on
-void VulkanRenderer::ImguiInit()
-{
-}
-
 void VulkanRenderer::Initialize()
 {
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling Renderer::Initialize()");
@@ -1308,8 +1295,6 @@ void VulkanRenderer::Initialize()
 	InitFirstCommandBuffer();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling CreatePipelineCache()");
 	CreatePipelineCache();
-	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling ImguiInit()");
-	ImguiInit();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling CreateNullObjects()");
 	CreateNullObjects();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - completed successfully");
@@ -1326,13 +1311,7 @@ void VulkanRenderer::Shutdown()
 	RendererShaderVk::Shutdown();
 	PipelineCompiler::CompileThreadPool_Stop();
 
-	DeleteFontTextures();
 	Renderer::Shutdown();
-	if (m_imguiRenderPass != VK_NULL_HANDLE)
-	{
-		vkDestroyRenderPass(m_logicalDevice, m_imguiRenderPass, nullptr);
-		m_imguiRenderPass = VK_NULL_HANDLE;
-	}
 	RendererShaderVk::Shutdown();
 }
 
@@ -1568,61 +1547,6 @@ void VulkanRenderer::QueryAvailableFormats()
 			deviceCanSample(VK_FORMAT_EAC_R11G11_UNORM_BLOCK));
 	}
 }
-
-bool VulkanRenderer::ImguiBegin(bool mainWindow)
-{
-	// No swapchain image to draw the overlay into (ImguiInit)
-	Renderer::ImguiBegin(mainWindow);
-	return false;
-}
-
-void VulkanRenderer::ImguiEnd()
-{
-	ImGui::Render();
-	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_state.currentCommandBuffer);
-	vkCmdEndRenderPass(m_state.currentCommandBuffer);
-
-	// restore viewport and scissor box
-	vkCmdSetViewport(m_state.currentCommandBuffer, 0, 1, &m_state.currentViewport);
-	vkCmdSetScissor(m_state.currentCommandBuffer, 0, 1, &m_state.currentScissorRect);
-}
-
-ImTextureID VulkanRenderer::GenerateTexture(const std::vector<uint8>& data, const Vector2i& size)
-{
-	return nullptr;
-	try
-	{
-		std::vector <uint8> tmp(size.x * size.y * 4);
-		for (size_t i = 0; i < data.size() / 3; ++i)
-		{
-			tmp[(i * 4) + 0] = data[(i * 3) + 0];
-			tmp[(i * 4) + 1] = data[(i * 3) + 1];
-			tmp[(i * 4) + 2] = data[(i * 3) + 2];
-			tmp[(i * 4) + 3] = 0xFF;
-		}
-		return (ImTextureID)ImGui_ImplVulkan_GenerateTexture(m_state.currentCommandBuffer, tmp, size);
-	}
-	catch (const std::exception& ex)
-	{
-		cemuLog_log(LogType::Force, "can't generate imgui texture: {}", ex.what());
-		return nullptr;
-	}
-}
-
-void VulkanRenderer::DeleteTexture(ImTextureID id)
-{
-	return;
-	WaitDeviceIdle();
-	ImGui_ImplVulkan_DeleteTexture(id);
-}
-
-void VulkanRenderer::DeleteFontTextures()
-{
-	return;
-	WaitDeviceIdle();
-	ImGui_ImplVulkan_DestroyFontsTexture();
-}
-
 
 // Began a frame on the core's own swapchain image. There is none: frames go
 // into the frontend's image (DrawBackbufferQuad), so an empty frame is no frame.
@@ -3523,53 +3447,6 @@ void VulkanRenderer::bufferCache_copyStreamoutToMainBuffer(uint32 srcOffset, uin
 	vkCmdCopyBuffer(m_state.currentCommandBuffer, m_xfbRingBuffer, dstBuffer, 1, &bufferCopy);
 
 	barrier_sequentializeTransfer();
-}
-
-void VulkanRenderer::AppendOverlayDebugInfo()
-{
-	ImGui::Text("--- Vulkan debug info ---");
-	ImGui::Text("GfxPipelines   %u", performanceMonitor.vk.numGraphicPipelines.get());
-	ImGui::Text("DescriptorSets %u", performanceMonitor.vk.numDescriptorSets.get());
-	ImGui::Text("DS ImgSamplers %u", performanceMonitor.vk.numDescriptorSamplerTextures.get());
-	ImGui::Text("DS DynUniform  %u", performanceMonitor.vk.numDescriptorDynUniformBuffers.get());
-	ImGui::Text("DS StorageBuf  %u", performanceMonitor.vk.numDescriptorStorageBuffers.get());
-	ImGui::Text("Images         %u", performanceMonitor.vk.numImages.get());
-	ImGui::Text("ImageView      %u", performanceMonitor.vk.numImageViews.get());
-	ImGui::Text("ImageSampler   %u", performanceMonitor.vk.numSamplers.get());
-	ImGui::Text("RenderPass     %u", performanceMonitor.vk.numRenderPass.get());
-	ImGui::Text("Framebuffer    %u", performanceMonitor.vk.numFramebuffer.get());
-	ImGui::Text("DestructionQ   %u", (unsigned int)m_destructionQueueSize.load(std::memory_order_relaxed));
-
-
-	ImGui::Text("BeginRP/f      %u", performanceMonitor.vk.numBeginRenderpassPerFrame.get());
-	ImGui::Text("Barriers/f     %u", performanceMonitor.vk.numDrawBarriersPerFrame.get());
-	ImGui::Text("--- Cache debug info ---");
-
-	uint32 bufferCacheHeapSize = 0;
-	uint32 bufferCacheAllocationSize = 0;
-	uint32 bufferCacheNumAllocations = 0;
-
-	LatteBufferCache_getStats(bufferCacheHeapSize, bufferCacheAllocationSize, bufferCacheNumAllocations);
-
-	ImGui::Text("Buffer");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Allocs: %u", (uint32)(bufferCacheAllocationSize + 1023) / 1024, ((uint32)bufferCacheHeapSize + 1023) / 1024, (uint32)bufferCacheNumAllocations);
-
-	uint32 numBuffers;
-	size_t totalSize, freeSize;
-
-	memoryManager->getStagingAllocator().GetStats(numBuffers, totalSize, freeSize);
-	ImGui::Text("Staging");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Buffers: %u", ((uint32)(totalSize - freeSize) + 1023) / 1024, ((uint32)totalSize + 1023) / 1024, (uint32)numBuffers);
-
-	memoryManager->GetIndexAllocator().GetStats(numBuffers, totalSize, freeSize);
-	ImGui::Text("Index");
-	ImGui::SameLine(60.0f);
-	ImGui::Text("%06uKB / %06uKB Buffers: %u", ((uint32)(totalSize - freeSize) + 1023) / 1024, ((uint32)totalSize + 1023) / 1024, (uint32)numBuffers);
-
-	ImGui::Text("--- Tex heaps ---");
-	memoryManager->appendOverlayHeapDebugInfo();
 }
 
 void VKRDestructibleObject::flagForCurrentCommandBuffer()

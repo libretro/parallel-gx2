@@ -331,7 +331,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/config/ActiveSettings.cpp \
 	$(CORE_DIR)/src/config/CemuConfig.cpp \
 	$(CORE_DIR)/src/config/NetworkSettings.cpp \
-	$(CORE_DIR)/src/imgui/imgui_extension.cpp \
 	$(CORE_DIR)/src/input/ControllerFactory.cpp \
 	$(CORE_DIR)/src/input/InputManager.cpp \
 	$(CORE_DIR)/src/input/api/Controller.cpp \
@@ -393,23 +392,17 @@ ifeq ($(OS_LINUX),1)
 	$(CORE_DIR)/src/Common/ExceptionHandler/ELFSymbolTable.cpp \
 	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp \
 	$(CORE_DIR)/src/util/SystemInfo/SystemInfoLinux.cpp
-   CORE_SOURCES_ASM += \
-	$(CORE_DIR)/src/resource/embedded/fontawesome.S
 endif
 ifeq ($(OS_ANDROID),1)
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ELFSymbolTable.cpp \
 	$(SRC_DIR)/util/Fiber/FiberAndroid.cpp \
 	$(CORE_DIR)/src/util/SystemInfo/SystemInfoLinux.cpp
-   CORE_SOURCES_ASM += \
-	$(CORE_DIR)/src/resource/embedded/fontawesome.S
 endif
 ifeq ($(OS_APPLE),1)
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp \
 	$(SRC_DIR)/util/SystemInfo/SystemInfoMac.cpp
-   CORE_SOURCES_ASM += \
-	$(SRC_DIR)/resource/embedded/fontawesome_macos.S
 endif
 ifeq ($(HAVE_OPENGL),1)
    CORE_SOURCES_CXX += \
@@ -423,8 +416,7 @@ ifeq ($(HAVE_OPENGL),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRendererUniformData.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLSurfaceCopy.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/OpenGL/RendererShaderGL.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/OpenGL/TextureReadbackGL.cpp \
-	$(CORE_DIR)/src/imgui/imgui_impl_opengl3.cpp
+	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/OpenGL/TextureReadbackGL.cpp
 endif
 ifeq ($(HAVE_VULKAN),1)
    CORE_SOURCES_CXX += \
@@ -443,7 +435,6 @@ ifeq ($(HAVE_VULKAN),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp \
-	$(CORE_DIR)/src/imgui/imgui_impl_vulkan.cpp \
 	$(CORE_DIR)/src/libretro/LibretroVkQueue.cpp
 endif
 ifeq ($(HAVE_METAL),1)
@@ -459,8 +450,7 @@ ifeq ($(HAVE_METAL),1)
 	$(SRC_DIR)/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitMSLAttrDecoder.cpp \
 	$(SRC_DIR)/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitMSL.cpp
    CORE_SOURCES_OBJCXX += \
-	$(SRC_DIR)/Cafe/HW/Latte/Renderer/Metal/MetalLayer.mm \
-	$(SRC_DIR)/imgui/imgui_impl_metal.mm
+	$(SRC_DIR)/Cafe/HW/Latte/Renderer/Metal/MetalLayer.mm
    ifeq ($(OS_MACOS),1)
       CORE_SOURCES_OBJCXX += \
 	$(SRC_DIR)/Cafe/HW/Latte/Renderer/MetalView.mm
@@ -493,10 +483,10 @@ CORE_FLAGS := -DENABLE_LIBRETRO -DRETRO_CORE -DVK_NO_PROTOTYPES \
 	-DEMULATOR_VERSION_MAJOR=0 -DEMULATOR_VERSION_MINOR=0 -DEMULATOR_VERSION_PATCH=0 \
 	-DEMULATOR_HASH=$(GIT_HASH) \
 	-I$(SRC_DIR) -I$(SRC_DIR)/Cafe -I$(SRC_DIR)/Common -I$(SRC_DIR)/util -I$(SRC_DIR)/Cemu \
-	-I$(SRC_DIR)/input -I$(SRC_DIR)/config -I$(SRC_DIR)/audio -I$(SRC_DIR)/imgui \
+	-I$(SRC_DIR)/input -I$(SRC_DIR)/config -I$(SRC_DIR)/audio \
 	-I$(SRC_DIR)/gui -I$(SRC_DIR)/gui/interface -I$(SRC_DIR)/libretro -I$(SRC_DIR)/resource \
 	-I$(DEP_DIR)/Vulkan-Headers/include \
-	-I$(DEP_DIR)/imgui -I$(DEP_DIR)/glm -I$(DEP_DIR)/fmt/include \
+	-I$(DEP_DIR)/glm -I$(DEP_DIR)/fmt/include \
 	-I$(DEP_DIR)/pugixml/src \
 	-I$(DEP_DIR)/boost-compat \
 	-I$(DEP_DIR)/curl-compat/include -I$(DEP_DIR)/libusb-config \
@@ -510,7 +500,7 @@ ifeq ($(HAVE_OPENGL),1)
    CORE_FLAGS += -DENABLE_OPENGL
 endif
 ifeq ($(HAVE_METAL),1)
-   CORE_FLAGS += -DENABLE_METAL -DIMGUI_IMPL_METAL_CPP -I$(DEP_DIR)/metal-cpp
+   CORE_FLAGS += -DENABLE_METAL -I$(DEP_DIR)/metal-cpp
 endif
 # No VK_USE_PLATFORM_*: the surface and the swapchain are the frontend's, so
 # no window-system header is ever included
@@ -520,7 +510,6 @@ endif
 ifeq ($(ARCH_ARM64),1)
    CORE_FLAGS += -I$(DEP_DIR)/xbyak_aarch64 -I$(DEP_DIR)/xbyak_aarch64/xbyak_aarch64
 endif
-CORE_ASFLAGS := -I$(SRC_DIR)/resource
 
 # Every unit of the core starts with Common/precompiled.h, read
 # precompiled: a stub of that name is force-included, and the compiler
@@ -620,10 +609,6 @@ endif
 # ----------------------------------------------------------------------------
 # Dependencies
 # ----------------------------------------------------------------------------
-IMGUI_SOURCES_CXX := $(addprefix $(DEP_DIR)/imgui/,imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp)
-IMGUI_FLAGS := -I$(DEP_DIR)/imgui -w
-
-
 # fmt is header-only except on Android (precompiled.h): format.cc there only,
 # as its definitions and the inline ones every other TU has would clash where
 # the linker does not merge them (PE/COFF)
@@ -658,7 +643,7 @@ LIBUSB_FLAGS := -I$(DEP_DIR)/libusb-config -I$(LIBUSB_DIR) -w
 XBYAK_SOURCES_CXX := $(DEP_DIR)/xbyak_aarch64/src/xbyak_aarch64_impl.cpp $(DEP_DIR)/xbyak_aarch64/src/util_impl.cpp
 XBYAK_FLAGS := -I$(DEP_DIR)/xbyak_aarch64 -I$(DEP_DIR)/xbyak_aarch64/xbyak_aarch64 -w
 
-LIB_GROUPS := CORE CURLCOMPAT LRC IMGUI FMT PUGIXML
+LIB_GROUPS := CORE CURLCOMPAT LRC FMT PUGIXML
 ifeq ($(HAVE_LIBUSB),1)
    LIB_GROUPS += LIBUSB
 endif

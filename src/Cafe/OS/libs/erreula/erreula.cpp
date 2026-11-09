@@ -1,10 +1,9 @@
 ﻿#include "Cafe/OS/common/OSCommon.h"
 #include "erreula.h"
-#include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "ErrEulaPrompt.h"
 #include "util/helpers/helpers.h"
+#include "Cafe/HW/Latte/Core/LatteOverlay.h"
 
-#include <imgui.h>
-#include "imgui/imgui_extension.h"
 
 #include "Cafe/OS/libs/coreinit/coreinit_FS.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
@@ -346,10 +345,67 @@ namespace erreula
 		osLib_returnFromFunction(hCPU, 0);
 	}
 
+	// The dialog as words (ErrEulaPrompt). Returns how many buttons it has.
+	static int DialogText(const AppearError& arg, std::string& text)
+	{
+		const std::string title = arg.title ? boost::nowide::narrow(GetText(arg.title.GetPtr())) : std::string();
+		std::string body;
+		if (arg.errorType == ErrorDialogType::Text || arg.errorType == ErrorDialogType::TextOneButton || arg.errorType == ErrorDialogType::TextTwoButton)
+			body = arg.text ? boost::nowide::narrow(GetText(arg.text.GetPtr())) : std::string("Unknown Error");
+		std::string button1 = "OK", button2;
+		if (arg.errorType == ErrorDialogType::TextOneButton || arg.errorType == ErrorDialogType::TextTwoButton)
+			button1 = arg.button1Text ? boost::nowide::narrow(GetText(arg.button1Text.GetPtr())) : std::string("Yes");
+		if (arg.errorType == ErrorDialogType::TextTwoButton)
+			button2 = arg.button2Text ? boost::nowide::narrow(GetText(arg.button2Text.GetPtr())) : std::string("No");
+		text = ErrEulaPrompt((uint32)arg.errorCode, title, body, button1, button2);
+		return button2.empty() ? 1 : 2;
+	}
+
+	// The viewer is answered as on the console (ErrEulaAnswer), while what it
+	// says is shown through the frontend's own messages
 	void ErrEulaCalc(ControllerInfo_t* controllerInfo)
 	{
-		if(g_errEula.errEulaInstance)
-			g_errEula.errEulaInstance->DoCalc();
+		if(!g_errEula.errEulaInstance)
+			return;
+		ErrEulaInstance& viewer = *g_errEula.errEulaInstance;
+		viewer.DoCalc();
+		if (viewer.GetState() != ErrEulaState::Visible || viewer.IsDecideSelectButtonError())
+			return;
+		std::string text;
+		const int buttons = DialogText(g_errEula.currentDialog, text);
+		// shown again now and then for as long as it is up: a message fades
+		static uint64 s_shownAt = 0;
+		static std::string s_shown;
+		const uint64 now = coreinit::OSGetTime();
+		if (text != s_shown || now - s_shownAt > (uint64)coreinit::EspressoTime::ConvertMsToTimerTicks(4000))
+		{
+			LatteOverlay_pushNotification(text, 5000);
+			s_shown = text;
+			s_shownAt = now;
+		}
+		if (!controllerInfo)
+			return;
+		uint32 vpadTrig = 0, wpadTrig = 0;
+		if (VPADStatus_t* vpad = controllerInfo->vpadStatus.GetPtr())
+			vpadTrig = (uint32)vpad->trig;
+		for (auto& kpad : controllerInfo->kpadStatus)
+		{
+			if (KPADStatus_t* status = kpad.GetPtr())
+				wpadTrig |= (uint32)status->trig;
+		}
+		switch (ErrEulaAnswer(vpadTrig, wpadTrig, buttons))
+		{
+		case ErrEulaPick::First:
+			viewer.SetButtonSelection(ErrEulaInstance::BUTTON_SELECTION::LEFT);
+			s_shown.clear();
+			break;
+		case ErrEulaPick::Second:
+			viewer.SetButtonSelection(ErrEulaInstance::BUTTON_SELECTION::RIGHT);
+			s_shown.clear();
+			break;
+		case ErrEulaPick::None:
+			break;
+		}
 	}
 
 	bool hasVisibleDialog()
@@ -358,138 +414,6 @@ namespace erreula
 			return false;
 		const ErrEulaState state = g_errEula.errEulaInstance->GetState();
 		return state == ErrEulaState::Visible || state == ErrEulaState::Appearing || state == ErrEulaState::Disappearing;
-	}
-
-	void render(bool mainWindow)
-	{
-		if(!hasVisibleDialog())
-			return;
-		const AppearError& appearArg = g_errEula.currentDialog;
-		std::string text;
-		const uint32 errorCode = (uint32)appearArg.errorCode;
-		if (errorCode != 0)
-		{
-			const uint32 errorCodeHigh = errorCode / 10000;
-			const uint32 errorCodeLow = errorCode % 10000;
-			text = fmt::format("Error-Code: {:03}-{:04}\n", errorCodeHigh, errorCodeLow);
-		}
-
-		auto font = ImGui_GetFont(32.0f);
-		if (!font)
-			return;
-
-		const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
-
-		auto& io = ImGui::GetIO();
-		ImVec2 position = { io.DisplaySize.x / 2.0f, io.DisplaySize.y / 2.0f };
-		ImVec2 pivot = { 0.5f, 0.5f };
-		ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
-		ImGui::SetNextWindowBgAlpha(0.9f);
-		ImGui::PushFont(font);
-
-		std::string title;
-		if (appearArg.title)
-			title = boost::nowide::narrow(GetText(appearArg.title.GetPtr()));
-		if (title.empty()) // ImGui doesn't allow empty titles, so set one if appearArg.title is not set or empty
-			title = "ErrEula";
-
-		float fadeTransparency = 1.0f;
-		if (g_errEula.errEulaInstance->GetState() == ErrEulaState::Appearing || g_errEula.errEulaInstance->GetState() == ErrEulaState::Disappearing)
-		{
-			fadeTransparency = g_errEula.errEulaInstance->GetFadeTransparency();
-		}
-
-		float originalAlpha = ImGui::GetStyle().Alpha;
-		ImGui::GetStyle().Alpha = fadeTransparency;
-		ImGui::SetNextWindowBgAlpha(0.9f * fadeTransparency);
-		if (ImGui::Begin(title.c_str(), nullptr, kPopupFlags))
-		{
-			const float startx = ImGui::GetWindowSize().x / 2.0f;
-			bool hasLeftButtonPressed = false, hasRightButtonPressed = false;
-
-			switch (appearArg.errorType)
-			{
-			default:
-			{
-				// TODO layout based on error code
-				ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
-				ImGui::Spacing();
-				ImGui::SetCursorPosX(startx - 50);
-				hasLeftButtonPressed = ImGui::Button("OK", {100, 0});
-				break;
-			}
-			case ErrorDialogType::Text:
-			{
-				std::string txtTmp = "Unknown Error";
-				if (appearArg.text)
-					txtTmp = boost::nowide::narrow(GetText(appearArg.text.GetPtr()));
-
-				text += txtTmp;
-				ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
-				ImGui::Spacing();
-					
-				ImGui::SetCursorPosX(startx - 50);
-				hasLeftButtonPressed = ImGui::Button("OK", { 100, 0 });
-				break;
-			}
-			case ErrorDialogType::TextOneButton:
-			{
-				std::string txtTmp = "Unknown Error";
-				if (appearArg.text)
-					txtTmp = boost::nowide::narrow(GetText(appearArg.text.GetPtr()));
-
-				text += txtTmp;
-				ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
-				ImGui::Spacing();
-
-				std::string button1 = "Yes";
-				if (appearArg.button1Text)
-					button1 = boost::nowide::narrow(GetText(appearArg.button1Text.GetPtr()));
-
-				float width = std::max(100.0f, ImGui::CalcTextSize(button1.c_str()).x + 10.0f);
-				ImGui::SetCursorPosX(startx - (width / 2.0f));
-				hasLeftButtonPressed = ImGui::Button(button1.c_str(), { width, 0 });
-				break;
-			}
-			case ErrorDialogType::TextTwoButton:
-			{
-				std::string txtTmp = "Unknown Error";
-				if (appearArg.text)
-					txtTmp = boost::nowide::narrow(GetText(appearArg.text.GetPtr()));
-
-				text += txtTmp;
-				ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
-				ImGui::Spacing();
-
-				std::string button1 = "Yes";
-				if (appearArg.button1Text)
-					button1 = boost::nowide::narrow(GetText(appearArg.button1Text.GetPtr()));
-				std::string button2 = "No";
-				if (appearArg.button2Text)
-					button2 = boost::nowide::narrow(GetText(appearArg.button2Text.GetPtr()));
-
-				float width1 = std::max(100.0f, ImGui::CalcTextSize(button1.c_str()).x + 10.0f);
-				float width2 = std::max(100.0f, ImGui::CalcTextSize(button2.c_str()).x + 10.0f);
-				ImGui::SetCursorPosX(startx - (width1 / 2.0f) - (width2 / 2.0f) - 10);
-					
-				hasLeftButtonPressed = ImGui::Button(button1.c_str(), { width1, 0 });
-				ImGui::SameLine();
-					
-				hasRightButtonPressed = ImGui::Button(button2.c_str(), { width2, 0 });
-				break;
-			}
-			}
-			if (!g_errEula.errEulaInstance->IsDecideSelectButtonError())
-			{
-				if (hasLeftButtonPressed)
-					g_errEula.errEulaInstance->SetButtonSelection(ErrEulaInstance::BUTTON_SELECTION::LEFT);
-				if (hasRightButtonPressed)
-					g_errEula.errEulaInstance->SetButtonSelection(ErrEulaInstance::BUTTON_SELECTION::RIGHT);
-			}
-		}
-		ImGui::End();
-		ImGui::PopFont();
-		ImGui::GetStyle().Alpha = originalAlpha;
 	}
 
 	class : public COSModule

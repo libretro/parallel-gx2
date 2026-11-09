@@ -6,8 +6,6 @@
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 
-#include "imgui/imgui_impl_vulkan.h"
-#include "imgui/imgui_extension.h"
 #include "config/CemuConfig.h"
 
 PipelineInfo::PipelineInfo(uint64 minimalStateHash, uint64 pipelineHash, LatteFetchShader* fetchShader, LatteDecompilerShader* vertexShader, LatteDecompilerShader* pixelShader, LatteDecompilerShader* geometryShader)

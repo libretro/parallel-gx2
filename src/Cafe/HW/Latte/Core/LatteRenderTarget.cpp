@@ -3,7 +3,6 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
-#include "Cafe/HW/Latte/Core/LatteOverlay.h"
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -14,7 +13,6 @@
 #include "HW/Latte/Renderer/RendererCore.h"
 #include "config/ActiveSettings.h"
 #include "WindowSystem.h"
-#include "Cafe/OS/libs/erreula/erreula.h"
 #include "input/InputManager.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 #include "libretro/LibretroDRC.h"
@@ -966,20 +964,6 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
-	// Ask first whether any of the three has something to draw. All of this
-	// runs on every presented frame, and an imgui frame is not free to set up -
-	// under Vulkan it is descriptor and command buffer work - while the usual
-	// answer is that the software keyboard is not up, no error dialog is
-	// showing, and both overlay positions are disabled. That was a render pass
-	// built every frame around three functions that return on their first line.
-	if (!swkbd_hasKeyboardInputHook() && !nn::erreula::hasVisibleDialog() && !LatteOverlay_wantsToDraw())
-		return;
-	if (!g_renderer->ImguiBegin(!isPadView))
-		return;
-	swkbd_render(!isPadView);
-	nn::erreula::render(!isPadView);
-	LatteOverlay_render(isPadView);
-	g_renderer->ImguiEnd();
 }
 
 void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uint32 colorBufferWidth, uint32 colorBufferHeight, uint32 colorBufferSliceIndex, uint32 colorBufferFormat, uint32 colorBufferPitch, Latte::E_HWTILEMODE colorBufferTilemode, uint32 colorBufferSwizzle, uint32 renderTarget)

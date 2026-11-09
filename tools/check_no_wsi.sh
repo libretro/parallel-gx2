@@ -11,11 +11,9 @@ found=$(grep -rnE "$pattern" src Makefile Makefile.common \
 	--include='*.c' --include='*.cpp' --include='*.h' --include='*.hpp' --include='*.mm' \
 	--include='Makefile' --include='Makefile.common' 2>/dev/null \
 	| grep -v -e '^src/Cafe/HW/Latte/Renderer/Metal/' \
-		-e '^src/imgui/imgui_impl_opengl3.cpp:' \
 		-e '^[^:]*:[0-9]*:[[:space:]]*\(\*\|//\|# \)')
 # Metal: Apple's renderer, which has no window-system headers of its own to
-# leave out. imgui's GL backend: its loader includes are alternatives behind
-# IMGUI_IMPL_OPENGL_LOADER_*, and the core selects the custom one (GLInclude).
+# leave out.
 # Comment lines are not code.
 if [ -n "$found" ]; then
 	echo "window-system code or headers in the core (the frontend owns these):"

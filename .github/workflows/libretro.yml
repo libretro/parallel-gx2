@@ -152,6 +152,14 @@ jobs:
           make -C test/audio_mix clean
           SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+      - name: "Error viewer"
+        # erreula's dialog as the frontend's message and its answer from the
+        # game's controllers: plain, then under ASan + UBSan
+        run: |
+          ./test/erreula/run_tests.sh
+          make -C test/erreula clean
+          SANITIZER=address,undefined ./test/erreula/run_tests.sh
+
       - name: "H.264 decoder"
         # h264.rpl's decoder engine over rh264 and a frontend's decoder,
         # against ffmpeg's pictures of test/h264/streams: plain, under

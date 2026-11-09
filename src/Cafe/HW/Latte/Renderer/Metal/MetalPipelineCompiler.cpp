@@ -13,10 +13,6 @@
 
 #include <chrono>
 
-extern std::atomic_int g_compiling_pipelines;
-extern std::atomic_int g_compiling_pipelines_async;
-extern std::atomic_uint64_t g_compiling_pipelines_syncTimeSum;
-
 static void rectsEmulationGS_outputSingleVertex(std::string& gsSrc, const LatteDecompilerShader* vertexShader, LatteShaderPSInputTable& psInputTable, sint32 vIdx, const LatteContextRegister& latteRegister)
 {
 	auto parameterMask = vertexShader->outputParameterMask;
@@ -342,7 +338,6 @@ bool MetalPipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool
     MTL::RenderPipelineState* pipeline = nullptr;
     NS::Error* error = nullptr;
 
-    auto start = std::chrono::high_resolution_clock::now();
     if (m_usesGeometryShader)
     {
         auto desc = static_cast<MTL::MeshRenderPipelineDescriptor*>(m_pipelineDescriptor);
@@ -372,23 +367,10 @@ bool MetalPipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool
 #endif
        	pipeline = m_mtlr->GetDevice()->newRenderPipelineState(desc, MTL::PipelineOptionNone, nullptr, &error);
     }
-    auto end = std::chrono::high_resolution_clock::now();
-
-    auto creationDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-
    	if (error)
    	{
        	cemuLog_log(LogType::Force, "error creating render pipeline state: {}", error->localizedDescription()->utf8String());
    	}
-
-    if (showInOverlay)
-	{
-		if (isRenderThread)
-			g_compiling_pipelines_syncTimeSum += creationDuration;
-		else
-			g_compiling_pipelines_async++;
-		g_compiling_pipelines++;
-	}
 
 	m_pipelineObj.m_pipeline = pipeline;
 
