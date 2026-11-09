@@ -1,8 +1,9 @@
 // The state the Vulkan pipelines leave to the draw, drawn on a real driver
 // (lavapipe in CI): for register states from a seed, a pipeline with the
-// cull mode, front face, depth and stencil tests and blending baked in
-// (as without the extensions) and one with them set by the draw (as with
-// VK_EXT_extended_dynamic_state and _3) draw the same four overlapping
+// cull mode, front face, depth and stencil tests, blending, polygon offset
+// enable and rasterizer discard baked in (as without the extensions) and
+// one with them set by the draw (as with VK_EXT_extended_dynamic_state, _3
+// and _2) draw the same four overlapping
 // triangles over the same depth and stencil, and the pictures must match
 // to the byte. Both take their values from the functions the pipeline
 // compiler and the draw use (VulkanPipelineKey.h). Skipped, said so,
@@ -138,24 +139,27 @@ static bool CreateContext(Context& c)
 	{
 		VkPhysicalDeviceExtendedDynamicStateFeaturesEXT e1{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
 		VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+		VkPhysicalDeviceExtendedDynamicState2FeaturesEXT e2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
 		e1.pNext = &e3;
+		e3.pNext = &e2;
 		VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 		f2.pNext = &e1;
 		uint32_t n = 0;
 		vkEnumerateDeviceExtensionProperties(g, nullptr, &n, nullptr);
 		std::vector<VkExtensionProperties> exts(n);
 		vkEnumerateDeviceExtensionProperties(g, nullptr, &n, exts.data());
-		bool has1 = false, has3 = false;
+		bool has1 = false, has2 = false, has3 = false;
 		for (auto& e : exts)
 		{
 			has1 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+			has2 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
 			has3 |= !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 		}
-		if (!has1 || !has3)
+		if (!has1 || !has2 || !has3)
 			continue;
 		vkGetPhysicalDeviceFeatures2(g, &f2);
-		if (e1.extendedDynamicState && e3.extendedDynamicState3ColorBlendEnable && e3.extendedDynamicState3ColorBlendEquation &&
-			e3.extendedDynamicState3ColorWriteMask)
+		if (e1.extendedDynamicState && e2.extendedDynamicState2 && e3.extendedDynamicState3ColorBlendEnable &&
+			e3.extendedDynamicState3ColorBlendEquation && e3.extendedDynamicState3ColorWriteMask)
 		{
 			c.gpu = g;
 			break;
@@ -184,13 +188,17 @@ static bool CreateContext(Context& c)
 	e3.extendedDynamicState3ColorBlendEnable = VK_TRUE;
 	e3.extendedDynamicState3ColorBlendEquation = VK_TRUE;
 	e3.extendedDynamicState3ColorWriteMask = VK_TRUE;
+	VkPhysicalDeviceExtendedDynamicState2FeaturesEXT e2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+	e2.extendedDynamicState2 = VK_TRUE;
 	e1.pNext = &e3;
-	const char* exts[] = {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME};
+	e3.pNext = &e2;
+	const char* exts[] = {VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
+		VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
 	VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
 	dci.pNext = &e1;
 	dci.queueCreateInfoCount = 1;
 	dci.pQueueCreateInfos = &qi;
-	dci.enabledExtensionCount = 2;
+	dci.enabledExtensionCount = 3;
 	dci.ppEnabledExtensionNames = exts;
 	if (vkCreateDevice(c.gpu, &dci, nullptr, &c.device) != VK_SUCCESS)
 		return false;
@@ -336,6 +344,7 @@ static void DestroyContext(Context& c)
 static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr, bool dynamicState)
 {
 	const VulkanDepthStencilCull dsc = VulkanPipelineKey_DepthStencilCull(lcr);
+	const VulkanRasterizerEnables re = VulkanPipelineKey_Rasterizer(lcr);
 	VkFormat formats[8] = {VK_FORMAT_R8G8B8A8_UNORM};
 	VkPipelineColorBlendAttachmentState blend[8];
 	VulkanPipelineKey_Blend(lcr, formats, blend);
@@ -363,6 +372,8 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 	rs.lineWidth = 1.0f;
 	rs.cullMode = dynamicState ? VK_CULL_MODE_NONE : dsc.cullMode;
 	rs.frontFace = dynamicState ? VK_FRONT_FACE_COUNTER_CLOCKWISE : dsc.frontFace;
+	rs.depthBiasEnable = dynamicState ? VK_FALSE : re.depthBiasEnable;
+	rs.rasterizerDiscardEnable = dynamicState ? VK_FALSE : re.rasterizerDiscardEnable;
 	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -383,12 +394,13 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 	cb.attachmentCount = 1;
 	cb.pAttachments = &att;
 	std::vector<VkDynamicState> dyn = {VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-		VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
+		VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_DEPTH_BIAS};
 	if (dynamicState)
 		dyn.insert(dyn.end(), {VK_DYNAMIC_STATE_CULL_MODE_EXT, VK_DYNAMIC_STATE_FRONT_FACE_EXT, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT,
 			VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT,
 			VK_DYNAMIC_STATE_STENCIL_OP_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
-			VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT});
+			VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT,
+			VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT});
 	VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
 	dsi.dynamicStateCount = (uint32_t)dyn.size();
 	dsi.pDynamicStates = dyn.data();
@@ -447,10 +459,16 @@ static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteCont
 	vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILMASK_B() : front.get_STENCILMASK_F());
 	vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILWRITEMASK_B() : front.get_STENCILWRITEMASK_F());
 	vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, twoSided ? back.get_STENCILREF_B() : front.get_STENCILREF_F());
+	// the depth bias values: dynamic in every pipeline that may use them
+	// (VulkanRenderer::draw_updateDepthBias)
+	vkCmdSetDepthBias(cb, lcr.PA_SU_POLY_OFFSET_FRONT_OFFSET.get_OFFSET(), lcr.PA_SU_POLY_OFFSET_CLAMP.get_CLAMP(),
+		lcr.PA_SU_POLY_OFFSET_FRONT_SCALE.get_SCALE() / 16.0f);
 	if (dynamicState)
 	{
-		// what VulkanRenderer::draw_updateDepthStencilCull and draw_updateBlend do
+		// what VulkanRenderer::draw_updateDepthStencilCull, draw_updateBlend
+		// and draw_updateRasterizer do
 		VulkanPipelineKey_SetDepthStencilCull(cb, VulkanPipelineKey_DepthStencilCull(lcr));
+		VulkanPipelineKey_SetRasterizer(cb, VulkanPipelineKey_Rasterizer(lcr));
 		VkFormat formats[8] = {VK_FORMAT_R8G8B8A8_UNORM};
 		VkPipelineColorBlendAttachmentState att[8];
 		VulkanPipelineKey_Blend(lcr, formats, att);
@@ -499,7 +517,19 @@ static void RandomState(std::mt19937& rng, LatteContextRegister& lcr)
 	uint32* r = lcr.GetRawView();
 	auto bits = [&](uint32 n) { return rng() & ((1u << n) - 1); };
 	r[Latte::REGADDR::VGT_PRIMITIVE_TYPE] = 4; // triangles
-	r[Latte::REGADDR::PA_SU_SC_MODE_CNTL] = bits(3);
+	// cull and front face, polygon offset on or off
+	r[Latte::REGADDR::PA_SU_SC_MODE_CNTL] = bits(3) | (bits(1) << 11);
+	// a constant offset of an eighth to a half of the depth range, up or
+	// down, at the triangles' depths (2^-25 to 2^-24 a unit there): enough
+	// to flip the depth tests against the clear and each other. No slope
+	// (the triangles are flat) and no clamp (no device feature wanted)
+	static const float offsets[] = {0.0f, 8.0e6f, -8.0e6f, 4.0e6f};
+	const float offset = offsets[bits(2)];
+	std::memcpy(&r[Latte::REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET], &offset, 4);
+	// rasterizer discard a quarter of the time, kept by the viewport's X
+	// offset half of that (GX2SetSpecialState(0, true))
+	r[Latte::REGADDR::PA_CL_CLIP_CNTL] = (bits(2) == 0 ? 1u : 0u) << 22;
+	r[Latte::REGADDR::PA_CL_VTE_CNTL] = bits(1) << 1;
 	// depth: test, write, compare; stencil: test, two-sided, compare and ops
 	r[Latte::REGADDR::DB_DEPTH_CONTROL] = bits(1) | (bits(1) << 1) | (bits(1) << 2) | (bits(3) << 4) | (bits(1) << 7) |
 		(bits(3) << 8) | (bits(3) << 11) | (bits(3) << 14) | (bits(3) << 17) | (bits(3) << 20) | (bits(3) << 23) |
@@ -521,7 +551,7 @@ int main()
 	Context c;
 	if (!CreateContext(c))
 	{
-		Skip("no Vulkan device with extended dynamic state and its blend states");
+		Skip("no Vulkan device with extended dynamic state, _2 and _3's blend states");
 	}
 	else
 	{
@@ -541,9 +571,10 @@ int main()
 			if (a != b)
 			{
 				if (differing++ < 5)
-					std::printf("FAIL: state %d draws differently with the state left to the draw (DB_DEPTH_CONTROL %08x, PA_SU_SC_MODE_CNTL %x, CB_BLEND0_CONTROL %08x)\n",
+					std::printf("FAIL: state %d draws differently with the state left to the draw (DB_DEPTH_CONTROL %08x, PA_SU_SC_MODE_CNTL %x, CB_BLEND0_CONTROL %08x, PA_CL_CLIP_CNTL %08x, PA_CL_VTE_CNTL %x)\n",
 						i, lcr->GetRawView()[Latte::REGADDR::DB_DEPTH_CONTROL], lcr->GetRawView()[Latte::REGADDR::PA_SU_SC_MODE_CNTL],
-						lcr->GetRawView()[Latte::REGADDR::CB_BLEND0_CONTROL]);
+						lcr->GetRawView()[Latte::REGADDR::CB_BLEND0_CONTROL], lcr->GetRawView()[Latte::REGADDR::PA_CL_CLIP_CNTL],
+						lcr->GetRawView()[Latte::REGADDR::PA_CL_VTE_CNTL]);
 			}
 			vkDestroyPipeline(c.device, baked, nullptr);
 			vkDestroyPipeline(c.device, dynamic, nullptr);

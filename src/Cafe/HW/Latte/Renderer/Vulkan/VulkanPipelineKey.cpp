@@ -7,19 +7,31 @@ uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dyn
 {
 	const bool dynamicDepthStencilCull = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL) != 0;
 	const bool dynamicBlend = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_BLEND) != 0;
+	const bool dynamicRasterizer = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER) != 0;
 	const uint32* ctxRegister = lcr.GetRawView();
 	uint64 stateHash = 0;
 
 	uint32 polygonCtrl = lcr.PA_SU_SC_MODE_CNTL.getRawValue();
+	uint32 polygonCtrlKeyed = polygonCtrl;
 	// CULL_FRONT, CULL_BACK, FRONT_FACE: dynamic state with the extension
-	stateHash += dynamicDepthStencilCull ? (polygonCtrl & ~7u) : polygonCtrl;
+	if (dynamicDepthStencilCull)
+		polygonCtrlKeyed &= ~7u;
+	// OFFSET_FRONT_ENABLED: dynamic state with _2
+	if (dynamicRasterizer)
+		polygonCtrlKeyed &= ~(1u << 11);
+	stateHash += polygonCtrlKeyed;
 	stateHash = std::rotl<uint64>(stateHash, 7);
 
-	stateHash += ctxRegister[Latte::REGADDR::PA_CL_CLIP_CNTL];
+	uint32 clipCtrl = ctxRegister[Latte::REGADDR::PA_CL_CLIP_CNTL];
+	// DX_RASTERIZATION_KILL: dynamic state with _2
+	if (dynamicRasterizer)
+		clipCtrl &= ~(1u << 22);
+	stateHash += clipCtrl;
 	stateHash = std::rotl<uint64>(stateHash, 7);
+	const VulkanRasterizerEnables rasterizer = VulkanPipelineKey_Rasterizer(lcr);
 	// the pipeline drops rasterizer discard when the viewport's X offset is
-	// off (GX2SetSpecialState(0, true), PipelineCompiler::InitRasterizerState)
-	if (lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL() && !lcr.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
+	// off (GX2SetSpecialState(0, true), VulkanPipelineKey_Rasterizer)
+	if (!dynamicRasterizer && lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL() && !rasterizer.rasterizerDiscardEnable)
 		stateHash += 0x2222;
 
 	const auto colorControlReg = ctxRegister[Latte::REGADDR::CB_COLOR_CONTROL];
@@ -60,12 +72,9 @@ uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dyn
 	stateHash = std::rotl<uint64>(stateHash, 17);
 	stateHash += depthControl;
 
-	// polygon offset
-	if (polygonCtrl & (1 << 11))
-	{
-		// front offset enabled
+	// polygon offset: front offset enabled
+	if (!dynamicRasterizer && rasterizer.depthBiasEnable)
 		stateHash += 0x1111;
-	}
 
 	return stateHash;
 }
@@ -144,6 +153,18 @@ VulkanDepthStencilCull VulkanPipelineKey_DepthStencilCull(const LatteContextRegi
 		s.backDepthFailOp = s.frontDepthFailOp;
 		s.backFailOp = s.frontFailOp;
 	}
+	return s;
+}
+
+VulkanRasterizerEnables VulkanPipelineKey_Rasterizer(const LatteContextRegister& lcr)
+{
+	VulkanRasterizerEnables s{};
+	s.depthBiasEnable = lcr.PA_SU_SC_MODE_CNTL.get_OFFSET_FRONT_ENABLED() ? VK_TRUE : VK_FALSE;
+	s.rasterizerDiscardEnable = lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL() ? VK_TRUE : VK_FALSE;
+	// GX2SetSpecialState(0, true) sets DX_RASTERIZATION_KILL with the
+	// viewport's X offset off and still expects the depth writes
+	if (!lcr.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
+		s.rasterizerDiscardEnable = VK_FALSE;
 	return s;
 }
 
@@ -296,4 +317,10 @@ void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAt
 	vkCmdSetColorBlendEnableEXT(cb, 0, count, enables);
 	vkCmdSetColorBlendEquationEXT(cb, 0, count, equations);
 	vkCmdSetColorWriteMaskEXT(cb, 0, count, masks);
+}
+
+void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerEnables& s)
+{
+	vkCmdSetDepthBiasEnableEXT(cb, s.depthBiasEnable);
+	vkCmdSetRasterizerDiscardEnableEXT(cb, s.rasterizerDiscardEnable);
 }

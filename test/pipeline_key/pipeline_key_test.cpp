@@ -8,7 +8,8 @@
 //    nothing is drawn with a pipeline made for other state;
 //  - with VK_EXT_extended_dynamic_state the cull mode, front face and depth
 //    and stencil tests make no new key either, with _3 the blend enables,
-//    equations and write masks, and what the draw sets for them is what a
+//    equations and write masks, with _2 the polygon offset enable and
+//    rasterizer discard, and what the draw sets for them is what a
 //    pipeline baked in before.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 
@@ -191,6 +192,87 @@ int main()
 		}
 		std::printf("pipeline keys for 4096 blend states with dynamic blending: %zu\n", seq.size());
 		CHECK(seq.size() == 1);
+	}
+	// extended dynamic state 2: polygon offset enable and rasterizer discard
+	// are the draw's, everything else still keyed
+	{
+		const uint32 flags = VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER;
+		const uint64 rkey = VulkanPipelineKey_RenderState(*base, flags);
+		std::set<uint64> others;
+		size_t keyed = 0;
+		for (const Change& c : baked)
+		{
+			auto s2 = std::make_unique<LatteContextRegister>(*base);
+			SetReg(*s2, c.reg, c.value);
+			const uint64 k = VulkanPipelineKey_RenderState(*s2, flags);
+			const bool dynamic = (c.reg == REGADDR::PA_SU_SC_MODE_CNTL && c.value == (1u << 11)) ||
+				(c.reg == REGADDR::PA_CL_CLIP_CNTL && c.value == (1u << 22));
+			if (dynamic && k != rkey)
+			{
+				std::printf("FAIL: %s makes a new key with dynamic depth bias and discard\n", c.what);
+				s_failures++;
+			}
+			if (!dynamic)
+			{
+				keyed++;
+				others.insert(k);
+				if (k == rkey)
+				{
+					std::printf("FAIL: %s does not change the key with dynamic depth bias and discard\n", c.what);
+					s_failures++;
+				}
+			}
+		}
+		CHECK(others.size() == keyed);
+		// the rest of the clip control (the depth clip) stays in the pipeline
+		auto clip = std::make_unique<LatteContextRegister>(*base);
+		SetReg(*clip, REGADDR::PA_CL_CLIP_CNTL, (1u << 22) | (1u << 27));
+		CHECK(VulkanPipelineKey_RenderState(*clip, flags) != rkey);
+		std::set<uint64> seq;
+		auto r2 = std::make_unique<LatteContextRegister>(*base);
+		for (uint32 i = 0; i < 64; i++)
+		{
+			SetReg(*r2, REGADDR::PA_SU_SC_MODE_CNTL, (i & 1) << 11);
+			SetReg(*r2, REGADDR::PA_CL_CLIP_CNTL, ((i >> 1) & 1) << 22);
+			SetReg(*r2, REGADDR::PA_CL_VTE_CNTL, ((i >> 2) & 1) << 1);
+			seq.insert(VulkanPipelineKey_RenderState(*r2, flags));
+		}
+		std::printf("pipeline keys for 64 depth bias and discard states with extended dynamic state 2: %zu\n", seq.size());
+		CHECK(seq.size() == 1);
+		// all three together: one key for every state the draw sets
+		const uint32 all = VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND | flags;
+		std::set<uint64> allKeys;
+		for (uint32 i = 0; i < 1024; i++)
+		{
+			SetReg(*r2, REGADDR::PA_SU_SC_MODE_CNTL, (i & 7) | (((i >> 3) & 1) << 11));
+			SetReg(*r2, REGADDR::PA_CL_CLIP_CNTL, ((i >> 4) & 1) << 22);
+			SetReg(*r2, REGADDR::DB_DEPTH_CONTROL, i * 0x9E3779B1u);
+			SetReg(*r2, REGADDR::CB_COLOR_CONTROL, 0xCC0000 | ((i * 37 & 0xFF) << 8));
+			SetReg(*r2, REGADDR::CB_TARGET_MASK, i * 0x85EBCA6Bu);
+			allKeys.insert(VulkanPipelineKey_RenderState(*r2, all));
+		}
+		std::printf("pipeline keys for 1024 states with all of it dynamic: %zu\n", allKeys.size());
+		CHECK(allKeys.size() == 1);
+	}
+	// the enables the draw sets and the pipeline bakes in
+	{
+		auto s2 = std::make_unique<LatteContextRegister>(*base);
+		VulkanRasterizerEnables e = VulkanPipelineKey_Rasterizer(*s2);
+		CHECK(!e.depthBiasEnable && !e.rasterizerDiscardEnable);
+		SetReg(*s2, REGADDR::PA_SU_SC_MODE_CNTL, 1u << 11);
+		SetReg(*s2, REGADDR::PA_CL_CLIP_CNTL, 1u << 22);
+		SetReg(*s2, REGADDR::PA_CL_VTE_CNTL, 1u << 1);
+		e = VulkanPipelineKey_Rasterizer(*s2);
+		CHECK(e.depthBiasEnable && e.rasterizerDiscardEnable);
+		// GX2SetSpecialState(0, true): the viewport's X offset off keeps rasterizing
+		SetReg(*s2, REGADDR::PA_CL_VTE_CNTL, 0);
+		e = VulkanPipelineKey_Rasterizer(*s2);
+		CHECK(e.depthBiasEnable && !e.rasterizerDiscardEnable);
+		// the key without the extension is as it was: discard only with the
+		// viewport's X offset on, polygon offset by its enable
+		auto a = std::make_unique<LatteContextRegister>(*base);
+		SetReg(*a, REGADDR::PA_SU_SC_MODE_CNTL, 1u << 11);
+		CHECK(VulkanPipelineKey_RenderState(*a, 0) != key0);
 	}
 	// the blend state the draw sets and the pipeline bakes in
 	{

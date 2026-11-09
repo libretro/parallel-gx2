@@ -53,6 +53,7 @@ bool g_libretroVkHasPipelineRobustness = false;
 bool g_libretroVkHasDepthClipEnable = false;
 bool g_libretroVkHasExtendedDynamicState = false;
 bool g_libretroVkHasExtendedDynamicState3Blend = false;
+bool g_libretroVkHasExtendedDynamicState2 = false;
 
 // The device the core and the frontend share. Made with vkCreateDevice
 // (version 1: the frontend's extensions come in as required ones) or
@@ -158,6 +159,8 @@ static bool CreateDevice(
 		VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
 		// blend enables, equations and write masks as dynamic state
 		VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
+		// depth bias enable and rasterizer discard as dynamic state
+		VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,
 	};
 	for (auto ext : cemuExtensions)
 	{
@@ -194,6 +197,7 @@ static bool CreateDevice(
 	VkPhysicalDeviceDepthClipEnableFeaturesEXT clipSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
 	VkPhysicalDeviceExtendedDynamicStateFeaturesEXT edsSupported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
 	VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3Supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+	VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2Supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
 	{
 		void* chain = nullptr;
 		const auto query = [&](auto& feature, const char* ext) {
@@ -209,6 +213,7 @@ static bool CreateDevice(
 		query(clipSupported, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
 		query(edsSupported, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 		query(eds3Supported, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+		query(eds2Supported, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
 		supportedFeatures2.pNext = chain;
 	}
 
@@ -268,6 +273,7 @@ static bool CreateDevice(
 	VkPhysicalDeviceDepthClipEnableFeaturesEXT clipFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
 	VkPhysicalDeviceExtendedDynamicStateFeaturesEXT edsFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
 	VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+	VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
 	void* featureChain = nullptr;
 	const auto chainFeature = [&](auto& feature) {
 		feature.pNext = featureChain;
@@ -307,6 +313,11 @@ static bool CreateDevice(
 		eds3Features.extendedDynamicState3ColorBlendEquation = VK_TRUE;
 		eds3Features.extendedDynamicState3ColorWriteMask = VK_TRUE;
 		chainFeature(eds3Features);
+	}
+	if (enabledExt(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME) && eds2Supported.extendedDynamicState2)
+	{
+		eds2Features.extendedDynamicState2 = VK_TRUE;
+		chainFeature(eds2Features);
 	}
 
 	VkDeviceCreateInfo createInfo{};
@@ -351,6 +362,7 @@ static bool CreateDevice(
 	g_libretroVkHasDepthClipEnable = clipFeatures.depthClipEnable == VK_TRUE;
 	g_libretroVkHasExtendedDynamicState = edsFeatures.extendedDynamicState == VK_TRUE;
 	g_libretroVkHasExtendedDynamicState3Blend = eds3Features.extendedDynamicState3ColorBlendEnable == VK_TRUE;
+	g_libretroVkHasExtendedDynamicState2 = eds2Features.extendedDynamicState2 == VK_TRUE;
 	{
 		std::string list;
 		for (const std::string& ext : g_libretroVkDeviceExtensions)

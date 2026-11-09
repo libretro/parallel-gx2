@@ -166,6 +166,24 @@ static void TestDevices()
 		else
 			CHECK(!g_libretroVkHasExtendedDynamicState3Blend);
 		std::printf("dynamic blending: %s\n", gpuEds3Blend ? (g_libretroVkHasExtendedDynamicState3Blend ? "on" : "NOT ON") : "the GPU has none");
+		// depth bias enable and rasterizer discard as dynamic state where the
+		// GPU has _2's feature
+		bool gpuEds2 = false;
+		for (auto& e : exts)
+			gpuEds2 = gpuEds2 || !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+		if (gpuEds2)
+		{
+			VkPhysicalDeviceExtendedDynamicState2FeaturesEXT f2e{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT};
+			VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			f2.pNext = &f2e;
+			vkGetPhysicalDeviceFeatures2(gpu, &f2);
+			gpuEds2 = f2e.extendedDynamicState2 == VK_TRUE;
+		}
+		if (gpuEds2)
+			CHECK(g_libretroVkHasExtendedDynamicState2 && Has(w.asked, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME));
+		else
+			CHECK(!g_libretroVkHasExtendedDynamicState2);
+		std::printf("dynamic depth bias and discard: %s\n", gpuEds2 ? (g_libretroVkHasExtendedDynamicState2 ? "on" : "NOT ON") : "the GPU has none");
 		const char* own = nullptr;
 		for (auto& e : exts)
 			if (!Has(w.asked, e.extensionName))

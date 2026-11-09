@@ -402,6 +402,8 @@ private:
 		// blend enables, equations and write masks (extended dynamic state 3)
 		uint32 prevBlendRegs[10]{};
 		VKRObjectRenderPass* prevBlendRenderPass{};
+		// depth bias enable and rasterizer discard (extended dynamic state 2)
+		uint32 prevRasterizerEnables{ 0xFFFFFFFF };
 
 		void resetCommandBufferState()
 		{
@@ -411,6 +413,7 @@ private:
 			prevDepthControlU32 = 0xFFFFFFFF;
 			prevPrimitiveTypeU32 = 0xFFFFFFFF;
 			prevBlendRenderPass = nullptr;
+			prevRasterizerEnables = 0xFFFFFFFF;
 			prevPolygonFrontOffsetU32 = 0xFFFFFFFF;
 			prevPolygonFrontScaleU32 = 0xFFFFFFFF;
 			prevPolygonFrontClampU32 = 0xFFFFFFFF;
@@ -470,6 +473,7 @@ private:
 			bool depth_clip_enable = false; // VK_EXT_depth_clip_enable
 			bool extended_dynamic_state = false; // VK_EXT_extended_dynamic_state
 			bool extended_dynamic_state3_blend = false; // VK_EXT_extended_dynamic_state3: color blend enable, equation and write mask
+			bool extended_dynamic_state2 = false; // VK_EXT_extended_dynamic_state2: depth bias enable, rasterizer discard
 			bool pipeline_robustness = false; // VK_EXT_pipeline_robustness
 			bool attachment_feedback_loop_layout = false; // VK_EXT_attachment_feedback_loop_layout
 			bool attachment_feedback_loop_dynamic_state = false; // VK_EXT_attachment_feedback_loop_dynamic_state (this is forced to false if VK_EXT_attachment_feedback_loop_layout is not supported)
@@ -535,6 +539,7 @@ private:
 	void draw_updateStencilState(bool forceUpdate);
 	void draw_updateDepthStencilCull(bool forceUpdate);
 	void draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* renderPass);
+	void draw_updateRasterizer(bool forceUpdate);
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();

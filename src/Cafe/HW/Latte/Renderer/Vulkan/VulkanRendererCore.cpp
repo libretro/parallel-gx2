@@ -80,7 +80,8 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 	const auto& ext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions;
 	stateHash += VulkanPipelineKey_RenderState(lcr,
 		(ext.extended_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL : 0) |
-		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0));
+		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0) |
+		(ext.extended_dynamic_state2 ? VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER : 0));
 	stateHash = std::rotl<uint64>(stateHash, 17);
 	stateHash += renderPassObj->m_hashForPipeline;
 
@@ -1203,6 +1204,22 @@ void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* ren
 	VulkanPipelineKey_SetBlend(m_state.currentCommandBuffer, att, 8);
 }
 
+// Depth bias enable and rasterizer discard, dynamic in every pipeline with
+// VK_EXT_extended_dynamic_state2: set when they change, and with every
+// pipeline bound. The depth bias values are dynamic in every such pipeline
+// too (PipelineCompiler::InitRasterizerState), set by draw_updateDepthBias.
+void VulkanRenderer::draw_updateRasterizer(bool forceUpdate)
+{
+	if (!m_featureControl.deviceExtensions.extended_dynamic_state2)
+		return;
+	const VulkanRasterizerEnables s = VulkanPipelineKey_Rasterizer(LatteGPUState.contextNew);
+	const uint32 packed = (s.depthBiasEnable ? 1u : 0u) | (s.rasterizerDiscardEnable ? 2u : 0u);
+	if (!forceUpdate && m_state.prevRasterizerEnables == packed)
+		return;
+	m_state.prevRasterizerEnables = packed;
+	VulkanPipelineKey_SetRasterizer(m_state.currentCommandBuffer, s);
+}
+
 void VulkanRenderer::draw_updateDepthBias(bool forceUpdate)
 {
 	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
@@ -1508,6 +1525,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateStencilState(true);
 		draw_updateDepthStencilCull(true);
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
+		draw_updateRasterizer(true);
 	}
 	else
 	{
@@ -1516,6 +1534,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateStencilState(false);
 		draw_updateDepthStencilCull(false);
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
+		draw_updateRasterizer(false);
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1709,6 +1728,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateStencilState(true);
 		draw_updateDepthStencilCull(true);
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
+		draw_updateRasterizer(true);
 	}
 	else
 	{
@@ -1717,6 +1737,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateStencilState(false);
 		draw_updateDepthStencilCull(false);
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
+		draw_updateRasterizer(false);
 	}
 
 	// update blend constants

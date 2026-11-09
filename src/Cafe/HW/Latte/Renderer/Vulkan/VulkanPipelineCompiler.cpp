@@ -439,8 +439,11 @@ void PipelineCompiler::InitViewportState()
 void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegister, VulkanRenderer* vkRenderer, bool isPrimitiveRect, bool& usesDepthBias)
 {
 	// polygon control
-	const auto& polygonControlReg = latteRegister.PA_SU_SC_MODE_CNTL;
-	uint32 polyOffsetFrontEnable = polygonControlReg.get_OFFSET_FRONT_ENABLED();
+	const VulkanRasterizerEnables enables = VulkanPipelineKey_Rasterizer(latteRegister);
+	// with VK_EXT_extended_dynamic_state2 both enables are dynamic state
+	// (InitDynamicState), set by the draw (draw_updateRasterizer), what is
+	// set here then ignored; the depth bias values are dynamic regardless
+	const bool dynamicEnables = vkRenderer->m_featureControl.deviceExtensions.extended_dynamic_state2;
 
 	cemu_assert_debug(latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_NEAR_DISABLE() == latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE()); // near or far clipping can be disabled individually
 	bool zClipEnable = latteRegister.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE() == false;
@@ -451,11 +454,8 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 	rasterizerExt.flags = 0;
 
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	rasterizer.rasterizerDiscardEnable = latteRegister.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
+	rasterizer.rasterizerDiscardEnable = enables.rasterizerDiscardEnable;
 	rasterizer.pNext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.depth_clip_enable ? &rasterizerExt : nullptr;
-	// GX2SetSpecialState(0, true) workaround
-	if (!latteRegister.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
-		rasterizer.rasterizerDiscardEnable = false;
 
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	if (vkRenderer->m_featureControl.deviceExtensions.nv_fill_rectangle && isPrimitiveRect)
@@ -465,17 +465,12 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 
 	rasterizer.lineWidth = 1.0f; // TODO -> mmPA_SU_LINE_CNTL
 
-	usesDepthBias = polyOffsetFrontEnable;
-	if (polyOffsetFrontEnable)
-	{
-		rasterizer.depthBiasEnable = VK_TRUE;
-		// initialize to zero, set dynamically via vkCmdSetDepthBias
-		rasterizer.depthBiasConstantFactor = 0.0f;
-		rasterizer.depthBiasSlopeFactor = 0.0f;
-		rasterizer.depthBiasClamp = 0.0f;
-	}
-	else
-		rasterizer.depthBiasEnable = VK_FALSE;
+	usesDepthBias = dynamicEnables || enables.depthBiasEnable;
+	rasterizer.depthBiasEnable = enables.depthBiasEnable;
+	// initialize to zero, set dynamically via vkCmdSetDepthBias
+	rasterizer.depthBiasConstantFactor = 0.0f;
+	rasterizer.depthBiasSlopeFactor = 0.0f;
+	rasterizer.depthBiasClamp = 0.0f;
 
 	const VulkanDepthStencilCull dsc = VulkanPipelineKey_DepthStencilCull(latteRegister);
 	rasterizer.cullMode = dsc.cullMode;
@@ -641,6 +636,11 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
+	}
+	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state2)
+	{
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT);
 	}
 
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;

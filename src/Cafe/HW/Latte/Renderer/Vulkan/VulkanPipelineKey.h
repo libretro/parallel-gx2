@@ -15,6 +15,9 @@ enum
 	// VK_EXT_extended_dynamic_state3: blend enables, blend equations and
 	// color write masks (VulkanRenderer::draw_updateBlend)
 	VULKAN_PIPELINE_KEY_DYNAMIC_BLEND = 1 << 1,
+	// VK_EXT_extended_dynamic_state2: depth bias (polygon offset) enable and
+	// rasterizer discard (VulkanRenderer::draw_updateRasterizer)
+	VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER = 1 << 2,
 };
 uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dynamic);
 
@@ -44,8 +47,22 @@ VulkanDepthStencilCull VulkanPipelineKey_DepthStencilCull(const LatteContextRegi
 bool VulkanPipelineKey_Blend(const LatteContextRegister& lcr, const VkFormat colorFormats[8],
 	VkPipelineColorBlendAttachmentState out[8]);
 
+// Whether polygon offset applies and whether nothing is rasterized, as the
+// pipeline bakes them in or the draw sets them. The depth bias values are
+// always dynamic (VulkanRenderer::draw_updateDepthBias).
+struct VulkanRasterizerEnables
+{
+	VkBool32 depthBiasEnable;
+	VkBool32 rasterizerDiscardEnable;
+
+	bool operator==(const VulkanRasterizerEnables&) const = default;
+};
+VulkanRasterizerEnables VulkanPipelineKey_Rasterizer(const LatteContextRegister& lcr);
+
 // Sets them on a command buffer, as dynamic state: what the draw does with
 // VK_EXT_extended_dynamic_state (the first) and _3's blend states (the
 // second, for count color attachments from the first)
 void VulkanPipelineKey_SetDepthStencilCull(VkCommandBuffer cb, const VulkanDepthStencilCull& s);
 void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAttachmentState* att, uint32 count);
+// and _2's (VulkanRenderer::draw_updateRasterizer)
+void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerEnables& s);

@@ -140,12 +140,22 @@ the draw (`draw_updateBlend`, from `VulkanPipelineKey_Blend`, which the
 pipeline compiler uses too) and out of the key, all but the logic op;
 `test/pipeline_key` replays 4096 blend states (one key).
 
+Done with `VK_EXT_extended_dynamic_state2`: the polygon offset enable and
+rasterizer discard (with the GX2SetSpecialState exception for the
+viewport's X offset) are set by the draw (`draw_updateRasterizer`, from
+`VulkanPipelineKey_Rasterizer`, which the pipeline compiler uses too), the
+depth bias values are dynamic in every such pipeline, and both enables are
+out of the key; `test/pipeline_key` replays the 64 combinations (one key)
+and 1024 states with all three extensions' state varied (one key). Its
+primitive restart is not used: restart follows the topology, which the
+pipeline keys anyway.
+
 `test/dynstate` draws 400 register states from a seed on lavapipe, each
-with a pipeline that bakes the depth, stencil, cull and blend state in and
-one that takes it from the draw (through the same setters the renderer
-uses, `VulkanPipelineKey_SetDepthStencilCull` and `_SetBlend`), and
-requires the same picture to the byte. Next: `_2` (primitive restart,
-depth bias enable), dynamic vertex input, and replaying a title's draws.
+with a pipeline that bakes the depth, stencil, cull, blend, polygon offset
+and discard state in and one that takes it from the draw (through the same
+setters the renderer uses, `VulkanPipelineKey_SetDepthStencilCull`,
+`_SetBlend` and `_SetRasterizer`), and requires the same picture to the
+byte. Next: dynamic vertex input, and replaying a title's draws.
 
 
 - Make the state that only multiplies pipelines dynamic where the device
