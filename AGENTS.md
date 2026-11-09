@@ -39,6 +39,7 @@ This repository builds the libretro core and nothing else. The standalone's part
 - Stop and join threads the way upstream Cemu does, not with methods made up for the libretro port. The ad-hoc ones are what caused most of the shutdown and reset bugs.
 - Every core option has to be connected to something. Do not add an option the core does not read, and remove one that turns out to do nothing. Option defaults follow the standalone's defaults unless there is a reason, written down beside the option.
 - `settings.xml` is not used by this core. If you need a setting, use the current `.opt` file (a core option) instead of Cemu's `settings.xml`.
+- No allocations mid-game. From the first `retro_run` after a title loads until it is unloaded, nothing the core does per frame, per draw, per guest call, per audio or input poll or per cache entry allocates: no `malloc` or `new`, no container that grows, no `std::string` or `std::vector` built and thrown away. Memory comes from what was set up when the core or the title was loaded - sized up front, pooled, or kept per thread and reused. Something new mid-game (a shader, a pipeline, a texture) takes from a pool made ahead, not from the allocator on the path that needs it. An allocation still on such a path is a bug to remove, no change adds one, and where a path's allocations are counted (the shader/PSO gate) the count may not go up.
 
 ## Shader compilation and stutter
 
