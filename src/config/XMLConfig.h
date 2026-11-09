@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/xml/Xml.h"
+#include "util/helpers/MappedFile.h"
 #include "Common/FileStream.h"
 #include "config/ConfigValue.h"
 
@@ -372,7 +373,6 @@ public:
 
 	bool Save(const std::wstring& filename)
 	{
-		std::wstring tmp_name = fmt::format(L"{}_{}.tmp", filename,rand() % 1000);
 		std::error_code err;
 		fs::create_directories(fs::path(filename).parent_path(), err);
 		if (err)
@@ -380,18 +380,6 @@ public:
 			cemuLog_log(LogType::Force, "can't create parent path for save file: {}", err.message());
 			return false;
 		}
-
-		FILE* file = nullptr;
-#if BOOST_OS_WINDOWS
-        file = _wfopen(tmp_name.c_str(), L"wb");
-#else
-		file = fopen(boost::nowide::narrow(tmp_name).c_str(), "wb");
-#endif
-        if (!file)
-        {
-			cemuLog_logDebug(LogType::Force, "XMLConfig::Save > failed \"{}\" with error {}", boost::nowide::narrow(filename), errno);
-            return false;
-        }
 
 		xml::Document doc;
 
@@ -401,22 +389,14 @@ public:
 		for (auto [save, load] : m_childConfigParsers)
 			save(parentParser);
 
+		// through a file beside it that then takes its name
 		const std::string out = doc.save("    ");
-		const bool success = !out.empty() && fwrite(out.data(), 1, out.size(), file) == out.size();
-		if(!success)
-			cemuLog_logDebug(LogType::Force, "XMLConfig::Save > writing \"{}\" failed", boost::nowide::narrow(tmp_name));
-
-		fflush(file);
-		fclose(file);
-
-		fs::rename(tmp_name, filename, err);
-		if(err)
+		if (out.empty() || !ReplaceFileContents(fs::path(filename), out.data(), out.size()))
 		{
-			cemuLog_log(LogType::Force, "Unable to save settings to file: {}", err.message().c_str());
-			fs::remove(tmp_name, err);
+			cemuLog_log(LogType::Force, "Unable to save settings to file: {}", boost::nowide::narrow(filename));
+			return false;
 		}
-
-		return success;
+		return true;
 	}
 
 	[[nodiscard]] const std::wstring& GetFilename() const { return m_filename; }

@@ -1,6 +1,6 @@
 #include "util/IniParser/IniParser.h"
 
-IniParser::IniParser(std::span<char> iniContents, std::string_view name) : m_name(name)
+IniParser::IniParser(std::span<const char> iniContents, std::string_view name) : m_name(name)
 {
 	// we dont support utf8 but still skip the byte order mark in case the user saved the document with the wrong encoding
 	if (iniContents.size() >= 3 && (uint8)iniContents[0] == 0xEF && (uint8)iniContents[1] == 0xBB && (uint8)iniContents[2] == 0xBF)

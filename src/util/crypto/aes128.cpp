@@ -457,13 +457,9 @@ void InvCipher(aes128Ctx_t* aesCtx)
 	AddRoundKey(aesCtx, 0);
 }
 
-static void BlockCopy(uint8* output, uint8* input)
+static void BlockCopy(uint8* output, const uint8* input)
 {
-	uint8 i;
-	for (i = 0; i < KEYLEN; ++i)
-	{
-		output[i] = input[i];
-	}
+	memcpy(output, input, KEYLEN);
 }
 
 
@@ -533,7 +529,7 @@ void AES128_CBC_encrypt(uint8* output, uint8* input, uint32 length, const uint8*
 	cemu_assert_debug(remainders == 0);
 }
 
-void __soft__AES128_CBC_decrypt(uint8* output, uint8* input, uint32 length, const uint8* key, const uint8* iv)
+void __soft__AES128_CBC_decrypt(uint8* output, const uint8* input, uint32 length, const uint8* key, const uint8* iv)
 {
 	aes128Ctx_t aesCtx;
 	intptr_t i;
@@ -757,7 +753,7 @@ ATTRIBUTE_AESNI void AESNI128_CBC_decryptWithExpandedKey(const unsigned char *in
 	}
 }
 
-ATTRIBUTE_AESNI void __aesni__AES128_CBC_decrypt(uint8* output, uint8* input, uint32 length, const uint8* key, const uint8* iv)
+ATTRIBUTE_AESNI void __aesni__AES128_CBC_decrypt(uint8* output, const uint8* input, uint32 length, const uint8* key, const uint8* iv)
 {
 	alignas(16) uint8 expandedKey[11 * 16];
 	AESNI128_KeyExpansionDecrypt(key, expandedKey);
@@ -795,7 +791,7 @@ ATTRIBUTE_AESNI void __aesni__AES128_ECB_encrypt(uint8* input, const uint8* key,
 #endif
 
 void(*AES128_ECB_encrypt)(uint8* input, const uint8* key, uint8* output);
-void (*AES128_CBC_decrypt)(uint8* output, uint8* input, uint32 length, const uint8* key, const uint8* iv) = nullptr;
+void (*AES128_CBC_decrypt)(uint8* output, const uint8* input, uint32 length, const uint8* key, const uint8* iv) = nullptr;
 
 // AES128-CTR encrypt/decrypt
 void AES128CTR_transform(uint8* data, sint32 length, uint8* key, uint8* nonceIv)

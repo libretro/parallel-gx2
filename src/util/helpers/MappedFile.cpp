@@ -8,6 +8,7 @@ MappedFile::MappedFile(const fs::path& path)
 	m_stream = FileStream::openFileMapped(path);
 	if (!m_stream)
 		return;
+	m_opened = true;
 	const std::span<const uint8> mapped = m_stream->MappedSpan();
 	if (!mapped.empty())
 	{

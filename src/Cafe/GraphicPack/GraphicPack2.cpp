@@ -1,4 +1,5 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "util/helpers/MappedFile.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "config/CemuConfig.h"
 #include "config/ActiveSettings.h"
@@ -16,6 +17,18 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/RendererOuputShader.h"
 #include <cinttypes>
+
+// A text file into the string that keeps it: one copy, out of the file's
+// mapping, where it went through a stream a character at a time
+static bool ReadTextFile(const fs::path& path, std::string& out)
+{
+	MappedFile file(path);
+	if (!file.opened())
+		return false;
+	out.assign((const char*)file.data(), file.size());
+	return true;
+}
+
 
 std::vector<GraphicPackPtr> GraphicPack2::s_graphic_packs;
 std::vector<GraphicPackPtr> GraphicPack2::s_active_graphic_packs;
@@ -783,41 +796,20 @@ void GraphicPack2::LoadShaders()
 			}
 			else if (filename == L"output.glsl")
 			{
-				std::ifstream file(p);
-				if (!file.is_open())
+				if (!ReadTextFile(p, m_output_shader_source))
 					throw std::runtime_error(fmt::format("can't open graphic pack file: {}", _pathToUtf8(p.filename())));
-
-				file.seekg(0, std::ios::end);
-				m_output_shader_source.reserve(file.tellg());
-				file.seekg(0, std::ios::beg);
-
-				m_output_shader_source.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 				ApplyShaderPresets(m_output_shader_source);
 			}
 			else if (filename == L"upscaling.glsl")
 			{
-				std::ifstream file(p);
-				if (!file.is_open())
+				if (!ReadTextFile(p, m_upscaling_shader_source))
 					throw std::runtime_error(fmt::format("can't open graphic pack file: {}", _pathToUtf8(p.filename())));
-
-				file.seekg(0, std::ios::end);
-				m_upscaling_shader_source.reserve(file.tellg());
-				file.seekg(0, std::ios::beg);
-
-				m_upscaling_shader_source.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 				ApplyShaderPresets(m_upscaling_shader_source);
 			}
 			else if (filename == L"downscaling.glsl")
 			{
-				std::ifstream file(p);
-				if (!file.is_open())
+				if (!ReadTextFile(p, m_downscaling_shader_source))
 					throw std::runtime_error(fmt::format("can't open graphic pack file: {}", _pathToUtf8(p.filename())));
-
-				file.seekg(0, std::ios::end);
-				m_downscaling_shader_source.reserve(file.tellg());
-				file.seekg(0, std::ios::beg);
-
-				m_downscaling_shader_source.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 				ApplyShaderPresets(m_downscaling_shader_source);
 			}
 		}
@@ -1332,15 +1324,8 @@ GraphicPack2::CustomShader GraphicPack2::LoadShader(const fs::path& path, uint64
 {
 	CustomShader shader;
 
-	std::ifstream file(path);
-	if (!file.is_open())
+	if (!ReadTextFile(path, shader.source))
 		throw std::runtime_error("can't open shader file");
-
-	file.seekg(0, std::ios::end);
-	shader.source.reserve(file.tellg());
-	file.seekg(0, std::ios::beg);
-
-	shader.source.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 	ApplyShaderPresets(shader.source);
 
 	shader.shader_base_hash = shader_base_hash;

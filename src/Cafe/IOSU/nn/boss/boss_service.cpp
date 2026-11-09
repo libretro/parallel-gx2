@@ -1,4 +1,5 @@
 #include "Cafe/OS/libs/nn_common.h"
+#include "util/helpers/MappedFile.h"
 #include "util/helpers/helpers.h"
 #include "util/helpers/EventWake.h"
 
@@ -800,11 +801,20 @@ namespace iosu::boss
 				return;
 			}
 			// to make sure that the file actually stored correctly to disk we read it back and verify the hash
-			auto readbackFileData = FileStream::LoadIntoMemory(tmpDataPath);
 			uint8 hmacHash[32];
-			unsigned int hmacHashLen = 32;
-			HMAC_SHA256("uyr5I8pu4ycq2pOT3D53Bp0n7jK8eyjLO5U20ocUNdN5muwUcC4By881UXECeM08", 64, readbackFileData->data(), originalFileSize - sizeof(BossNbdlHeader), hmacHash, &hmacHashLen);
-			if (memcmp(hmacHash, fileHMAC, 32) != 0)
+			bool readBack = false;
+			{
+				// from the file's mapping, let go of before the rename below
+				// (Windows will not rename a file held open)
+				MappedFile readbackFileData(tmpDataPath);
+				if (readbackFileData.size() >= originalFileSize - sizeof(BossNbdlHeader))
+				{
+					unsigned int hmacHashLen = 32;
+					HMAC_SHA256("uyr5I8pu4ycq2pOT3D53Bp0n7jK8eyjLO5U20ocUNdN5muwUcC4By881UXECeM08", 64, readbackFileData.data(), originalFileSize - sizeof(BossNbdlHeader), hmacHash, &hmacHashLen);
+					readBack = true;
+				}
+			}
+			if (!readBack || memcmp(hmacHash, fileHMAC, 32) != 0)
 			{
 				// failed to verify hash
 				cemuLog_log(LogType::Force, "Failed to verify hash for SpotPass nbdl file: {}", _pathToUtf8(tmpDataPath));

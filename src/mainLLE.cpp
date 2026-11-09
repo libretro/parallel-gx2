@@ -1,4 +1,5 @@
 #include "util/crypto/aes128.h"
+#include "util/helpers/MappedFile.h"
 #include "WindowSystem.h"
 #include "Common/FileStream.h"
 
@@ -11,22 +12,22 @@ typedef struct
 
 void loadEncryptedPPCAncastKernel()
 {
-	auto kernelData = FileStream::LoadIntoMemory("kernel.img");
-	if (!kernelData)
+	MappedFile kernelData("kernel.img");
+	if (kernelData.size() < sizeof(ppcAncastHeader_t))
 		exit(-1);
 	// check header
-	ppcAncastHeader_t* ancastHeader = (ppcAncastHeader_t*)kernelData->data();
+	const ppcAncastHeader_t* ancastHeader = (const ppcAncastHeader_t*)kernelData.data();
 	if(ancastHeader->magic != (uint32be)0xEFA282D9)
 		assert_dbg(); // invalid magic
-	memcpy(memory_getPointerFromPhysicalOffset(0x08000000), kernelData->data(), kernelData->size());
+	memcpy(memory_getPointerFromPhysicalOffset(0x08000000), kernelData.data(), kernelData.size());
 }
 
 void loadPPCBootrom()
 {
-	auto bootromData = FileStream::LoadIntoMemory("bootrom.bin");
-	if (!bootromData)
+	MappedFile bootromData("bootrom.bin");
+	if (!bootromData.opened())
 		exit(-1);
-	memcpy(memory_getPointerFromPhysicalOffset(0x00000000), bootromData->data(), bootromData->size());
+	memcpy(memory_getPointerFromPhysicalOffset(0x00000000), bootromData.data(), bootromData.size());
 }
 
 void mainEmulatorLLE()

@@ -185,61 +185,45 @@ std::error_code Account::Save()
 		
 	path /= "account.dat";
 
-	try
-	{
-		std::ofstream file;
-		file.exceptions(std::ios::badbit);
-		file.open(path);
-	
-		file << "AccountInstance_20120705" << std::endl;
-		file << fmt::format("PersistentId={:08x}", m_persistent_id) << std::endl;
-		file << fmt::format("TransferableIdBase={:x}", m_transferable_id_base) << std::endl;
+	// the whole file formatted into one buffer, written once
+	fmt::memory_buffer out;
+	const auto it = std::back_inserter(out);
+	auto hex = [&it](const auto& bytes) {
+		for (const auto& b : bytes)
+			fmt::format_to(it, "{:02x}", b);
+	};
+	fmt::format_to(it, "AccountInstance_20120705\n");
+	fmt::format_to(it, "PersistentId={:08x}\n", m_persistent_id);
+	fmt::format_to(it, "TransferableIdBase={:x}\n", m_transferable_id_base);
+	fmt::format_to(it, "Uuid=");
+	hex(m_uuid);
+	fmt::format_to(it, "\nMiiData=");
+	hex(m_mii_data);
+	fmt::format_to(it, "\nMiiName=");
+	for (const auto& b : m_mii_name)
+		fmt::format_to(it, "{:04x}", (uint16)b);
+	fmt::format_to(it, "\nAccountId={}\n", m_account_id);
+	fmt::format_to(it, "BirthYear={:x}\n", m_birth_year);
+	fmt::format_to(it, "BirthMonth={:x}\n", m_birth_month);
+	fmt::format_to(it, "BirthDay={:x}\n", m_birth_day);
+	fmt::format_to(it, "Gender={:x}\n", m_gender);
+	fmt::format_to(it, "EmailAddress={}\n", m_email);
+	fmt::format_to(it, "Country={:x}\n", m_country);
+	fmt::format_to(it, "SimpleAddressId={:x}\n", m_simple_address_id);
+	fmt::format_to(it, "PrincipalId={:x}\n", m_principal_id);
+	fmt::format_to(it, "IsPasswordCacheEnabled={:x}\n", m_password_cache_enabled);
+	fmt::format_to(it, "AccountPasswordCache=");
+	hex(m_account_password_cache);
+	fmt::format_to(it, "\n");
+	// write rest of stuff we got
+	for (const auto& [key, value] : m_storage)
+		fmt::format_to(it, "{}={}\n", key, value);
 
-		file << fmt::format("Uuid=");
-		for (const auto& b : m_uuid)
-			file << fmt::format("{:02x}", b);
-		file << std::endl;
-
-		file << fmt::format("MiiData=");
-		for (const auto& b : m_mii_data)
-			file << fmt::format("{:02x}", b);
-		file << std::endl;
-		
-		file << fmt::format("MiiName=");
-		for (const auto& b : m_mii_name)
-			file << fmt::format("{:04x}", (uint16)b);
-		file << std::endl;
-		
-		file << fmt::format("AccountId={}", m_account_id) << std::endl;
-		file << fmt::format("BirthYear={:x}", m_birth_year) << std::endl;
-		file << fmt::format("BirthMonth={:x}", m_birth_month) << std::endl;
-		file << fmt::format("BirthDay={:x}", m_birth_day) << std::endl;
-		file << fmt::format("Gender={:x}", m_gender) << std::endl;
-		file << fmt::format("EmailAddress={}", m_email) << std::endl;
-		file << fmt::format("Country={:x}", m_country) << std::endl;
-		file << fmt::format("SimpleAddressId={:x}", m_simple_address_id) << std::endl;
-		file << fmt::format("PrincipalId={:x}", m_principal_id) << std::endl;
-		file << fmt::format("IsPasswordCacheEnabled={:x}", m_password_cache_enabled) << std::endl;
-
-		file << fmt::format("AccountPasswordCache=");
-		for (const auto& b : m_account_password_cache)
-			file << fmt::format("{:02x}", b);
-		file << std::endl;
-		
-		// write rest of stuff we got
-		for(const auto& [key, value] : m_storage)
-		{
-			file << fmt::format("{}={}", key, value) << std::endl;
-		}
-		
-		file.flush();
-		file.close();
-		return CheckValid();
-	}
-	catch (const std::system_error& e)
-	{
-		return e.code();
-	}
+	std::unique_ptr<FileStream> file(FileStream::createFile2(path));
+	if (!file || file->writeData(out.data(), (sint32)out.size()) != (sint32)out.size())
+		return std::make_error_code(std::errc::io_error);
+	file.reset();
+	return CheckValid();
 }
 
 OnlineAccountError Account::GetOnlineAccountError() const
@@ -340,14 +324,9 @@ void Account::UpdatePersisidDat()
 {
 	const auto max_id = std::max(kMinPersistendId, GetNextPersistentId() - 1);
 	const auto file = ActiveSettings::GetMlcPath("usr/save/system/act/persisid.dat");
-	std::ofstream f(file);
-	if(f.is_open())
-	{
-		f << "PersistentIdManager_20120607" << std::endl << "PersistentIdHead=" << std::hex << max_id << std::endl << std::endl;
-		f.flush();
-		f.close();
-	}
-	else
+	const std::string text = fmt::format("PersistentIdManager_20120607\nPersistentIdHead={:x}\n\n", max_id);
+	std::unique_ptr<FileStream> f(FileStream::createFile2(file));
+	if (!f || f->writeData(text.data(), (sint32)text.size()) != (sint32)text.size())
 		cemuLog_log(LogType::Force, "Unable to save persisid.dat");
 }
 
@@ -386,11 +365,11 @@ uint32 Account::GetNextPersistentId()
 	const auto file = ActiveSettings::GetMlcPath("usr/save/system/act/persisid.dat");
 	if(fs::exists(file))
 	{
-		std::ifstream f(file);
-		if(f.is_open())
+		std::unique_ptr<FileStream> f(FileStream::openFile2(file));
+		if(f)
 		{
 			std::string line;
-			while(std::getline(f, line))
+			while(f->readLine(line))
 			{
 				if(boost::starts_with(line, "PersistentIdHead="))
 				{

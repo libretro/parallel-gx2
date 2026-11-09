@@ -1,4 +1,5 @@
 #include "TitleList.h"
+#include "util/helpers/MappedFile.h"
 #include "Common/FileStream.h"
 #include "util/helpers/EventWake.h"
 
@@ -55,11 +56,11 @@ void CafeTitleList::LoadCacheFile()
 	sTLIsScanMandatory = true;
 	cemu_assert_debug(sTLInitialized);
 	cemu_assert_debug(sTLList.empty());
-	auto xmlData = FileStream::LoadIntoMemory(sTLCacheFilePath);
-	if (!xmlData)
+	MappedFile xmlData(sTLCacheFilePath);
+	if (!xmlData.opened())
 		return;
 	xml::Document doc;
-	if (!doc.load(xmlData->data(), xmlData->size()))
+	if (!doc.load(xmlData.data(), xmlData.size()))
 		return;
 	for (const auto& titleInfoNode : doc.child("title_list"))
 	{
@@ -127,19 +128,10 @@ void CafeTitleList::StoreCacheFile()
 			titleInfoNode.append_child("sub_path").text().set(_pathToUtf8(info.subPath).c_str());
 	}
 
-	fs::path tmpPath = fs::path(sTLCacheFilePath.parent_path()).append(fmt::format("{}__tmp", _pathToUtf8(sTLCacheFilePath.filename())));
-	std::ofstream fileOut(tmpPath, std::ios::out | std::ios::binary | std::ios::trunc);
-	if (!fileOut.is_open())
-	{
-		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(tmpPath));
-		return;
-	}
-	fileOut << doc.save(" ");
-	fileOut.flush();
-	fileOut.close();
-
-	std::error_code ec;
-	fs::rename(tmpPath, sTLCacheFilePath, ec);
+	// through a file beside it that then takes its name
+	const std::string out = doc.save(" ");
+	if (!ReplaceFileContents(sTLCacheFilePath, out.data(), out.size()))
+		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(sTLCacheFilePath));
 }
 
 void CafeTitleList::ClearScanPaths()

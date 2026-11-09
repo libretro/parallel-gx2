@@ -1,4 +1,5 @@
 #include "iosu_ioctl.h"
+#include "util/helpers/MappedFile.h"
 #include "iosu_acp.h"
 #include "Cafe/OS/libs/nn_common.h"
 #include "util/xml/Xml.h"
@@ -580,13 +581,18 @@ namespace iosu
 
 			// create or modify the saveinfo
 			const auto saveinfoPath = ActiveSettings::GetMlcPath("usr/save/{:08x}/{:08x}/meta/saveinfo.xml", GetTitleIdHigh(titleId), GetTitleIdLow(titleId));
-			auto saveinfoData = FileStream::LoadIntoMemory(saveinfoPath);
-			if (saveinfoData && !saveinfoData->empty())
+			std::optional<MappedFile> saveinfoData(std::in_place, saveinfoPath);
+			if (saveinfoData->size() != 0)
 			{
 				xml::Document doc;
 				// a file of only whitespace is an empty one
-				const bool blank = std::all_of(saveinfoData->begin(), saveinfoData->end(), [](uint8 c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; });
-				if (doc.load(saveinfoData->data(), saveinfoData->size()) || blank)
+				const std::span<const uint8> bytes = saveinfoData->span();
+				const bool blank = std::all_of(bytes.begin(), bytes.end(), [](uint8 c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; });
+				const bool loaded = doc.load(saveinfoData->data(), saveinfoData->size());
+				// let go before the file is written below: Windows will not
+				// truncate a file that is mapped
+				saveinfoData.reset();
+				if (loaded || blank)
 				{
 					xml::Node info = doc.child("info");
 					if (!info)
@@ -647,10 +653,7 @@ namespace iosu
 				fsc_close(fscFile);
 
 				const auto outPath = ActiveSettings::GetMlcPath("usr/save/{:08x}/{:08x}/meta/meta.xml", GetTitleIdHigh(titleId), GetTitleIdLow(titleId));
-
-				std::ofstream myFile(outPath, std::ios::out | std::ios::binary);
-				myFile.write((char*)fileContent.get(), fileSize);
-				myFile.close();
+				FileStream::WriteFile(outPath, fileContent.get(), fileSize);
 			}
 
 			fscFile = fsc_open((titlePath + "/meta/iconTex.tga").c_str(), FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &fscStatus);
@@ -663,10 +666,7 @@ namespace iosu
 				fsc_close(fscFile);
 
 				const auto outPath = ActiveSettings::GetMlcPath("usr/save/{:08x}/{:08x}/meta/iconTex.tga", GetTitleIdHigh(titleId), GetTitleIdLow(titleId));
-
-				std::ofstream myFile(outPath, std::ios::out | std::ios::binary);
-				myFile.write((char*)fileContent.get(), fileSize);
-				myFile.close();
+				FileStream::WriteFile(outPath, fileContent.get(), fileSize);
 			}
 
 			ACPUpdateSaveTimeStamp(persistentId, titleId, iosu::acp::ACPDeviceType::InternalDeviceType);

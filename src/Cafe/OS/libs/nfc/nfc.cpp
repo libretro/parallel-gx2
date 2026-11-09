@@ -1,4 +1,5 @@
 #include "Cafe/OS/common/OSCommon.h"
+#include "util/helpers/MappedFile.h"
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
 #include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
@@ -680,14 +681,14 @@ namespace nfc
 
 		NFCContext* ctx = &gNFCContexts[0];
 
-		auto nfcData = FileStream::LoadIntoMemory(filePath);
-		if (!nfcData)
+		MappedFile nfcData(filePath);
+		if (!nfcData.opened())
 		{
 			*nfcError = NFC_TOUCH_TAG_ERROR_NO_ACCESS;
 			return false;
 		}
 
-		ctx->tag = TagV0::FromBytes(std::as_bytes(std::span(nfcData->data(), nfcData->size())));
+		ctx->tag = TagV0::FromBytes(std::as_bytes(nfcData.span()));
 		if (!ctx->tag)
 		{
 			*nfcError = NFC_TOUCH_TAG_ERROR_INVALID_FILE_FORMAT;

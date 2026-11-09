@@ -1,4 +1,5 @@
 #include "Cafe/GameProfile/GameProfile.h"
+#include "util/helpers/MappedFile.h"
 #include "util/helpers/helpers.h"
 
 #include "boost/nowide/convert.hpp"
@@ -182,34 +183,30 @@ bool GameProfile::Load(uint64_t title_id)
 {
 	auto gameProfilePath = ActiveSettings::GetConfigPath("gameProfiles/{:016x}.ini", title_id);
 
-	std::optional<std::vector<uint8>> profileContents = FileStream::LoadIntoMemory(gameProfilePath);
-	if (!profileContents)
+	// lent from the file's mapping; the ini parser keeps its own copy
+	std::optional<MappedFile> profileFile(std::in_place, gameProfilePath);
+	if (!profileFile->opened())
 	{
 		gameProfilePath = ActiveSettings::GetDataPath("gameProfiles/default/{:016x}.ini", title_id);
-		profileContents = FileStream::LoadIntoMemory(gameProfilePath);
-		if (!profileContents)
+		profileFile.emplace(gameProfilePath);
+		if (!profileFile->opened())
 			return false;
 		m_is_default = true;
 	}
 	else
 		m_is_default = false;
+	const std::string_view profileContents((const char*)profileFile->data(), profileFile->size());
 
 	m_is_loaded = true;
 	// most official gameprofiles start with "# gamename"
-	std::vector<char> game_name;
-	if (profileContents->size() > 0 && profileContents->data()[0] == '#')
+	if (!profileContents.empty() && profileContents[0] == '#')
 	{
-		char c;
-		size_t idx = 1;
-		while (idx < profileContents->size() && (c = profileContents->data()[idx]) != '\n' && idx < 128)
-		{
-			game_name.emplace_back(c);
-			idx++;
-		}
-		m_gameName = std::string(game_name.begin(), game_name.end());
+		// up to the end of the line, at most 127 characters of it
+		const std::string_view rest = profileContents.substr(1, 127);
+		m_gameName = std::string(rest.substr(0, rest.find('\n')));
 		trim(m_gameName.value());
 	}
-	IniParser iniParser(*profileContents, _pathToUtf8(gameProfilePath));
+	IniParser iniParser(std::span<const char>(profileContents.data(), profileContents.size()), _pathToUtf8(gameProfilePath));
 	// parse ini
 	while (iniParser.NextSection())
 	{

@@ -1,4 +1,5 @@
 #include "input/InputManager.h"
+#include "util/helpers/MappedFile.h"
 #include "config/ActiveSettings.h"
 #include "input/ControllerFactory.h"
 #include <boost/property_tree/ini_parser.hpp>
@@ -79,12 +80,12 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 
 	try
 	{
-		auto xmlData = FileStream::LoadIntoMemory(file_path);
-		if (!xmlData || xmlData->empty())
+		MappedFile xmlData(file_path);
+		if (xmlData.size() == 0)
 			return false;
 	
 		xml::Document doc;
-		if (!doc.load(xmlData->data(), xmlData->size()))
+		if (!doc.load(xmlData.data(), xmlData.size()))
 			return false;
 
 		const xml::Node root = doc.document_element();
@@ -203,13 +204,21 @@ bool InputManager::migrate_config(const fs::path& file_path)
 {
 	try
 	{
-		auto xmlData = FileStream::LoadIntoMemory(file_path);
-		if (!xmlData || xmlData->empty())
+		MappedFile iniFile(file_path);
+		if (iniFile.size() == 0)
 			return false;
 
-		std::string iniDataStr((const char*)xmlData->data(), xmlData->size());
-
-		std::stringstream iniData(iniDataStr);
+		// read where it lies, rather than copied into a string and again
+		// into a string stream
+		struct BorrowedBuf : std::streambuf
+		{
+			BorrowedBuf(const uint8* data, size_t size)
+			{
+				char* p = (char*)data; // read only: nothing here writes through it
+				setg(p, p, p + size);
+			}
+		} iniBuf(iniFile.data(), iniFile.size());
+		std::istream iniData(&iniBuf);
 		boost::property_tree::ptree m_data;
 		read_ini(iniData, m_data);
 
@@ -395,12 +404,9 @@ bool InputManager::migrate_config(const fs::path& file_path)
 			}
 		}
 
-		std::ofstream write_file(out_file, std::ios::out | std::ios::trunc);
-		if (write_file.is_open())
-		{
-			write_file << doc.save();
+		const std::string out = doc.save();
+		if (FileStream::WriteFile(out_file, out.data(), out.size()))
 			return true;
-		}
 	}
 	catch (const std::exception& ex)
 	{

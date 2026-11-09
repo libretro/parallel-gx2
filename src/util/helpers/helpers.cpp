@@ -1,4 +1,5 @@
 #include "helpers.h"
+#include "Common/FileStream.h"
 
 #include <algorithm> 
 #include <functional> 
@@ -289,13 +290,11 @@ bool TestWriteAccess(const fs::path& p)
 		if (fs::exists(filename, ec))
 			continue;
 
-		std::ofstream file(filename);
-		if (!file.is_open()) // file couldn't be created
+		FileStream* file = FileStream::createFile2(filename);
+		if (!file) // file couldn't be created
 			break;
-		
-		file.close();
-
-		fs::remove(filename, ec);
+		delete file;
+		FileStream::Remove(filename);
 		return true;
 	}
 	

@@ -21,6 +21,8 @@ public:
 
 	// The file, read into memory that is the caller's
 	static std::optional<std::vector<uint8>> LoadIntoMemory(const fs::path& path);
+	// data as the whole of the file, created or emptied first; in one write
+	static bool WriteFile(const fs::path& path, const void* data, size_t size);
 
 	// Through the same VFS as the files
 	static bool IsRegularFile(const fs::path& path);

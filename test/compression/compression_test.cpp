@@ -26,6 +26,11 @@
 //    an entry, while that entry is rewritten and deleted and new ones and
 //    a grown table are written after it, still reads the entry as it found
 //    it (what it found is not freed, nor its bytes written over);
+//  - FileStream, libretro-common's filestream underneath: lines read with
+//    their '\r's dropped wherever they are, longer than a read's chunk, the
+//    last without a '\n'; a whole file written in one call; the mapping and
+//    views lent from a file opened mapped; a directory does not open as a
+//    file, and a path in another case opens where the file system cares;
 //  - the Vulkan pipeline cache's file: MappedFile gives a file's bytes (none
 //    for a missing or empty one), and ReplaceFileContents puts new contents
 //    in its place whole, leaving nothing beside it, or leaves it as it was;
@@ -48,6 +53,7 @@
 
 #include "Cemu/FileCache/FileCache.h"
 #include "util/helpers/MappedFile.h"
+#include "Common/FileStream.h"
 
 #include "golden_deflate.h"
 #include "golden_entries.h"
@@ -863,6 +869,55 @@ static void TestFileCacheHeldReader()
 	std::remove(path);
 }
 
+static void TestFileStream()
+{
+	const fs::path path = "filestream_test.txt";
+	std::string longLine(1500, 'x');
+	for (size_t i = 0; i < longLine.size(); i += 97)
+		longLine[i] = (char)('a' + i % 26);
+	const std::string text = "first\r\n\r\nmid\rdle\n" + longLine + "\r\nlast";
+	CHECK(FileStream::WriteFile(path, text.data(), text.size()));
+	{
+		std::unique_ptr<FileStream> f(FileStream::openFile2(path));
+		CHECK(f);
+		if (!f)
+			return;
+		std::string line;
+		CHECK(f->readLine(line) && line == "first");
+		CHECK(f->readLine(line) && line.empty());
+		CHECK(f->readLine(line) && line == "middle");
+		CHECK(f->readLine(line) && line == longLine);
+		CHECK(f->readLine(line) && line == "last");
+		CHECK(!f->readLine(line));
+	}
+	{
+		std::unique_ptr<FileStream> f(FileStream::openFileMapped(path));
+		CHECK(f);
+		if (!f)
+			return;
+		const std::span<const uint8> all = f->MappedSpan();
+		CHECK(all.size() == text.size() && std::memcmp(all.data(), text.data(), text.size()) == 0);
+		// lent in pieces, moved past as reads are
+		std::string viewed;
+		for (std::span<const uint8> v; !(v = f->View(100)).empty();)
+			viewed.append((const char*)v.data(), v.size());
+		CHECK(viewed == text);
+	}
+	// a directory is not a file
+	std::error_code ec;
+	fs::create_directories("filestream_dir", ec);
+	CHECK(FileStream::openFile2("filestream_dir") == nullptr);
+	CHECK(FileStream::IsDirectory("filestream_dir") && !FileStream::IsRegularFile("filestream_dir"));
+	fs::remove("filestream_dir", ec);
+#ifndef _WIN32
+	{
+		std::unique_ptr<FileStream> f(FileStream::openFile2("FILESTREAM_Test.TXT"));
+		CHECK(f && f->GetSize() == text.size());
+	}
+#endif
+	CHECK(FileStream::Remove(path) && !FileStream::Exists(path));
+}
+
 static void TestMappedFile()
 {
 	const fs::path path = "mapped_test.bin";
@@ -948,6 +1003,7 @@ int main(int argc, char** argv)
 	TestFileCacheLayout();
 	TestFileCacheConcurrentReads();
 	TestFileCacheHeldReader();
+	TestFileStream();
 	TestMappedFile();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);

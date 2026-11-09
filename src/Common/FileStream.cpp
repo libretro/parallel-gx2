@@ -112,6 +112,11 @@ std::optional<std::vector<uint8>> FileStream::LoadIntoMemory(const fs::path& pat
 	return v;
 }
 
+bool FileStream::WriteFile(const fs::path& path, const void* data, size_t size)
+{
+	return filestream_write_file(_pathToUtf8(path).c_str(), data, (int64_t)size);
+}
+
 bool FileStream::IsRegularFile(const fs::path& path)
 {
 	const int flags = path_stat(_pathToUtf8(path).c_str());

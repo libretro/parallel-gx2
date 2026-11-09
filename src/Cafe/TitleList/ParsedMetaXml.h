@@ -61,7 +61,7 @@ struct ParsedMetaXml
 
 	// nullptr if it is not a meta.xml, and then in @whyNot, if given, which
 	// part of one it lacks
-	static ParsedMetaXml* Parse(uint8* xmlData, size_t xmlSize, std::string* whyNot = nullptr)
+	static ParsedMetaXml* Parse(const uint8* xmlData, size_t xmlSize, std::string* whyNot = nullptr)
 	{
 		auto fail = [&](std::string why) -> ParsedMetaXml* {
 			if (whyNot)

@@ -16,6 +16,9 @@ public:
 
 	const uint8* data() const { return m_data; }
 	size_t size() const { return m_size; }
+	std::span<const uint8> span() const { return { m_data, m_size }; }
+	// whether the file was there to open, empty or not
+	bool opened() const { return m_opened; }
 	// whether the bytes are the file's pages rather than a copy
 	bool mapped() const { return m_mapped; }
 
@@ -24,6 +27,7 @@ private:
 	const uint8* m_data{};
 	size_t m_size{};
 	bool m_mapped{};
+	bool m_opened{};
 	std::vector<uint8> m_copy;
 };
 

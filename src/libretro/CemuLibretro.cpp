@@ -27,6 +27,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
+#include <charconv>
 #include <fstream>
 #if defined(__MINGW32__)
 #include <pthread.h>
@@ -75,6 +76,7 @@
 #include "Common/ExceptionHandler/ExceptionHandler.h"
 #include "Common/cpu_features.h"
 #include "Common/FileStream.h"
+#include "util/helpers/MappedFile.h"
 #include <vfs/vfs_hybrid.h>
 
 #include "util/crypto/aes128.h"
@@ -1799,23 +1801,26 @@ static void libretro_create_default_mlc_files(const fs::path& mlc)
 		fs::create_directories(dir, ec);
 
 	const fs::path langDir = mlc / "sys/title/0005001b/1005c000/content";
+	// each formatted into one buffer and written whole
 	if (!fs::exists(langDir / "language.txt", ec))
 	{
-		std::ofstream file(langDir / "language.txt");
+		fmt::memory_buffer out;
 		for (const char* lang : { "ja", "en", "fr", "de", "it", "es", "zh", "ko", "nl", "pt", "ru", "zh" })
-			file << fmt::format(R"("{}",)", lang) << '\n';
+			fmt::format_to(std::back_inserter(out), "\"{}\",\n", lang);
+		FileStream::WriteFile(langDir / "language.txt", out.data(), out.size());
 	}
 	if (!fs::exists(langDir / "country.txt", ec))
 	{
-		std::ofstream file(langDir / "country.txt");
+		fmt::memory_buffer out;
 		for (size_t i = 0; i < NCrypto::GetCountryCount(); i++)
 		{
 			const char* code = NCrypto::GetCountryAsString(i);
 			if (boost::iequals(code, "NN"))
-				file << "NULL," << '\n';
+				fmt::format_to(std::back_inserter(out), "NULL,\n");
 			else
-				file << fmt::format(R"("{}",)", code) << '\n';
+				fmt::format_to(std::back_inserter(out), "\"{}\",\n", code);
 		}
+		FileStream::WriteFile(langDir / "country.txt", out.data(), out.size());
 	}
 }
 
@@ -4043,7 +4048,7 @@ static void libretro_wake_frame_waiters()
 // reset, and the graphics context going away - which is why the name no longer
 // says "for exit".
 //
-// Cemu's emulated filesystem writes through buffered std::fstream objects, so
+// Cemu's emulated filesystem writes through buffered file streams, so
 // anything still sitting in those buffers never reaches disk if the process goes
 // away underneath them: a game that autosaved just before the frontend closed
 // the content comes back with a truncated, unloadable save.
@@ -4667,36 +4672,43 @@ static void libretro_rescan_titles()
 static void libretro_apply_account_name_file(bool readNames)
 {
 	const fs::path path = ActiveSettings::GetUserDataPath("account_name.txt");
-	const auto trim = [](std::string text) {
+	const auto trim = [](std::string_view text) {
 		while (!text.empty() && std::isspace((unsigned char)text.back()))
-			text.pop_back();
-		size_t start = 0;
-		while (start < text.size() && std::isspace((unsigned char)text[start]))
-			start++;
-		return text.substr(start);
+			text.remove_suffix(1);
+		while (!text.empty() && std::isspace((unsigned char)text.front()))
+			text.remove_prefix(1);
+		return text;
 	};
+	// what the file holds, to write it again only if it changes
 	std::string original;
 	std::vector<std::pair<uint32, std::string>> wanted;
 	std::string nameAlone;
 	{
-		std::ifstream in(path, std::ios::binary);
-		std::string line;
-		while (in && std::getline(in, line))
+		// the lines where they lie, in the file's mapping
+		MappedFile in(path);
+		const std::string_view all((const char*)in.data(), in.size());
+		original.assign(all);
+		for (size_t pos = 0; pos < all.size();)
 		{
-			original += line;
-			original += '\n';
-			line = trim(line);
+			size_t nl = all.find('\n', pos);
+			if (nl == std::string_view::npos)
+				nl = all.size();
+			const std::string_view line = trim(all.substr(pos, nl - pos));
+			pos = nl + 1;
 			if (!readNames || line.empty() || line[0] == '#')
 				continue;
 			const size_t equals = line.find('=');
-			const std::string id = equals == std::string::npos ? std::string() : trim(line.substr(0, equals));
-			char* end = nullptr;
-			const uint32 persistentId = id.empty() || id.size() > 8 ? 0 : (uint32)std::strtoul(id.c_str(), &end, 16);
-			if (persistentId != 0 && end && *end == '\0')
-				wanted.emplace_back(persistentId, trim(line.substr(equals + 1)));
+			const std::string_view id = equals == std::string_view::npos ? std::string_view() : trim(line.substr(0, equals));
+			uint32 persistentId = 0;
+			const bool isId = !id.empty() && id.size() <= 8 &&
+				std::from_chars(id.data(), id.data() + id.size(), persistentId, 16).ptr == id.data() + id.size();
+			if (isId && persistentId != 0)
+				wanted.emplace_back(persistentId, std::string(trim(line.substr(equals + 1))));
 			else if (nameAlone.empty())
-				nameAlone = line;
+				nameAlone = std::string(line);
 		}
+		// let go before the file is written below: Windows will not truncate
+		// a file that is mapped
 	}
 	if (!nameAlone.empty())
 		wanted.emplace_back(GetConfig().account.m_persistent_id, nameAlone);
@@ -4728,13 +4740,8 @@ static void libretro_apply_account_name_file(bool readNames)
 		"# This file is written again at each start, and when an account is made or removed.\n";
 	for (const Account& account : Account::RefreshAccounts())
 		listing += fmt::format("{:08x} = {}\n", account.GetPersistentId(), boost::nowide::narrow(std::wstring(account.GetMiiName())));
-	if (listing != original)
-	{
-		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-		out << listing;
-		if (!out)
-			libretro_log(RETRO_LOG_WARN, "could not write account_name.txt\n");
-	}
+	if (listing != original && !FileStream::WriteFile(path, listing.data(), listing.size()))
+		libretro_log(RETRO_LOG_WARN, "could not write account_name.txt\n");
 	// the account lists of the options show names: declared again, or they
 	// kept the old one until the core was next loaded (Shoegzer)
 	if (renamed)

@@ -18,8 +18,9 @@ private:
 	};
 
 public:
-	IniParser(std::span<char> iniContents, std::string_view name = {});
-	IniParser(std::span<unsigned char> iniContents, std::string_view name = {}) : IniParser(std::span<char>((char*)iniContents.data(), iniContents.size()), name) {};
+	// the contents are copied: a span borrowed from a mapping will do
+	IniParser(std::span<const char> iniContents, std::string_view name = {});
+	IniParser(std::span<const unsigned char> iniContents, std::string_view name = {}) : IniParser(std::span<const char>((const char*)iniContents.data(), iniContents.size()), name) {};
 
 	// section and option iterating
 	bool NextSection();

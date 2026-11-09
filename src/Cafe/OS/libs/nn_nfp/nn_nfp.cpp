@@ -1,4 +1,5 @@
 #include "Cafe/OS/common/OSCommon.h"
+#include "util/helpers/MappedFile.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/libs/nn_common.h"
 #include "nn_nfp.h"
@@ -762,18 +763,18 @@ bool nnNfp_isInitialized()
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 {
 	AmiiboRawNFCData rawData = { 0 };
-	auto nfcData = FileStream::LoadIntoMemory(filePath);
-	if (!nfcData)
+	MappedFile nfcData(filePath);
+	if (!nfcData.opened())
 	{
 		*nfcError = NFC_ERROR_NO_ACCESS;
 		return false;
 	}
-	if (nfcData->size() < sizeof(AmiiboRawNFCData))
+	if (nfcData.size() < sizeof(AmiiboRawNFCData))
 	{
 		*nfcError = NFC_ERROR_INVALID_FILE_FORMAT;
 		return false;
 	}
-	memcpy(&rawData, nfcData->data(), sizeof(AmiiboRawNFCData));
+	memcpy(&rawData, nfcData.data(), sizeof(AmiiboRawNFCData));
 
 	// verify if the file is a valid ntag215/amiibo file
 	if (rawData.dynamicLock[0] != 0x01 || rawData.dynamicLock[1] != 0x00 || rawData.dynamicLock[2] != 0x0F || rawData.dynamicLock[3] != 0xBD)

@@ -1,4 +1,5 @@
 #include "SaveInfo.h"
+#include "util/helpers/MappedFile.h"
 #include "config/ActiveSettings.h"
 #include "Common/FileStream.h"
 #include "ParsedMetaXml.h"
@@ -26,9 +27,9 @@ bool SaveInfo::ParseMetaData()
 	if (m_hasMetaLoaded)
 		return m_parsedMetaXml != nullptr;
 	m_hasMetaLoaded = true;
-	auto xmlData = FileStream::LoadIntoMemory(m_path / "meta/meta.xml");
-	if (!xmlData)
+	MappedFile xmlData(m_path / "meta/meta.xml");
+	if (!xmlData.opened())
 		return false;
-	m_parsedMetaXml = ParsedMetaXml::Parse(xmlData->data(), xmlData->size());
+	m_parsedMetaXml = ParsedMetaXml::Parse(xmlData.data(), xmlData.size());
 	return m_parsedMetaXml != nullptr;
 }

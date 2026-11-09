@@ -1,4 +1,5 @@
 #include <mutex>
+#include "util/helpers/MappedFile.h"
 #include <fstream>
 
 #include "Cemu/Logging/CemuLogging.h"
@@ -144,11 +145,11 @@ void KeyCache_Prepare()
 
 void KeyCache_AddKeyFile(const fs::path& keyPath)
 {
-	std::error_code ec;
-	if (!fs::is_regular_file(keyPath, ec))
+	if (!FileStream::IsRegularFile(keyPath))
 		return;
-	std::ifstream file(keyPath, std::ios::binary);
-	std::string data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	// read where it lies
+	MappedFile file(keyPath);
+	const std::string_view data((const char*)file.data(), file.size());
 	uint8 key[16];
 	if (data.size() == 16)
 		memcpy(key, data.data(), 16);

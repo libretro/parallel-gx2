@@ -1,4 +1,5 @@
 #include "iosu_crypto.h"
+#include "util/helpers/MappedFile.h"
 
 #include "config/ActiveSettings.h"
 #include <curl/curl.h>
@@ -228,12 +229,13 @@ bool iosuCrypto_loadCertificate(uint32 id, std::wstring_view mlcSubpath, std::ws
 	if (!certData)
 		return false; // file missing
 	// get optional aes encrypted private key data
-	std::optional<std::vector<uint8>> pkeyData;
+	// only decrypted from: lent from the file's mapping
+	std::optional<MappedFile> pkeyData;
 	if (!pkeyMlcSubpath.empty())
 	{
 		const auto pkeyPath = ActiveSettings::GetMlcPath(pkeyMlcSubpath);
-		pkeyData = FileStream::LoadIntoMemory(pkeyPath);
-		if (!pkeyData || pkeyData->empty())
+		pkeyData.emplace(pkeyPath);
+		if (pkeyData->size() == 0)
 		{
 			cemuLog_log(LogType::Force, "Unable to load private key file {}", pkeyPath.generic_string());
 			return false;
@@ -274,7 +276,7 @@ bool iosuCrypto_loadCertificate(uint32 id, std::wstring_view mlcSubpath, std::ws
 	}
 
 	// register certificate and optional pkey
-	iosuCryptoCertificates.certList[iosuCryptoCertificates.certListCount].certData = *certData;
+	iosuCryptoCertificates.certList[iosuCryptoCertificates.certListCount].certData = std::move(*certData);
 	iosuCryptoCertificates.certList[iosuCryptoCertificates.certListCount].id = id;
 	iosuCryptoCertificates.certList[iosuCryptoCertificates.certListCount].isValid = true;
 	iosuCryptoCertificates.certListCount++;
@@ -442,11 +444,9 @@ void iosuCrypto_loadSSLCertificates()
 void iosuCrypto_init()
 {
 	// load OTP dump
-	if (std::ifstream otp_file(ActiveSettings::GetUserDataPath("otp.bin"), std::ifstream::in | std::ios::binary); otp_file.is_open())
+	if (std::unique_ptr<FileStream> otp_file(FileStream::openFile2(ActiveSettings::GetUserDataPath("otp.bin"))); otp_file)
 	{
-		otp_file.seekg(0, std::ifstream::end);
-		const auto length = otp_file.tellg();
-		otp_file.seekg(0, std::ifstream::beg);
+		const uint64 length = otp_file->GetSize();
 		// verify if OTP is ok
 		if (length != 1024) // todo - should also check some fixed values to verify integrity of otp dump
 		{
@@ -455,8 +455,8 @@ void iosuCrypto_init()
 		}
 		else
 		{
-			otp_file.read((char*)otpMem, 1024);
-			hasOtpMem = (bool)otp_file;
+			// straight into where it is kept
+			hasOtpMem = otp_file->readData(otpMem, 1024) == 1024;
 		}
 	}
 	else
@@ -465,11 +465,9 @@ void iosuCrypto_init()
 		hasOtpMem = false;
 	}
 
-	if (std::ifstream seeprom_file(ActiveSettings::GetUserDataPath("seeprom.bin"), std::ifstream::in | std::ios::binary); seeprom_file.is_open())
+	if (std::unique_ptr<FileStream> seeprom_file(FileStream::openFile2(ActiveSettings::GetUserDataPath("seeprom.bin"))); seeprom_file)
 	{
-		seeprom_file.seekg(0, std::ifstream::end);
-		const auto length = seeprom_file.tellg();
-		seeprom_file.seekg(0, std::ifstream::beg);
+		const uint64 length = seeprom_file->GetSize();
 		// verify if seeprom is ok
 		if (length != 512) // todo - maybe check some known values to verify integrity of seeprom
 		{
@@ -478,8 +476,8 @@ void iosuCrypto_init()
 		}
 		else
 		{
-			seeprom_file.read((char*)seepromMem, 512);
-			hasSeepromMem = (bool)seeprom_file;
+			// straight into where it is kept
+			hasSeepromMem = seeprom_file->readData(seepromMem, 512) == 512;
 		}
 	}
 	else
@@ -498,11 +496,8 @@ bool iosuCrypto_checkRequirementMLCFile(std::string_view mlcSubpath, std::string
 {
 	const auto path = ActiveSettings::GetMlcPath(mlcSubpath);
 	additionalErrorInfo_filePath = _pathToUtf8(path);
-	sint32 fileDataSize = 0;
-	auto fileData = FileStream::LoadIntoMemory(path);
-	if (!fileData)
-		return false;
-	return true;
+	// a file that is there: nothing of it needs reading
+	return FileStream::IsRegularFile(path);
 }
 
 sint32 iosuCrypt_checkRequirementsForOnlineMode(std::string& additionalErrorInfo)
