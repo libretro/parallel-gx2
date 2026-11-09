@@ -119,6 +119,8 @@ RendererShaderVk* rectsEmulationGS_generate(LatteDecompilerShader* vertexShader,
 PipelineCompiler::PipelineCompiler() {};
 PipelineCompiler::~PipelineCompiler()
 {
+	if (m_preparedTicket)
+		PreparedPipeline::Drop(m_preparedTicket);
 	for (VkPipelineLayout layout : m_partLayout)
 		if (layout != VK_NULL_HANDLE)
 			vkDestroyPipelineLayout(VulkanRenderer::GetInstance()->GetLogicalDevice(), layout, nullptr);
@@ -954,7 +956,12 @@ static void compilePipeline_thread(sint32 threadIndex)
 		PipelineCompiler* request = s_pipelineCompileRequests.pop();
 		if (!request)
 			continue;
-		if (request->m_linkOptimizedOnly)
+		if (request->m_preparedTicket)
+		{
+			PreparedPipeline::Run(request->m_preparedTicket);
+			request->m_preparedTicket = nullptr;
+		}
+		else if (request->m_linkOptimizedOnly)
 			request->LinkOptimized();
 		else
 			request->Compile(true, false, true);
@@ -1005,4 +1012,11 @@ void PipelineCompiler::CompileThreadPool_Stop()
 void PipelineCompiler::CompileThreadPool_QueueCompilation(PipelineCompiler* v)
 {
 	s_pipelineCompileRequests.push(v);
+}
+
+void PipelineCompiler::CompileThreadPool_QueuePrepared(PreparedPipeline& prepared)
+{
+	PipelineCompiler* job = new PipelineCompiler();
+	job->m_preparedTicket = prepared.Queue();
+	s_pipelineCompileRequests.push(job);
 }

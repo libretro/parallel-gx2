@@ -269,6 +269,13 @@ LatteTextureVk::LatteTextureVk(class VulkanRenderer* vkRenderer, Latte::E_DIM di
 
 	if (vkCreateImage(m_vkr->GetLogicalDevice(), &imageInfo, nullptr, &vkObjTex->m_image) != VK_SUCCESS)
 		m_vkr->UnrecoverableError("Failed to create texture image");
+	// a copy into it (depth from color, color from depth, between textures of
+	// the same bits per texel: a depth format's 16, 32 or 64) finds its
+	// pipeline made, on a compile thread, rather than making it
+	const uint32 bpp = GetBPP();
+	if (isDepth ? (imageInfo.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
+		: (imageInfo.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 && (bpp == 16 || bpp == 32 || bpp == 64))
+		m_vkr->surfaceCopy_prepare(imageInfo.format, isDepth, hasStencil);
 	
 	if (m_vkr->IsDebugMarkersEnabled())
 	{

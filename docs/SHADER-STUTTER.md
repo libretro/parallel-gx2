@@ -92,10 +92,15 @@ Where the core still does, as of `204bbde5`:
 - **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
   synchronous (`PipelineCompiler::Compile`).
 - **Surface copies** (color to depth and back, `VulkanSurfaceCopy.cpp`):
-  the copy shaders on the first copy (`PreponeCompilation(true)`), and a
-  pipeline for each new source and destination format, created on the GPU
-  thread while the copy waits (`copySurface_getOrCreateGraphicsPipeline`).
-  Their few states are known up front: they can be built ahead.
+  no longer. The copy shaders are compiled at init, and the pipeline that
+  copies into a format is queued for the compile threads when the first
+  texture that can be drawn to in it is created (`surfaceCopy_prepare`,
+  `PreparedPipeline.h`), ahead of any copy into such a texture. A copy that
+  comes before a compile thread started on it builds it itself, one that
+  comes while one builds it waits for that build; either is traced
+  (`copy pipeline not made ahead`). `test/prepared_pipeline` checks the
+  hand-over: taken after the compile threads, nothing is built on the taking
+  thread; racing them, each is built once.
 
 M2 removes them; it comes before anything else in this document. What is
 left with graphics pipeline libraries is the first pipeline for each new

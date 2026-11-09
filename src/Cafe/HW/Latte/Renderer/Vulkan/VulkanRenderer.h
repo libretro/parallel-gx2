@@ -161,6 +161,7 @@ class VulkanRenderer : public Renderer
 	friend class LatteQueryObjectVk;
 	friend class LatteTextureReadbackInfoVk;
 	friend class PipelineCompiler;
+	friend struct CopySurfacePipelineInfo;
 
 	static const inline int UNIFORMVAR_RINGBUFFER_SIZE = 1024 * 1024 * 16; // 16MB
 
@@ -314,15 +315,24 @@ public:
 
 	void surfaceCopy_cleanup();
 
+public:
+	// The pipeline that copies into textures of the format (depth from color,
+	// or color from depth), queued for the compile threads when the first
+	// texture that can be drawn to in it is created, ahead of any copy
+	struct CopySurfacePipelineInfo* surfaceCopy_prepare(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil);
+
 private:
-	uint64 copySurface_getPipelineStateHash(struct VkCopySurfaceState_t& state);
-	struct CopySurfacePipelineInfo* copySurface_getCachedPipeline(struct VkCopySurfaceState_t& state);
+	// the copy shaders, at init
+	void surfaceCopy_initShaders();
+	static uint64 copySurface_getPipelineStateHash(VkFormat dstFormat, bool srcIsDepth, bool dstIsDepth);
 	struct CopySurfacePipelineInfo* copySurface_getOrCreateGraphicsPipeline(struct VkCopySurfaceState_t& state);
+	// a compile thread's, or the GPU thread's when no compile thread got to it
+	VkPipeline copySurface_buildPipeline(struct CopySurfacePipelineInfo& info);
 	VKRObjectTextureView* surfaceCopy_createImageView(LatteTextureVk* textureVk, uint32 sliceIndex, uint32 mipIndex);
 	VKRObjectFramebuffer* surfaceCopy_getOrCreateFramebuffer(struct VkCopySurfaceState_t& state, struct CopySurfacePipelineInfo* pipelineInfo);
 	VKRObjectDescriptorSet* surfaceCopy_getOrCreateDescriptorSet(struct VkCopySurfaceState_t& state, struct CopySurfacePipelineInfo* pipelineInfo);
 
-	VKRObjectRenderPass* copySurface_createRenderpass(struct VkCopySurfaceState_t& state);
+	VKRObjectRenderPass* copySurface_createRenderpass(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil);
 
 	std::unordered_map<uint64, struct CopySurfacePipelineInfo*> m_copySurfacePipelineCache;
 

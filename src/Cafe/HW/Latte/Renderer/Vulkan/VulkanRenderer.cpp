@@ -1314,6 +1314,9 @@ void VulkanRenderer::Initialize()
 	CreatePipelineCache();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - calling CreateNullObjects()");
 	CreateNullObjects();
+	// ahead of the copy pipelines, which are made with the textures; here and
+	// not in the constructor, as the shaders' compile wants GetInstance()
+	surfaceCopy_initShaders();
 	cemuLog_log(LogType::Force, "VulkanRenderer::Initialize() - completed successfully");
 }
 

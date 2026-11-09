@@ -195,6 +195,19 @@ jobs:
           make -C test/thread_exit clean
           SANITIZER=thread ./test/thread_exit/run_tests.sh
 
+      - name: "Prepared pipelines"
+        # pipelines made ahead of the draw or copy that needs them (the
+        # surface copies'), on compile threads: a take after them builds
+        # nothing, takes racing them get each built once; plain, under ASan +
+        # UBSan, and under TSan
+        run: |
+          git submodule update --init --depth 1 dependencies/Vulkan-Headers
+          ./test/prepared_pipeline/run_tests.sh
+          make -C test/prepared_pipeline clean
+          SANITIZER=address,undefined ./test/prepared_pipeline/run_tests.sh
+          make -C test/prepared_pipeline clean
+          SANITIZER=thread ./test/prepared_pipeline/run_tests.sh
+
       - name: "Dynamic state drawn"
         # register states from a seed drawn on lavapipe with the state the
         # draw can set baked into the pipeline, left to the draw, and linked

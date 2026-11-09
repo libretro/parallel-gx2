@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "VKRBase.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineLibrary.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/PreparedPipeline.h"
 
 class PipelineCompiler : public VKRMoveableRefCounter
 {
@@ -49,6 +50,8 @@ public:
 	static void CompileThreadPool_Start();
 	static void CompileThreadPool_Stop();
 	static void CompileThreadPool_QueueCompilation(PipelineCompiler* v);
+	// a pipeline made ahead, built by the compile threads (PreparedPipeline.h)
+	static void CompileThreadPool_QueuePrepared(PreparedPipeline& prepared);
 
 	VkPipelineLayout m_pipelineLayout;
 	VKRObjectRenderPass* m_renderPassObj{};
@@ -112,6 +115,9 @@ public:
 
 	// the compile threads' part of m_linkOptimizedOnly
 	bool LinkOptimized();
+
+	// a job for a compile thread that only builds a prepared pipeline
+	PreparedPipeline::Ticket* m_preparedTicket{};
 
 private:
 	bool CompileFromLibraries(const VkGraphicsPipelineCreateInfo& full, bool forceCompile, bool isRenderThread);

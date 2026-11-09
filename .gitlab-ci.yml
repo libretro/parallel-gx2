@@ -270,6 +270,25 @@ test-thread-exit:
     - make -C test/thread_exit clean
     - SANITIZER=thread ./test/thread_exit/run_tests.sh
 
+# Pipelines made ahead of the draw or copy that needs them (the surface
+# copies'), on compile threads: a take after them builds nothing, takes racing
+# them get each built once; plain, under ASan + UBSan, and under TSan.
+test-prepared-pipeline:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/Vulkan-Headers
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/prepared_pipeline/run_tests.sh
+    - make -C test/prepared_pipeline clean
+    - SANITIZER=address,undefined ./test/prepared_pipeline/run_tests.sh
+    - make -C test/prepared_pipeline clean
+    - SANITIZER=thread ./test/prepared_pipeline/run_tests.sh
+
 # Register states from a seed drawn on lavapipe with the state the draw can
 # set baked into the pipeline, left to the draw, and linked from graphics
 # pipeline libraries: the pictures match to the byte; plain, under ASan +

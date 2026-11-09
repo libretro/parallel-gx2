@@ -1,5 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "Cafe/HW/Latte/Core/PsoTrace.h"
 
 struct CopyShaderPushConstantData_t
 {
@@ -73,13 +75,18 @@ struct CopySurfacePipelineInfo
 		//VKRObjectSampler* vkObjSampler;
 	};
 
-	CopySurfacePipelineInfo() = default;
-	CopySurfacePipelineInfo(VkDevice device) : m_device(device) {}
+	CopySurfacePipelineInfo(VkFormat format, bool isDepth) : dstFormat(format), dstIsDepth(isDepth) {}
 	CopySurfacePipelineInfo(const CopySurfacePipelineInfo& info) = delete;
 	~CopySurfacePipelineInfo()
 	{
+		// no compile thread builds it any more; what one built goes with the rest
+		prepared.Retire();
+		if (prepared.IsBuilt() && vkObjPipeline && vkObjPipeline->GetPipeline() == VK_NULL_HANDLE)
+			vkObjPipeline->SetPipeline(prepared.Take());
 		auto renderer = VulkanRenderer::GetInstance();
-		renderer->ReleaseDestructibleObject(vkObjRenderPass);
+		// no render pass when its layout could not be made
+		if (vkObjRenderPass)
+			renderer->ReleaseDestructibleObject(vkObjRenderPass);
 		renderer->ReleaseDestructibleObject(vkObjPipeline);
 
 		for(auto& i : map_framebuffers)
@@ -101,7 +108,9 @@ struct CopySurfacePipelineInfo
 		}
 	}
 
-	VkDevice m_device = nullptr;
+	// what the pipeline copies into
+	VkFormat dstFormat;
+	bool dstIsDepth;
 
 	VKRObjectPipeline* vkObjPipeline{};
 	VKRObjectRenderPass* vkObjRenderPass{};
@@ -111,6 +120,12 @@ struct CopySurfacePipelineInfo
 
 	// map of descriptor sets used with this pipeline
 	std::unordered_map<LatteTextureVk*, TexSliceMipMapping<DescriptorValue>> map_descriptors;
+
+	// built on a compile thread from the members above, which it reads; last,
+	// so that it is destroyed first
+	PreparedPipeline prepared{[](void* self) {
+		return VulkanRenderer::GetInstance()->copySurface_buildPipeline(*(CopySurfacePipelineInfo*)self);
+	}, this};
 };
 
 struct VkCopySurfaceState_t
@@ -125,29 +140,19 @@ struct VkCopySurfaceState_t
 	sint32 height;
 };
 
-uint64 VulkanRenderer::copySurface_getPipelineStateHash(VkCopySurfaceState_t& state)
+uint64 VulkanRenderer::copySurface_getPipelineStateHash(VkFormat dstFormat, bool srcIsDepth, bool dstIsDepth)
 {
 	uint64 h = 0;
 
-	h += (uintptr_t)state.destinationTexture->GetFormat();
+	h += (uintptr_t)dstFormat;
 	h = std::rotr<uint64>(h, 7);
 
-	h += state.sourceTexture->isDepth ? 0x1111ull : 0;
+	h += srcIsDepth ? 0x1111ull : 0;
 	h = std::rotr<uint64>(h, 7);
-	h += state.destinationTexture->isDepth ? 0x1112ull : 0;
+	h += dstIsDepth ? 0x1112ull : 0;
 	h = std::rotr<uint64>(h, 7);
 
 	return h;
-}
-
-CopySurfacePipelineInfo* VulkanRenderer::copySurface_getCachedPipeline(VkCopySurfaceState_t& state)
-{
-	const uint64 stateHash = copySurface_getPipelineStateHash(state);
-
-	const auto it = m_copySurfacePipelineCache.find(stateHash);
-	if (it == m_copySurfacePipelineCache.cend())
-		return nullptr;
-	return it->second;
 }
 
 RendererShaderVk* _vkGenSurfaceCopyShader_vs()
@@ -220,20 +225,20 @@ RendererShaderVk* _vkGenSurfaceCopyShader_ps_depthToColor()
 	return vkShader;
 }
 
-VKRObjectRenderPass* VulkanRenderer::copySurface_createRenderpass(VkCopySurfaceState_t& state)
+VKRObjectRenderPass* VulkanRenderer::copySurface_createRenderpass(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil)
 {
 	VKRObjectRenderPass::AttachmentInfo_t attachmentInfo{};
 
-	if (state.destinationTexture->isDepth)
+	if (dstIsDepth)
 	{
-		attachmentInfo.depthAttachment.viewObj = ((LatteTextureViewVk*)state.destinationTexture->baseView)->GetViewRGBA();
-		attachmentInfo.depthAttachment.format = state.destinationTexture->GetFormat();
-		attachmentInfo.depthAttachment.hasStencil = state.destinationTexture->hasStencil;
+		attachmentInfo.depthAttachment.isPresent = true;
+		attachmentInfo.depthAttachment.format = dstFormat;
+		attachmentInfo.depthAttachment.hasStencil = dstHasStencil;
 	}
 	else
 	{
-		attachmentInfo.colorAttachment[0].viewObj = ((LatteTextureViewVk*)state.destinationTexture->baseView)->GetViewRGBA();
-		attachmentInfo.colorAttachment[0].format = state.destinationTexture->GetFormat();
+		attachmentInfo.colorAttachment[0].isPresent = true;
+		attachmentInfo.colorAttachment[0].format = dstFormat;
 	}
 
 	VKRObjectRenderPass* vkObjRenderPass = new VKRObjectRenderPass(attachmentInfo, 1);
@@ -241,45 +246,89 @@ VKRObjectRenderPass* VulkanRenderer::copySurface_createRenderpass(VkCopySurfaceS
 	return vkObjRenderPass;
 }
 
-CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline(VkCopySurfaceState_t& state)
+void VulkanRenderer::surfaceCopy_initShaders()
 {
-	auto cache_object = copySurface_getCachedPipeline(state);
-	if (cache_object != nullptr)
-		return cache_object;
+	if (defaultShaders.copySurface_vs)
+		return;
+	defaultShaders.copySurface_vs = _vkGenSurfaceCopyShader_vs();
+	defaultShaders.copySurface_psColor2Depth = _vkGenSurfaceCopyShader_ps_colorToDepth();
+	defaultShaders.copySurface_psDepth2Color = _vkGenSurfaceCopyShader_ps_depthToColor();
+}
 
+// Made when the first texture that can be drawn to in the format is created
+// (LatteTextureVk), so that its pipeline is built on a compile thread before
+// any copy into such a texture: everything but the pipeline here, the
+// pipeline in copySurface_buildPipeline
+CopySurfacePipelineInfo* VulkanRenderer::surfaceCopy_prepare(VkFormat dstFormat, bool dstIsDepth, bool dstHasStencil)
+{
+	const uint64 stateHash = copySurface_getPipelineStateHash(dstFormat, !dstIsDepth, dstIsDepth);
+	const auto it = m_copySurfacePipelineCache.find(stateHash);
+	if (it != m_copySurfacePipelineCache.cend())
+		return it->second;
 	if (defaultShaders.copySurface_vs == nullptr)
+		surfaceCopy_initShaders();
+
+	CopySurfacePipelineInfo* copyPipeline = new CopySurfacePipelineInfo(dstFormat, dstIsDepth);
+	m_copySurfacePipelineCache.try_emplace(stateHash, copyPipeline);
+	VKRObjectPipeline* vkObjPipeline = new VKRObjectPipeline();
+	copyPipeline->vkObjPipeline = vkObjPipeline;
+
+	std::vector<VkDescriptorSetLayoutBinding> descriptorSetLayoutBindings;
+
+	VkDescriptorSetLayoutBinding entry{};
+	entry.binding = 0;
+	entry.descriptorCount = 1;
+	entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	entry.pImmutableSamplers = nullptr;
+	entry.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	descriptorSetLayoutBindings.emplace_back(entry);
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = (uint32_t)descriptorSetLayoutBindings.size();
+	layoutInfo.pBindings = descriptorSetLayoutBindings.data();
+
+	if (vkCreateDescriptorSetLayout(m_logicalDevice, &layoutInfo, nullptr, &vkObjPipeline->m_pixelDSL) != VK_SUCCESS)
+		UnrecoverableError(fmt::format("Failed to create descriptor set layout for surface copy shader").c_str());
+
+	// ##########################################################################################################################################
+
+	VkPushConstantRange pushConstantRange{};
+	pushConstantRange.offset = 0;
+	pushConstantRange.size = sizeof(CopyShaderPushConstantData_t);
+	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &vkObjPipeline->m_pixelDSL;
+	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+
+	VkResult result = vkCreatePipelineLayout(m_logicalDevice, &pipelineLayoutInfo, nullptr, &vkObjPipeline->m_pipelineLayout);
+	if (result != VK_SUCCESS)
 	{
-		// on first call generate shaders
-		defaultShaders.copySurface_vs = _vkGenSurfaceCopyShader_vs();
-		defaultShaders.copySurface_psColor2Depth = _vkGenSurfaceCopyShader_ps_colorToDepth(); 
-		defaultShaders.copySurface_psDepth2Color = _vkGenSurfaceCopyShader_ps_depthToColor();
+		cemuLog_log(LogType::Force, "Failed to create pipeline layout: {}", result);
+		vkObjPipeline->m_pipelineLayout = VK_NULL_HANDLE;
+		return copyPipeline; // no pipeline, never built
 	}
 
+	copyPipeline->vkObjRenderPass = copySurface_createRenderpass(dstFormat, dstIsDepth, dstHasStencil);
+	vkObjPipeline->addRef(copyPipeline->vkObjRenderPass);
+
+	PipelineCompiler::CompileThreadPool_QueuePrepared(copyPipeline->prepared);
+	return copyPipeline;
+}
+
+VkPipeline VulkanRenderer::copySurface_buildPipeline(CopySurfacePipelineInfo& info)
+{
 	RendererShaderVk* vertexShader = defaultShaders.copySurface_vs;
-	RendererShaderVk* pixelShader = nullptr;
-	if (state.sourceTexture->isDepth && !state.destinationTexture->isDepth)
-		pixelShader = defaultShaders.copySurface_psDepth2Color;
-	else if (!state.sourceTexture->isDepth && state.destinationTexture->isDepth)
-		pixelShader = defaultShaders.copySurface_psColor2Depth;
-	else
-	{
-		cemu_assert(false);
-	}
+	RendererShaderVk* pixelShader = info.dstIsDepth ? defaultShaders.copySurface_psColor2Depth : defaultShaders.copySurface_psDepth2Color;
 
 	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
 	shaderStages.emplace_back(CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vertexShader->GetShaderModule(), "main"));
 	shaderStages.emplace_back(CreatePipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, pixelShader->GetShaderModule(), "main"));
-
-	// ##########################################################################################################################################
-
-	const uint64 stateHash = copySurface_getPipelineStateHash(state);
-
-	CopySurfacePipelineInfo* copyPipeline = new CopySurfacePipelineInfo();
-
-	m_copySurfacePipelineCache.try_emplace(stateHash, copyPipeline);
-
-	VKRObjectPipeline* vkObjPipeline = new VKRObjectPipeline();
 
 	// ##########################################################################################################################################
 
@@ -327,7 +376,7 @@ CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline
 	VkPipelineColorBlendStateCreateInfo colorBlending{};
 	VkPipelineColorBlendAttachmentState blendAttachment{};
 
-	if (!state.destinationTexture->isDepth)
+	if (!info.dstIsDepth)
 	{
 		blendAttachment.blendEnable = VK_FALSE;
 		blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
@@ -340,49 +389,7 @@ CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline
 
 	// ##########################################################################################################################################
 
-	std::vector<VkDescriptorSetLayoutBinding> descriptorSetLayoutBindings;
-
-	VkDescriptorSetLayoutBinding entry{};
-	entry.binding = 0;
-	entry.descriptorCount = 1;
-	entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	entry.pImmutableSamplers = nullptr;
-	entry.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	descriptorSetLayoutBindings.emplace_back(entry);
-
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = (uint32_t)descriptorSetLayoutBindings.size();
-	layoutInfo.pBindings = descriptorSetLayoutBindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_logicalDevice, &layoutInfo, nullptr, &vkObjPipeline->m_pixelDSL) != VK_SUCCESS)
-		UnrecoverableError(fmt::format("Failed to create descriptor set layout for surface copy shader").c_str());
-
-	// ##########################################################################################################################################
-
-	VkPushConstantRange pushConstantRange{};
-	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(CopyShaderPushConstantData_t);
-	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 1;
-	pipelineLayoutInfo.pSetLayouts = &vkObjPipeline->m_pixelDSL;
-	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
-	pipelineLayoutInfo.pushConstantRangeCount = 1;
-
-	VkResult result = vkCreatePipelineLayout(m_logicalDevice, &pipelineLayoutInfo, nullptr, &vkObjPipeline->m_pipelineLayout);
-	if (result != VK_SUCCESS)
-	{
-		cemuLog_log(LogType::Force, "Failed to create pipeline layout: {}", result);
-		vkObjPipeline->SetPipeline(VK_NULL_HANDLE);
-		return copyPipeline;
-	}
-
-	// ###################################################
-
-	bool writeDepth = state.destinationTexture->isDepth;
+	bool writeDepth = info.dstIsDepth;
 
 	VkPipelineDepthStencilStateCreateInfo depthStencilState{};
 	depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -407,11 +414,6 @@ CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline
 
 	// ##########################################################################################################################################
 
-	copyPipeline->vkObjRenderPass = copySurface_createRenderpass(state);
-	vkObjPipeline->addRef(copyPipeline->vkObjRenderPass);
-
-	// ###########################################################
-
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.stageCount = (uint32_t)shaderStages.size();
@@ -422,26 +424,46 @@ CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pRasterizationState = &rasterizer;
 	pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pColorBlendState = state.destinationTexture->isDepth?nullptr:&colorBlending;
-	pipelineInfo.layout = vkObjPipeline->m_pipelineLayout;
-	pipelineInfo.renderPass = copyPipeline->vkObjRenderPass->m_renderPass;
+	pipelineInfo.pColorBlendState = info.dstIsDepth ? nullptr : &colorBlending;
+	pipelineInfo.layout = info.vkObjPipeline->m_pipelineLayout;
+	pipelineInfo.renderPass = info.vkObjRenderPass->m_renderPass;
 	pipelineInfo.pDepthStencilState = &depthStencilState;
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = nullptr;
 	pipelineInfo.flags = 0;
 
-	copyPipeline->vkObjPipeline = vkObjPipeline;
-
+	PSO_TRACE_SCOPE("copy pipeline", (uint64)info.dstFormat);
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	result = vkCreateGraphicsPipelines(m_logicalDevice, m_pipeline_cache, 1, &pipelineInfo, nullptr, &pipeline);
+	m_pipeline_cache_builds.Enter();
+	const VkResult result = vkCreateGraphicsPipelines(m_logicalDevice, m_pipeline_cache, 1, &pipelineInfo, nullptr, &pipeline);
+	m_pipeline_cache_builds.Leave();
 	if (result != VK_SUCCESS)
 	{
-		copyPipeline->vkObjPipeline->SetPipeline(nullptr);
 		cemuLog_log(LogType::Force, "Failed to create graphics pipeline for surface copy. Error {} Info:", (sint32)result);
 		cemu_assert_suspicious();
+		return VK_NULL_HANDLE;
 	}
-	else
-		copyPipeline->vkObjPipeline->SetPipeline(pipeline);
+	return pipeline;
+}
+
+CopySurfacePipelineInfo* VulkanRenderer::copySurface_getOrCreateGraphicsPipeline(VkCopySurfaceState_t& state)
+{
+	if (state.sourceTexture->isDepth == state.destinationTexture->isDepth)
+		cemu_assert(false);
+	LatteTextureVk* dst = state.destinationTexture;
+	CopySurfacePipelineInfo* copyPipeline = surfaceCopy_prepare(dst->GetFormat(), dst->isDepth, dst->hasStencil);
+	VKRObjectPipeline* vkObjPipeline = copyPipeline->vkObjPipeline;
+	if (vkObjPipeline->GetPipeline() == VK_NULL_HANDLE && vkObjPipeline->m_pipelineLayout != VK_NULL_HANDLE)
+	{
+		if (!copyPipeline->prepared.IsBuilt())
+		{
+			// the copy came before a compile thread built it: built here when
+			// none has started on it, waited for when one has
+			PSO_TRACE_SCOPE("copy pipeline not made ahead", (uint64)copyPipeline->dstFormat);
+			copyPipeline->prepared.Take();
+		}
+		vkObjPipeline->SetPipeline(copyPipeline->prepared.Take());
+	}
 	return copyPipeline;
 }
 
