@@ -1,6 +1,8 @@
 # The shader/PSO gate's baseline (test/pso/pso_gate.cpp): what the shader
 # path costs at this commit. Lower is better; nothing may go up.
 # Regenerate with: make -C test/pso baseline
+cache entry register files: allocations per 1000 rebuilt 0
+cache entry register files: bytes allocated per 1000 rebuilt 0
 corpus instructions 868206
 corpus modules 523
 corpus words 3734858

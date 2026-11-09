@@ -23,9 +23,11 @@ endif
 LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/gfx/shaders/rslc_dxbc.c \
 	$(LRC)/encodings/encoding_deflate.c $(LRC)/encodings/encoding_crc32.c \
 	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c \
-	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c \
+	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c
 CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) \
-	$(SRC)/util/helpers/Deflate.cpp
+	$(SRC)/util/helpers/Deflate.cpp $(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
+	$(SRC)/util/helpers/Serializer.cpp
 
 all: pso_gate$(EXE)
 

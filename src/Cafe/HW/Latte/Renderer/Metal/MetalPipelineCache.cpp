@@ -386,26 +386,18 @@ struct CachedPipeline
 
 void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
 {
-	static FSpinlock s_spinlockSharedInternal;
-
 	// deserialize file
-	LatteContextRegister* lcr = new LatteContextRegister();
-	s_spinlockSharedInternal.lock();
-	CachedPipeline* cachedPipeline = new CachedPipeline();
-	s_spinlockSharedInternal.unlock();
+	// Owned here, so that the returns below for a shader that is not in the
+	// cache no longer leak it, and the register file is this thread's own
+	// (LoadGPURegisterStateScratch), where each entry allocated and zeroed
+	// 256 KiB of its own
+	auto cachedPipeline = std::make_unique<CachedPipeline>();
 
 	MemStreamReader streamReader(fileData.data(), fileData.size());
 	if (!DeserializePipeline(streamReader, *cachedPipeline))
-	{
-		// failed to deserialize
-		s_spinlockSharedInternal.lock();
-		delete lcr;
-		delete cachedPipeline;
-		s_spinlockSharedInternal.unlock();
-		return;
-	}
+		return; // failed to deserialize
 	// restored register view from compacted state
-	Latte::LoadGPURegisterState(*lcr, cachedPipeline->gpuState);
+	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(cachedPipeline->gpuState);
 
 	LatteDecompilerShader* vertexShader = nullptr;
 	LatteDecompilerShader* geometryShader = nullptr;
@@ -464,12 +456,6 @@ void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
    	m_pipelineCacheLock.lock();
    	m_pipelineCache[pipelineStateHash] = pipelineObject;
    	m_pipelineCacheLock.unlock();
-
-	// clean up
-	s_spinlockSharedInternal.lock();
-	delete lcr;
-	delete cachedPipeline;
-	s_spinlockSharedInternal.unlock();
 }
 
 ConcurrentQueue<CachedPipeline*> g_mtlPipelineCachingQueue;

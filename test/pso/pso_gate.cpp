@@ -12,7 +12,9 @@
 //  - the file cache the shader and pipeline caches are kept in: the file
 //    table entries looked at to write 1000 entries and to look each of them
 //    up again, and the heap allocations and bytes allocated to read them
-//    back (those on Linux only: the stream is per platform).
+//    back (those on Linux only: the stream is per platform);
+//  - the register file a cached shader or pipeline is rebuilt with at boot:
+//    the heap allocations and bytes allocated to rebuild 1000.
 //
 // Timed, reported, never gated (CI machines are shared; times are taken on
 // the developer's machines, docs/SHADER-STUTTER.md): rslc per shader, median,
@@ -38,6 +40,8 @@
 #include "../shaders/shaders_test.cpp"
 
 #include "Cemu/FileCache/FileCache.h"
+#include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 
 extern std::atomic<uint64> g_fileCacheProbes;
 
@@ -205,6 +209,26 @@ static void MeasureFileCache()
 	s_metrics[std::string("filecache.") + platform + " bytes allocated per 1000 entries read"] = s_allocBytes.load();
 }
 
+static void MeasureRegisterRebuild()
+{
+	static Latte::GPUCompactedRegisterState state;
+	uint64 check = 0;
+	Latte::LoadGPURegisterStateScratch(state); // whatever the first sets up once
+	s_allocs = 0;
+	s_allocBytes = 0;
+	s_counting = true;
+	for (int i = 0; i < 1000; i++)
+	{
+		for (int r = 0; r < Latte::GPUCompactedRegisterState::NUM_REGS; r += 7)
+			state.rawArray[r] = (uint32)(i * 31 + r);
+		check += Latte::LoadGPURegisterStateScratch(state).GetRawView()[0];
+	}
+	s_counting = false;
+	(void)check;
+	s_metrics["cache entry register files: allocations per 1000 rebuilt"] = s_allocs.load();
+	s_metrics["cache entry register files: bytes allocated per 1000 rebuilt"] = s_allocBytes.load();
+}
+
 static void ReportTimes()
 {
 	if (s_compileMicros.empty())
@@ -295,6 +319,7 @@ int main(int argc, char** argv)
 	s_onModule = OnModule;
 	MeasureCorpus(argv[1], repeat);
 	MeasureFileCache();
+	MeasureRegisterRebuild();
 	if (s_failures)
 	{
 		std::printf("pso gate: %d failure(s) measuring\n", s_failures);

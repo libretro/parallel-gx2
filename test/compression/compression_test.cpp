@@ -6,7 +6,9 @@
 //    guest z_stream: inflate and deflate a byte at a time, the containers,
 //    the flushes, reset, adler, totals and the return codes games check;
 //  - the shader and pipeline caches' entries standalone Cemu writes decode,
-//    and the ones written here decode, both through the dictionaries;
+//    and the ones written here decode, both through the dictionaries; the
+//    register file a cached entry is rebuilt with, reused per thread, is
+//    what a freshly zeroed one loaded with the same state is;
 //  - the cache file's async writer (Cemu/FileCache) has every entry four
 //    threads queued written out once it is stopped, starts again after,
 //    and stops at once when given nothing;
@@ -22,6 +24,7 @@
 //    as the core's build does) unpack to the files they were made from.
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <string>
 #include <thread>
@@ -371,8 +374,41 @@ static uint32_t TestRegister(int i)
 	return ((0x1037778e >> ((i / 3) & 31)) & 1) ? (uint32_t)(i + i * 17 + i * 23) : 0;
 }
 
+static void TestRegisterScratch()
+{
+	// two states that set different registers, in either order
+	static Latte::GPUCompactedRegisterState a, b;
+	for (int i = 0; i < Latte::GPUCompactedRegisterState::NUM_REGS; i++)
+	{
+		a.rawArray[i] = (i % 3 == 0) ? (uint32_t)i * 0x9E3779B9u + 1 : 0;
+		b.rawArray[i] = (i % 7 == 1) ? (uint32_t)i * 0x85EBCA6Bu + 1 : 0;
+	}
+	auto fresh = [](const Latte::GPUCompactedRegisterState& st) {
+		auto r = std::make_unique<LatteContextRegister>();
+		Latte::LoadGPURegisterState(*r, st);
+		return r;
+	};
+	auto fa = fresh(a), fb = fresh(b);
+	LatteContextRegister* first = &Latte::LoadGPURegisterStateScratch(a);
+	CHECK(std::memcmp(first, fa.get(), sizeof(LatteContextRegister)) == 0);
+	LatteContextRegister* second = &Latte::LoadGPURegisterStateScratch(b);
+	CHECK(second == first);
+	CHECK(std::memcmp(second, fb.get(), sizeof(LatteContextRegister)) == 0);
+	CHECK(std::memcmp(&Latte::LoadGPURegisterStateScratch(a), fa.get(), sizeof(LatteContextRegister)) == 0);
+	// each thread its own
+	LatteContextRegister* other = nullptr;
+	bool otherSame = false;
+	std::thread t([&] {
+		other = &Latte::LoadGPURegisterStateScratch(b);
+		otherSame = std::memcmp(other, fb.get(), sizeof(LatteContextRegister)) == 0;
+	});
+	t.join();
+	CHECK(other != first && otherSame);
+}
+
 static void TestCacheEntries()
 {
+	TestRegisterScratch();
 	// standalone Cemu's
 	{
 		std::vector<uint8_t> prog;

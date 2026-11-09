@@ -302,19 +302,17 @@ VKRObjectRenderPass* __CreateTemporaryRenderPass(const LatteDecompilerShader* pi
 void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 {
 	// deserialize file
-	LatteContextRegister* lcr = new LatteContextRegister();
-	CachedPipeline* cachedPipeline = new CachedPipeline();
+	// Owned here, so that the returns below for a shader that is not in the
+	// cache no longer leak it, and the register file is this thread's own
+	// (LoadGPURegisterStateScratch), where each entry allocated and zeroed
+	// 256 KiB of its own - and leaked it on those returns too
+	auto cachedPipeline = std::make_unique<CachedPipeline>();
 
 	MemStreamReader streamReader(fileData.data(), fileData.size());
 	if (!DeserializePipeline(streamReader, *cachedPipeline))
-	{
-		// failed to deserialize
-		delete lcr;
-		delete cachedPipeline;
-		return;
-	}
+		return; // failed to deserialize
 	// restored register view from compacted state
-	Latte::LoadGPURegisterState(*lcr, cachedPipeline->gpuState);
+	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(cachedPipeline->gpuState);
 
 	LatteDecompilerShader* vertexShader = nullptr;
 	LatteDecompilerShader* geometryShader = nullptr;
@@ -359,15 +357,14 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 	// create pipeline info
 	// No lock: what it shares with the other compile threads is the shaders'
 	// lists of the pipelines using them, which are lock-free (AtomicPtrBag.h)
-	PipelineInfo* pipelineInfo = new PipelineInfo(0, 0, vertexShader->compatibleFetchShader, vertexShader, pixelShader, geometryShader);
+	auto pipelineInfo = std::make_unique<PipelineInfo>(0, 0, vertexShader->compatibleFetchShader, vertexShader, pixelShader, geometryShader);
 	// compile
 	{
 		PipelineCompiler pipelineCompiler;
 		bool requiresRobustBufferAccess = PipelineCompiler::CalcRobustBufferAccessRequirement(vertexShader, pixelShader, geometryShader);
-		if (!pipelineCompiler.InitFromCurrentGPUState(pipelineInfo, *lcr, renderPass, requiresRobustBufferAccess))
+		if (!pipelineCompiler.InitFromCurrentGPUState(pipelineInfo.get(), *lcr, renderPass, requiresRobustBufferAccess))
 		{
-			delete lcr;
-			delete cachedPipeline;
+			VulkanRenderer::GetInstance()->ReleaseDestructibleObject(renderPass);
 			return;
 		}
 		pipelineCompiler.Compile(true, true, false);
@@ -378,9 +375,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 	// for the GPU thread to take into m_pipelineIsCached (TakeLoadedHashes)
 	m_pipelinesLoaded.Push(PipelineHash(pipelineBaseHash, pipelineStateHash));
 	// clean up
-	delete pipelineInfo;
-	delete lcr;
-	delete cachedPipeline;
+	pipelineInfo.reset();
 	VulkanRenderer::GetInstance()->ReleaseDestructibleObject(renderPass);
 }
 

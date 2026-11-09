@@ -188,8 +188,13 @@ Now (as of `495ded87`):
   sake, which held every compile, the GPU thread's synchronous ones
   included, behind a save; the save waits for a moment none is building a
   pipeline (`IdleWait`) and nothing waits for it.
-- The boot load of the transferable shader and pipeline caches copies every
-  entry before deserializing it; deserialize from the borrowed bytes.
+- The boot load of the transferable shader and pipeline caches: done, each
+  entry rebuilt its 256 KiB register file in a new, zeroed allocation (and
+  a pipeline whose shader was missing leaked it, on Vulkan and Metal); a
+  thread's one register file is reused now (`LoadGPURegisterStateScratch`,
+  gated: no allocation per 1000 rebuilt), and the shader load reads every
+  entry into one buffer. Still to do: the entries' programs are inflated
+  into vectors of their own.
 - Compiled SPIR-V moves from rslc to the module without another copy;
   reflection and layout data borrow it while it lives.
 - Gate: allocations and bytes copied on the load path, per entry.

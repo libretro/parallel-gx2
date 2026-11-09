@@ -346,6 +346,8 @@ void LatteShaderCache_Load()
 
 	sint32 numLoadedShaders = 0;
 	uint32 loadIndex = 0;
+	// one buffer for every entry: it grows to the largest and stays
+	std::vector<uint8> fileData;
 
 	auto LoadShadersUpdate = [&]() -> bool
 	{
@@ -354,7 +356,6 @@ void LatteShaderCache_Load()
 		LatteShaderCache_updateCompileQueue(SHADER_CACHE_COMPILE_QUEUE_SIZE - 2);
 		uint64 name1;
 		uint64 name2;
-		std::vector<uint8> fileData;
 		if (!s_shaderCacheGeneric->GetFileByIndex(loadIndex, &name1, &name2, fileData))
 		{
 			loadIndex++;
@@ -619,7 +620,6 @@ void LatteShaderCache_loadOrCompileSeparableShader(LatteDecompilerShader* shader
 
 bool LatteShaderCache_readSeparableVertexShader(MemStreamReader& streamReader, uint8 version)
 {
-	auto lcr = std::make_unique<LatteContextRegister>();
 	if (version != 1)
 		return false;
 	uint64 shaderBaseHash = streamReader.readBE<uint64>();
@@ -629,9 +629,9 @@ bool LatteShaderCache_readSeparableVertexShader(MemStreamReader& streamReader, u
 	Latte::GPUCompactedRegisterState regState;
 	if (!Latte::DeserializeRegisterState(regState, streamReader))
 		return false;
-	Latte::LoadGPURegisterState(*lcr, regState);
 	if (streamReader.hasError())
 		return false;
+	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// fetch shader
 	std::vector<uint8> fetchShaderData;
 	if (!Latte::DeserializeShaderProgram(fetchShaderData, streamReader))
@@ -668,7 +668,6 @@ bool LatteShaderCache_readSeparableGeometryShader(MemStreamReader& streamReader,
 {
 	if (version != 1)
 		return false;
-	auto lcr = std::make_unique<LatteContextRegister>();
 	uint64 shaderBaseHash = streamReader.readBE<uint64>();
 	uint64 shaderAuxHash = streamReader.readBE<uint64>();
 	uint32 vsRingParameterCount = streamReader.readBE<uint16>();
@@ -676,9 +675,9 @@ bool LatteShaderCache_readSeparableGeometryShader(MemStreamReader& streamReader,
 	Latte::GPUCompactedRegisterState regState;
 	if (!Latte::DeserializeRegisterState(regState, streamReader))
 		return false;
-	Latte::LoadGPURegisterState(*lcr, regState);
 	if (streamReader.hasError())
 		return false;
+	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// geometry copy shader
 	std::vector<uint8> geometryCopyShaderData;
 	if (!Latte::DeserializeShaderProgram(geometryCopyShaderData, streamReader))
@@ -710,7 +709,6 @@ bool LatteShaderCache_readSeparablePixelShader(MemStreamReader& streamReader, ui
 {
 	if (version != 1)
 		return false;
-	auto lcr = std::make_unique<LatteContextRegister>();
 	uint64 shaderBaseHash = streamReader.readBE<uint64>();
 	uint64 shaderAuxHash = streamReader.readBE<uint64>();
 	bool usesGeometryShader = streamReader.readBE<uint8>() != 0;
@@ -718,9 +716,9 @@ bool LatteShaderCache_readSeparablePixelShader(MemStreamReader& streamReader, ui
 	Latte::GPUCompactedRegisterState regState;
 	if (!Latte::DeserializeRegisterState(regState, streamReader))
 		return false;
-	Latte::LoadGPURegisterState(*lcr, regState);
 	if (streamReader.hasError())
 		return false;
+	LatteContextRegister* lcr = &Latte::LoadGPURegisterStateScratch(regState);
 	// pixel shader
 	std::vector<uint8> pixelShaderData;
 	if (!Latte::DeserializeShaderProgram(pixelShaderData, streamReader))

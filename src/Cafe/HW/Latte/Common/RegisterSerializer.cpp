@@ -136,6 +136,15 @@ namespace Latte
 		cemu_assert(numStoredRegs * 4 == sizeof(registerStateOut.rawArray));
 	}
 
+	LatteContextRegister& LoadGPURegisterStateScratch(const GPUCompactedRegisterState& registerState)
+	{
+		thread_local std::unique_ptr<LatteContextRegister> s_scratch;
+		if (!s_scratch)
+			s_scratch = std::make_unique<LatteContextRegister>();
+		LoadGPURegisterState(*s_scratch, registerState);
+		return *s_scratch;
+	}
+
 	void LoadGPURegisterState(LatteContextRegister& contextRegisterOut, const GPUCompactedRegisterState& registerState)
 	{
 		uint32* regView = contextRegisterOut.GetRawView();
