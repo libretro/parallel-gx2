@@ -234,7 +234,8 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/OS/libs/gx2/GX2_TilingAperture.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/gx2/GX2_shader_legacy.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/h264_avc/H264Dec.cpp \
-	$(CORE_DIR)/src/Cafe/OS/libs/h264_avc/H264DecBackendAVC.cpp \
+	$(CORE_DIR)/src/Cafe/OS/libs/h264_avc/H264DecBackendLibretro.cpp \
+	$(CORE_DIR)/src/Cafe/OS/libs/h264_avc/H264DecodeEngine.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/h264_avc/parser/H264Parser.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/mic/mic.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/nfc/TLV.cpp \
@@ -576,6 +577,7 @@ LRC_SOURCES_C := \
 	$(LRC_DIR)/file/file_path.c \
 	$(LRC_DIR)/file/file_path_io.c \
 	$(LRC_DIR)/file/retro_dirent.c \
+	$(LRC_DIR)/formats/h264/rh264.c \
 	$(LRC_DIR)/formats/zar/zar.c \
 	$(LRC_DIR)/formats/zar/zar_write.c \
 	$(LRC_DIR)/gfx/shaders/rslc_dxbc.c \
@@ -590,6 +592,7 @@ LRC_SOURCES_C := \
 	$(LRC_DIR)/queues/retro_spsc.c \
 	$(LRC_DIR)/rthreads/retro_eventcount.c \
 	$(LRC_DIR)/rthreads/rthreads.c \
+	$(LRC_DIR)/rthreads/tpool.c \
 	$(LRC_DIR)/streams/file_stream.c \
 	$(LRC_DIR)/string/rstrtod.c \
 	$(LRC_DIR)/string/stdstring.c \
@@ -617,31 +620,6 @@ endif
 # ----------------------------------------------------------------------------
 # Dependencies
 # ----------------------------------------------------------------------------
-IH264D_DIR := $(DEP_DIR)/ih264d
-IH264D_SOURCES_C := $(addprefix $(IH264D_DIR)/, \
-	common/ih264_buf_mgr.c common/ih264_cabac_tables.c common/ih264_cavlc_tables.c common/ih264_chroma_intra_pred_filters.c common/ih264_common_tables.c common/ih264_deblk_edge_filters.c common/ih264_deblk_tables.c common/ih264_disp_mgr.c common/ih264_dpb_mgr.c common/ih264_ihadamard_scaling.c common/ih264_inter_pred_filters.c common/ih264_iquant_itrans_recon.c common/ih264_luma_intra_pred_filters.c common/ih264_mem_fns.c common/ih264_padding.c common/ih264_resi_trans_quant.c common/ih264_trans_data.c common/ih264_weighted_pred.c common/ithread.c decoder/ih264d_api.c decoder/ih264d_bitstrm.c decoder/ih264d_cabac.c decoder/ih264d_cabac_init_tables.c decoder/ih264d_compute_bs.c decoder/ih264d_deblocking.c decoder/ih264d_dpb_mgr.c decoder/ih264d_format_conv.c decoder/ih264d_function_selector_generic.c decoder/ih264d_inter_pred.c decoder/ih264d_mb_utils.c decoder/ih264d_mvpred.c decoder/ih264d_nal.c decoder/ih264d_parse_bslice.c decoder/ih264d_parse_cabac.c decoder/ih264d_parse_cavlc.c decoder/ih264d_parse_headers.c decoder/ih264d_parse_islice.c decoder/ih264d_parse_mb_header.c decoder/ih264d_parse_pslice.c decoder/ih264d_parse_slice.c decoder/ih264d_process_bslice.c decoder/ih264d_process_intra_mb.c decoder/ih264d_process_pslice.c decoder/ih264d_quant_scaling.c decoder/ih264d_sei.c decoder/ih264d_tables.c decoder/ih264d_thread_compute_bs.c decoder/ih264d_thread_parse_decode.c decoder/ih264d_utils.c decoder/ih264d_vui.c)
-IH264D_SOURCES_ASM :=
-# ih264_list.c is left out: the decoder does not use it, and outside
-# Windows it calls an ithread_usleep() that ithread.c does not have.
-IH264D_FLAGS := -I$(IH264D_DIR)/common -I$(IH264D_DIR)/decoder -w
-ifeq ($(ARCH_X86_64),1)
-   IH264D_SOURCES_C += $(addprefix $(IH264D_DIR)/, \
-	common/x86/ih264_chroma_intra_pred_filters_ssse3.c common/x86/ih264_deblk_chroma_ssse3.c common/x86/ih264_deblk_luma_ssse3.c common/x86/ih264_ihadamard_scaling_sse42.c common/x86/ih264_ihadamard_scaling_ssse3.c common/x86/ih264_inter_pred_filters_ssse3.c common/x86/ih264_iquant_itrans_recon_dc_ssse3.c common/x86/ih264_iquant_itrans_recon_sse42.c common/x86/ih264_iquant_itrans_recon_ssse3.c common/x86/ih264_luma_intra_pred_filters_ssse3.c common/x86/ih264_mem_fns_ssse3.c common/x86/ih264_padding_ssse3.c common/x86/ih264_resi_trans_quant_sse42.c common/x86/ih264_weighted_pred_sse42.c decoder/x86/ih264d_function_selector.c decoder/x86/ih264d_function_selector_sse42.c decoder/x86/ih264d_function_selector_ssse3.c)
-   IH264D_FLAGS += -I$(IH264D_DIR)/common/x86 -I$(IH264D_DIR)/decoder/x86
-else
-   # Not the a9q selector: it is 32-bit ARM's, and with ARMV8 the selector
-   # only calls the av8 one.
-   IH264D_SOURCES_C += $(addprefix $(IH264D_DIR)/, \
-	decoder/arm/ih264d_function_selector_av8.c decoder/arm/ih264d_function_selector.c)
-   IH264D_SOURCES_ASM += $(addprefix $(IH264D_DIR)/, \
-	common/armv8/ih264_deblk_chroma_av8.s common/armv8/ih264_deblk_luma_av8.s common/armv8/ih264_default_weighted_pred_av8.s common/armv8/ih264_ihadamard_scaling_av8.s common/armv8/ih264_inter_pred_chroma_av8.s common/armv8/ih264_inter_pred_filters_luma_horz_av8.s common/armv8/ih264_inter_pred_filters_luma_vert_av8.s common/armv8/ih264_inter_pred_luma_copy_av8.s common/armv8/ih264_inter_pred_luma_horz_hpel_vert_hpel_av8.s common/armv8/ih264_inter_pred_luma_horz_hpel_vert_qpel_av8.s common/armv8/ih264_inter_pred_luma_horz_qpel_av8.s common/armv8/ih264_inter_pred_luma_horz_qpel_vert_hpel_av8.s common/armv8/ih264_inter_pred_luma_horz_qpel_vert_qpel_av8.s common/armv8/ih264_inter_pred_luma_vert_qpel_av8.s common/armv8/ih264_intra_pred_chroma_av8.s common/armv8/ih264_intra_pred_luma_16x16_av8.s common/armv8/ih264_intra_pred_luma_4x4_av8.s common/armv8/ih264_intra_pred_luma_8x8_av8.s common/armv8/ih264_iquant_itrans_recon_av8.s common/armv8/ih264_iquant_itrans_recon_dc_av8.s common/armv8/ih264_mem_fns_neon_av8.s common/armv8/ih264_padding_neon_av8.s common/armv8/ih264_resi_trans_quant_av8.s common/armv8/ih264_weighted_bi_pred_av8.s common/armv8/ih264_weighted_pred_av8.s)
-   ifeq ($(OS_APPLE),1)
-      IH264D_SOURCES_ASM += $(IH264D_DIR)/common/armv8/macos_arm_symbol_aliases.s
-   endif
-   IH264D_FLAGS += -DARMV8 -I$(IH264D_DIR)/common/armv8 -I$(IH264D_DIR)/decoder/arm
-endif
-IH264D_ASFLAGS := -I$(IH264D_DIR)/common/armv8
-
 IMGUI_SOURCES_CXX := $(addprefix $(DEP_DIR)/imgui/,imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp)
 IMGUI_FLAGS := -I$(DEP_DIR)/imgui -w
 
@@ -680,7 +658,7 @@ LIBUSB_FLAGS := -I$(DEP_DIR)/libusb-config -I$(LIBUSB_DIR) -w
 XBYAK_SOURCES_CXX := $(DEP_DIR)/xbyak_aarch64/src/xbyak_aarch64_impl.cpp $(DEP_DIR)/xbyak_aarch64/src/util_impl.cpp
 XBYAK_FLAGS := -I$(DEP_DIR)/xbyak_aarch64 -I$(DEP_DIR)/xbyak_aarch64/xbyak_aarch64 -w
 
-LIB_GROUPS := CORE CURLCOMPAT LRC IH264D IMGUI FMT PUGIXML
+LIB_GROUPS := CORE CURLCOMPAT LRC IMGUI FMT PUGIXML
 ifeq ($(HAVE_LIBUSB),1)
    LIB_GROUPS += LIBUSB
 endif

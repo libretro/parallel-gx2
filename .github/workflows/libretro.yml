@@ -152,6 +152,19 @@ jobs:
           make -C test/audio_mix clean
           SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+      - name: "H.264 decoder"
+        # h264.rpl's decoder engine over rh264 and a frontend's decoder,
+        # against ffmpeg's pictures of test/h264/streams: plain, under
+        # ThreadSanitizer, under ASan + UBSan. The core's precompiled header
+        # wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/h264/run_tests.sh
+          make -C test/h264 clean
+          SANITIZER=thread ./test/h264/run_tests.sh
+          make -C test/h264 clean
+          SANITIZER=address,undefined ./test/h264/run_tests.sh
+
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.

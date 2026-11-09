@@ -44,6 +44,7 @@
 #include "Cafe/TitleList/TitleConverter.h"
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/OS/libs/h264_avc/h264dec.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "Cafe/HW/Latte/Core/LatteTiming.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
@@ -3479,6 +3480,17 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 			s_rumble_cb = rumble.set_rumble_state;
 	}
 
+	// The frontend's H.264 decoder, on the GPU where it has one, for the
+	// game's movies; version 4, whose tags carry each input's identity
+	// through B-picture reordering, or rh264 in the core. A refusal keeps
+	// what an earlier call got, as above.
+	{
+		struct retro_video_decode_interface decode{};
+		decode.interface_version = 4;
+		if (cb(RETRO_ENVIRONMENT_GET_VIDEO_DECODE_INTERFACE, &decode) && decode.interface_version >= 4)
+			H264::SetFrontendDecoder(&decode);
+	}
+
 	// Ask for the frontend's file system before anything else looks at a path.
 	// On Android the Play Store build reaches storage through SAF, so the path
 	// handed to retro_load_game is a content:// URI that no open() will take -
@@ -5819,6 +5831,10 @@ static void libretro_context_destroy()
 		libretro_stop_title();
 
 		cemuLog_log(LogType::Force, "[libretro] the title is down; the context can go");
+		// the title's decoder sessions went down with it, and with them every
+		// decoder the frontend opened for us, as the interface asks
+		if (const int open = H264::OpenFrontendDecoders())
+			cemuLog_log(LogType::Force, "[libretro] {} H.264 decoder(s) of the frontend still open as the context goes", open);
 	}
 	else
 	{
@@ -7539,6 +7555,9 @@ static void libretro_finish_run(std::chrono::steady_clock::time_point start,
 
 RETRO_API void retro_run()
 {
+	// an H.264 decoder the GPU was behind on tries again
+	H264::FrameTick();
+
 	if (s_ppc_process_exited.exchange(false, std::memory_order_acq_rel) && environ_cb)
 	{
 		cemuLog_log(LogType::Force, "[Libretro] emulated process exited, asking the frontend to shut down");
