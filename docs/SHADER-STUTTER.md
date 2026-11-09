@@ -73,6 +73,29 @@ it does not remove it, and it does nothing for a first play.
   the pipeline cache are shared with standalone Cemu. Anything new the core
   persists goes in its own file with its own version.
 
+## Compiles on the draw path
+
+The top priority (AGENTS.md: never compile a pipeline on the draw path).
+Where the core still does, as of `204bbde5`:
+
+- **Async Shader Compile off**: every new pipeline is compiled on the GPU
+  thread while its draw waits (`draw_createGraphicsPipeline`,
+  `Compile(true, ...)`), its shaders with it (`PreponeCompilation`).
+- **Async on (the default), a draw judged essential**
+  (`IsAsyncPipelineAllowed`: no depth buffer, six indices or fewer, the
+  1600x1600 targets): the same.
+- **Async on, any other draw**: not compiled on the draw path, but the
+  draw is skipped until the pipeline lands - not a fallback either.
+- **No `VK_EXT_pipeline_creation_cache_control`**: every compile is forced
+  synchronous (`PipelineCompiler::Compile`).
+- **Surface copies** (color to depth and back, `VulkanSurfaceCopy.cpp`):
+  the copy shaders on the first copy (`PreponeCompilation(true)`), and a
+  pipeline for each new source and destination format, created on the GPU
+  thread while the copy waits (`copySurface_getOrCreateGraphicsPipeline`).
+  Their few states are known up front: they can be built ahead.
+
+M2 removes them; it comes before anything else in this document.
+
 ## Milestones
 
 Each is one or more patches, each patch with its tests and the gate numbers
@@ -213,7 +236,7 @@ pipeline libraries (M2), measured on titles' recordings.
   dropping state a pipeline still consumes is a correctness bug.
 - Gate: pipelines per replayed sequence go down; GPU results unchanged.
 
-### M2: a first draw that never waits
+### M2: a first draw that never waits (the top priority)
 
 - **Graphics pipeline libraries** where the device has them
   (`VK_EXT_graphics_pipeline_library`): vertex input, pre-rasterization
