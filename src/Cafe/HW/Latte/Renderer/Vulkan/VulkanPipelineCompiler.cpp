@@ -290,50 +290,13 @@ void PipelineCompiler::InitVertexInputState(const LatteContextRegister& latteReg
 
 void PipelineCompiler::InitInputAssemblyState(const Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE primitiveMode)
 {
+	// with dynamic topology the draw sets the same (draw_updateInputAssembly)
+	const VulkanInputAssembly ia = VulkanPipelineKey_InputAssembly(primitiveMode);
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-	inputAssembly.primitiveRestartEnable = VK_TRUE;
-	switch (primitiveMode)
+	inputAssembly.topology = ia.topology;
+	inputAssembly.primitiveRestartEnable = ia.primitiveRestartEnable;
+	if (!ia.supported)
 	{
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::POINTS:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINES:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_STRIP:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_LOOP:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; // line loops are emulated as line strips with an extra connecting strip at the end
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_STRIP_ADJACENT: // Tropical Freeze level 3-6
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLE_FAN:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLE_STRIP:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::QUADS:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // quads are emulated as 2 triangles
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::QUAD_STRIP:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // quad strips are emulated as (count-2)/2 triangles
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS:
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // rects are emulated as 2 triangles
-		inputAssembly.primitiveRestartEnable = false;
-		break;
-	default:
 		cemuLog_logDebug(LogType::Force, "Vulkan-Unsupported: Graphics pipeline with primitive mode {} created", primitiveMode);
 		cemu_assert_debug(false);
 	}
@@ -549,6 +512,11 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 	}
 	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.vertex_input_dynamic_state)
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_VERTEX_INPUT_EXT);
+	if (VulkanRenderer::draw_pipelineKeyDynamicFlags() & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY)
+	{
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT);
+	}
 	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state2)
 	{
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT);

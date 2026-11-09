@@ -9,6 +9,61 @@ static uint32 VertexBufferStride(const LatteContextRegister& lcr, uint32 bufferI
 	return (lcr.GetRawView()[mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7 + 2] >> 11) & 0xFFFF;
 }
 
+VulkanInputAssembly VulkanPipelineKey_InputAssembly(Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE mode)
+{
+	using E = Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE;
+	// restart only for strips and fans: with a list it wants a feature
+	// (primitiveTopologyListRestart)
+	switch (mode)
+	{
+	case E::POINTS:
+		return {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_FALSE, true};
+	case E::LINES:
+		return {VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_FALSE, true};
+	case E::LINE_STRIP:
+	case E::LINE_LOOP: // a strip with an extra connecting strip at the end
+		return {VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, VK_TRUE, true};
+	case E::LINE_STRIP_ADJACENT: // Tropical Freeze level 3-6
+		return {VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY, VK_TRUE, true};
+	case E::TRIANGLES:
+	case E::QUADS: // 2 triangles each
+	case E::QUAD_STRIP: // (count-2)/2 triangles
+	case E::RECTS: // 2 triangles each
+		return {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE, true};
+	case E::TRIANGLE_FAN:
+		return {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, VK_TRUE, true};
+	case E::TRIANGLE_STRIP:
+		return {VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_TRUE, true};
+	default:
+		// as the pipelines were made for one before: zeroed topology
+		return {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_TRUE, false};
+	}
+}
+
+// what the key keeps of the primitive type with dynamic topology
+static uint32 TopologyClass(Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE mode)
+{
+	using E = Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE;
+	switch (mode)
+	{
+	case E::POINTS:
+		return 1;
+	case E::LINES:
+	case E::LINE_STRIP:
+	case E::LINE_LOOP:
+		return 2;
+	case E::TRIANGLES:
+	case E::TRIANGLE_FAN:
+	case E::TRIANGLE_STRIP:
+	case E::QUADS:
+	case E::QUAD_STRIP:
+		return 4;
+	default:
+		// rects, adjacency and the types not drawn: each its own
+		return 0x100 | (uint32)mode;
+	}
+}
+
 uint64 VulkanPipelineKey_Minimal(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr, uint32 dynamic)
 {
 	const bool dynamicVertexInput = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT) != 0;
@@ -29,7 +84,13 @@ uint64 VulkanPipelineKey_Minimal(const LatteFetchShader* fetchShader, const Latt
 	}
 	stateHash = std::rotl<uint64>(stateHash, 7);
 
-	stateHash += lcr.GetRawView()[mmVGT_PRIMITIVE_TYPE];
+	// the primitive type; with dynamic topology its class only: the
+	// topology the draw sets must be of the pipeline's class, and rects
+	// take a geometry shader or fill mode of their own
+	if (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY)
+		stateHash += TopologyClass(lcr.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE());
+	else
+		stateHash += lcr.GetRawView()[mmVGT_PRIMITIVE_TYPE];
 	stateHash = std::rotl<uint64>(stateHash, 7);
 
 	stateHash += lcr.GetRawView()[mmVGT_STRMOUT_EN];
@@ -475,4 +536,27 @@ void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerE
 void VulkanPipelineKey_SetVertexInput(VkCommandBuffer cb, const VulkanVertexInput& s)
 {
 	vkCmdSetVertexInputEXT(cb, s.bindingCount, s.bindings, s.attributeCount, s.attributes);
+}
+
+uint64 VulkanPipelineKey_Graphics(const LatteFetchShader* fetchShader, uint64 vertexShaderHash, uint64 geometryShaderHash,
+	uint64 pixelShaderHash, uint64 renderPassHash, const LatteContextRegister& lcr, uint32 dynamic)
+{
+	uint64 stateHash = VulkanPipelineKey_Minimal(fetchShader, lcr, dynamic);
+	stateHash = (stateHash >> 8) + (stateHash * 0x370531ull) % 0x7F980D3BF9B4639Dull;
+	stateHash += vertexShaderHash;
+	stateHash = std::rotl<uint64>(stateHash, 13);
+	stateHash += geometryShaderHash;
+	stateHash = std::rotl<uint64>(stateHash, 13);
+	stateHash += pixelShaderHash;
+	stateHash = std::rotl<uint64>(stateHash, 13);
+	stateHash += VulkanPipelineKey_RenderState(lcr, dynamic);
+	stateHash = std::rotl<uint64>(stateHash, 17);
+	stateHash += renderPassHash;
+	return stateHash;
+}
+
+void VulkanPipelineKey_SetInputAssembly(VkCommandBuffer cb, const VulkanInputAssembly& s)
+{
+	vkCmdSetPrimitiveTopologyEXT(cb, s.topology);
+	vkCmdSetPrimitiveRestartEnableEXT(cb, s.primitiveRestartEnable);
 }

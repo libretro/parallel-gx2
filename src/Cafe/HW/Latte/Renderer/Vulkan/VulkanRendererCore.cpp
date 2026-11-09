@@ -22,7 +22,8 @@ uint32 VulkanRenderer::draw_pipelineKeyDynamicFlags()
 	return (ext.extended_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL : 0) |
 		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0) |
 		(ext.extended_dynamic_state2 ? VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER : 0) |
-		(ext.vertex_input_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT : 0);
+		(ext.vertex_input_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT : 0) |
+		(ext.extended_dynamic_state && ext.extended_dynamic_state2 ? VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY : 0);
 }
 
 // includes only states that may change during minimal drawcalls
@@ -40,35 +41,12 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 	// note 2:
 	// there is a secondary issue where we dont store all fetch shaders into the pipeline cache (only a single fetch shader is tied to each stored vertex shader)
 	// but we can probably trust drivers to not require pipeline recompilation if only the offsets differ
-	// An alternative would be to use VK_EXT_vertex_input_dynamic_state but it comes with minor overhead
-	// Regardless, the extension is not well supported as of writing this (July 2021, only 10% of GPUs support it on Windows. Nvidia only)
+	// with VK_EXT_vertex_input_dynamic_state the offsets are the draw's (draw_updateVertexInput) and out of the key
 
 	cemu_assert_debug(vertexShader->compatibleFetchShader->key == fetchShader->key); // fetch shaders must be layout compatible, but may have different offsets
 
-	uint64 stateHash;
-	stateHash = draw_calculateMinimalGraphicsPipelineHash(fetchShader, lcr);
-	stateHash = (stateHash >> 8) + (stateHash * 0x370531ull) % 0x7F980D3BF9B4639Dull;
-
-	if (vertexShader)
-		stateHash += vertexShader->baseHash;
-
-	stateHash = std::rotl<uint64>(stateHash, 13);
-
-	if (geometryShader)
-		stateHash += geometryShader->baseHash;
-
-	stateHash = std::rotl<uint64>(stateHash, 13);
-
-	if (pixelShader)
-		stateHash += pixelShader->baseHash + pixelShader->auxHash;
-
-	stateHash = std::rotl<uint64>(stateHash, 13);
-
-	stateHash += VulkanPipelineKey_RenderState(lcr, draw_pipelineKeyDynamicFlags());
-	stateHash = std::rotl<uint64>(stateHash, 17);
-	stateHash += renderPassObj->m_hashForPipeline;
-
-	return stateHash;
+	return VulkanPipelineKey_Graphics(fetchShader, vertexShader ? vertexShader->baseHash : 0, geometryShader ? geometryShader->baseHash : 0,
+		pixelShader ? pixelShader->baseHash + pixelShader->auxHash : 0, renderPassObj->m_hashForPipeline, lcr, draw_pipelineKeyDynamicFlags());
 }
 
 void VulkanRenderer::draw_debugPipelineHashState()
@@ -223,7 +201,8 @@ PipelineInfo* VulkanRenderer::draw_getOrCreateGraphicsPipeline(uint32 indexCount
 		}
 		uint64 calcMinimalHash = draw_calculateMinimalGraphicsPipelineHash(LatteSHRC_GetActiveFetchShader(), LatteGPUState.contextNew);
 		auto currentPrimitiveMode = LatteGPUState.contextNew.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE();
-		cemu_assert_debug(cache_object->primitiveMode == currentPrimitiveMode);
+		// with dynamic topology a pipeline serves its topology's class
+		cemu_assert_debug(cache_object->primitiveMode == currentPrimitiveMode || (draw_pipelineKeyDynamicFlags() & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY));
 		cemu_assert_debug(cache_object->minimalStateHash == calcMinimalHash);
 #endif
 		return cache_object;
@@ -1187,6 +1166,22 @@ void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* ren
 	VulkanPipelineKey_SetBlend(m_state.currentCommandBuffer, att, 8);
 }
 
+// The primitive topology and restart, dynamic in every pipeline with
+// VK_EXT_extended_dynamic_state and _2: the primitive type's, within the
+// class the pipeline was made for (VulkanPipelineKey_Minimal keys it). Set
+// when they change, and with every pipeline bound.
+void VulkanRenderer::draw_updateInputAssembly(bool forceUpdate)
+{
+	if (!(draw_pipelineKeyDynamicFlags() & VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY))
+		return;
+	const VulkanInputAssembly s = VulkanPipelineKey_InputAssembly(LatteGPUState.contextNew.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE());
+	const uint32 packed = (uint32)s.topology | (s.primitiveRestartEnable ? 0x100u : 0u);
+	if (!forceUpdate && m_state.prevInputAssembly == packed)
+		return;
+	m_state.prevInputAssembly = packed;
+	VulkanPipelineKey_SetInputAssembly(m_state.currentCommandBuffer, s);
+}
+
 // The vertex input, dynamic in every pipeline with
 // VK_EXT_vertex_input_dynamic_state: the active fetch shader's attributes at
 // the locations the pipeline's vertex shader reads them, with the strides
@@ -1537,6 +1532,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(true);
 		draw_updateVertexInput(true, pipeline_info);
+		draw_updateInputAssembly(true);
 	}
 	else
 	{
@@ -1547,6 +1543,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(false);
 		draw_updateVertexInput(false, pipeline_info);
+		draw_updateInputAssembly(false);
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1742,6 +1739,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(true);
 		draw_updateVertexInput(true, pipeline_info);
+		draw_updateInputAssembly(true);
 	}
 	else
 	{
@@ -1752,6 +1750,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(false);
 		draw_updateVertexInput(false, pipeline_info);
+		draw_updateInputAssembly(false);
 	}
 
 	// update blend constants

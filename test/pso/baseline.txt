@@ -10,6 +10,12 @@ filecache table entries looked at to find 1000 entries 1321
 filecache table entries looked at to write 1000 entries 6510
 filecache.linux allocations per 1000 entries read 2008
 filecache.linux bytes allocated per 1000 entries read 4607224
+replayed draws: pipelines, + _2 1199
+replayed draws: pipelines, + _3 blend 1314
+replayed draws: pipelines, + topology 119
+replayed draws: pipelines, + vertex input 302
+replayed draws: pipelines, extended dynamic state 1484
+replayed draws: pipelines, nothing dynamic 1511
 shader Enhancements/Bayonetta_Contrasty/21e6bc9b0cdbe8d7_00000000000003c9_ps.txt instructions 926
 shader Enhancements/DonkeyKongTropicalFreeze_!AARemoval/10ccf0cc1234d069_00000000000003c9_ps.txt instructions 176
 shader Enhancements/DonkeyKongTropicalFreeze_!AARemoval/bafe6c9c37bfca4d_00000000000003c9_ps.txt instructions 176

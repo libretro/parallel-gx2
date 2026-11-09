@@ -14,7 +14,12 @@
 //    up again, and the heap allocations and bytes allocated to read them
 //    back (those on Linux only: the stream is per platform);
 //  - the register file a cached shader or pipeline is rebuilt with at boot:
-//    the heap allocations and bytes allocated to rebuild 1000.
+//    the heap allocations and bytes allocated to rebuild 1000;
+//  - the pipelines a replayed draw sequence makes (the Vulkan renderer's
+//    pipeline key, VulkanPipelineKey_Graphics), with each set of state the
+//    device can leave to the draw: a frame's shape from a seed, shader sets
+//    drawn into a scene, shadow and post pass with the materials, decals,
+//    depth-only passes, strips, fans and vertex layouts a title draws.
 //
 // Timed, reported, never gated (CI machines are shared; times are taken on
 // the developer's machines, docs/SHADER-STUTTER.md): rslc per shader, median,
@@ -42,6 +47,11 @@
 #include "Cemu/FileCache/FileCache.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
+
+#include <random>
+#include <set>
 
 extern std::atomic<uint64> g_fileCacheProbes;
 
@@ -229,6 +239,140 @@ static void MeasureRegisterRebuild()
 	s_metrics["cache entry register files: bytes allocated per 1000 rebuilt"] = s_allocBytes.load();
 }
 
+// A frame's draws from a seed: what changes between them is what a title
+// changes - the shaders, the render pass, a material's depth, cull and
+// blend state, the stencil reference, polygon offset on decals, depth-only
+// draws with rasterization killed, strips and fans among the lists, and
+// the vertex buffers' strides and offsets. The pipelines they make, counted
+// by the renderer's own key, with each set of state the device can leave
+// to the draw (none, then each extension the core enables on top).
+static void MeasureReplay()
+{
+	using namespace Latte;
+	struct Material
+	{
+		uint32 depthControl, cull, blendEnable, blend, targetMask;
+	};
+	// depth test and write (LEQUAL), test only, off; cull back, none,
+	// front; opaque, alpha, additive; RGBA, RGB
+	const uint32 depthControls[] = {(1 << 1) | (1 << 2) | (3 << 4), (1 << 1) | (3 << 4), 0};
+	const uint32 culls[] = {2, 0, 1};
+	const uint32 blends[] = {0x00010001, 0x05040504, 0x01010101};
+	const uint32 targetMasks[] = {0xF, 0x7};
+	std::mt19937 rng(0x7e1a);
+	std::vector<Material> materials;
+	for (int i = 0; i < 24; i++)
+	{
+		const uint32 b = rng() % 3;
+		materials.push_back({depthControls[rng() % 3], culls[rng() % 3], b != 0, blends[b], targetMasks[rng() % 2]});
+	}
+	// 40 shader sets, each with its materials; two fetch shaders per vertex
+	// layout, differing in attribute offsets (the case the key's note in
+	// the renderer describes)
+	struct ShaderSet
+	{
+		uint64 vs, ps;
+		std::vector<uint32> materials;
+	};
+	std::vector<ShaderSet> sets;
+	for (uint32 i = 0; i < 40; i++)
+	{
+		ShaderSet set{0x1000 + i * 0x9E3779B97F4A7C15ull, 0x2000 + i * 0xC2B2AE3D27D4EB4Full, {}};
+		for (uint32 m = 0, n = 1 + rng() % 3; m < n; m++)
+			set.materials.push_back(rng() % materials.size());
+		sets.push_back(set);
+	}
+	LatteParsedFetchShaderAttribute attrs[2]{};
+	attrs[0] = {0, 0, E_HWFMT::HWFMT_32_32_32_FLOAT, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 0};
+	attrs[1] = {0, 1, E_HWFMT::HWFMT_8_8_8_8, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 12};
+	LatteParsedFetchShaderBufferGroup group{};
+	group.attributeBufferIndex = 0;
+	group.attribCount = 2;
+	group.attrib = attrs;
+	LatteFetchShader fetch[2];
+	for (int f = 0; f < 2; f++)
+	{
+		fetch[f].bufferGroups = {group};
+		fetch[f].vkPipelineHashFragment = 0x51ED + f * 0x1000193;
+	}
+	const uint32 strides[] = {16, 20, 24, 28, 32};
+	const uint64 renderPasses[] = {0xA11CE, 0xB0B, 0xC0FFEE}; // scene, shadow, post
+
+	struct Draw
+	{
+		uint32 set, material, pass, primitive, stride, fetch, stencilRef;
+		bool decal, depthOnly;
+	};
+	std::vector<Draw> draws;
+	for (int i = 0; i < 2000; i++)
+	{
+		Draw d{};
+		d.set = rng() % sets.size();
+		d.material = sets[d.set].materials[rng() % sets[d.set].materials.size()];
+		const uint32 kind = rng() % 20;
+		d.pass = kind < 15 ? 0 : kind < 18 ? 1 : 2;
+		const uint32 prim = rng() % 10;
+		d.primitive = prim < 6 ? 4 : prim < 9 ? 6 : 5; // lists, strips, fans
+		d.stride = strides[rng() % std::size(strides)];
+		d.fetch = rng() % 2;
+		d.stencilRef = rng() & 0xFF;
+		d.decal = d.pass == 0 && rng() % 10 == 0;
+		d.depthOnly = d.pass == 1 && rng() % 4 == 0;
+		draws.push_back(d);
+	}
+
+	struct Caps
+	{
+		const char* name;
+		uint32 flags;
+	};
+	const Caps caps[] = {
+		{"nothing dynamic", 0},
+		{"extended dynamic state", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL},
+		{"+ _3 blend", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND},
+		{"+ _2", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND | VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER},
+		{"+ vertex input", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
+			VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT},
+		{"+ topology", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
+			VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT | VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY},
+	};
+	auto lcr = std::make_unique<LatteContextRegister>();
+	uint64 previous = ~0ull;
+	for (const Caps& c : caps)
+	{
+		std::set<uint64> pipelines;
+		for (const Draw& d : draws)
+		{
+			const Material& m = materials[d.material];
+			std::memset(lcr.get(), 0, sizeof(LatteContextRegister));
+			uint32* r = lcr->GetRawView();
+			r[REGADDR::DB_DEPTH_CONTROL] = d.depthOnly ? ((1 << 1) | (1 << 2) | (3 << 4)) : m.depthControl;
+			r[REGADDR::DB_STENCILREFMASK] = d.stencilRef | (0xFF << 8) | (0xFF << 16);
+			r[REGADDR::PA_SU_SC_MODE_CNTL] = m.cull | (d.decal ? (1u << 11) : 0);
+			r[REGADDR::PA_CL_CLIP_CNTL] = d.depthOnly ? (1u << 22) : 0;
+			r[REGADDR::PA_CL_VTE_CNTL] = 1u << 1;
+			r[REGADDR::CB_COLOR_CONTROL] = 0xCC0000 | (m.blendEnable << 8);
+			r[REGADDR::CB_BLEND0_CONTROL] = m.blend;
+			r[REGADDR::CB_TARGET_MASK] = d.depthOnly ? 0 : m.targetMask;
+			r[mmVGT_PRIMITIVE_TYPE] = d.primitive;
+			r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + 2] = d.stride << 11;
+			pipelines.insert(VulkanPipelineKey_Graphics(&fetch[d.fetch], sets[d.set].vs, 0, sets[d.set].ps,
+				renderPasses[d.pass], *lcr, c.flags));
+		}
+		std::printf("replayed draws: %zu pipelines for %zu draws, %s\n", pipelines.size(), draws.size(), c.name);
+		s_metrics[std::string("replayed draws: pipelines, ") + c.name] = pipelines.size();
+		// each set leaves more to the draw: never more pipelines
+		if (pipelines.size() > previous)
+		{
+			std::printf("FAIL: %s makes more pipelines than the set before it\n", c.name);
+			s_failures++;
+		}
+		previous = pipelines.size();
+	}
+	for (int f = 0; f < 2; f++)
+		fetch[f].bufferGroups.clear();
+}
+
 static void ReportTimes()
 {
 	if (s_compileMicros.empty())
@@ -320,6 +464,7 @@ int main(int argc, char** argv)
 	MeasureCorpus(argv[1], repeat);
 	MeasureFileCache();
 	MeasureRegisterRebuild();
+	MeasureReplay();
 	if (s_failures)
 	{
 		std::printf("pso gate: %d failure(s) measuring\n", s_failures);

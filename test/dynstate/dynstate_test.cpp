@@ -1,12 +1,13 @@
 // The state the Vulkan pipelines leave to the draw, drawn on a real driver
 // (lavapipe in CI): for register states from a seed, a pipeline with the
 // cull mode, front face, depth and stencil tests, blending, polygon offset
-// enable, rasterizer discard and vertex input baked in (as without the
-// extensions) and one with them set by the draw (as with
+// enable, rasterizer discard, vertex input and topology baked in (as
+// without the extensions) and one with them set by the draw (as with
 // VK_EXT_extended_dynamic_state, _3, _2 and VK_EXT_vertex_input_dynamic_state)
-// draw the same four overlapping triangles, read from vertex buffers in a
-// layout from the seed, over the same depth and stencil, and the pictures
-// must match to the byte. Both take their values from the functions the pipeline
+// draw the same four overlapping quads of four vertices - a triangle as a
+// list, two as a strip or a fan, covering different halves - read from
+// vertex buffers in a layout from the seed, over the same depth and
+// stencil, and the pictures must match to the byte. Both take their values from the functions the pipeline
 // compiler and the draw use (VulkanPipelineKey.h). Skipped, said so,
 // without a device that has the extensions - a failure with
 // VN_REQUIRE_DEVICE set, as the CIs set it.
@@ -416,7 +417,11 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 		vin.pVertexAttributeDescriptions = va.data();
 	}
 	VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	// the class's list when the draw sets it, as a pipeline made for a
+	// triangle list serves strips and fans then
+	const VulkanInputAssembly assembly = VulkanPipelineKey_InputAssembly(lcr.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE());
+	ia.topology = dynamicState ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : assembly.topology;
+	ia.primitiveRestartEnable = dynamicState ? VK_FALSE : assembly.primitiveRestartEnable;
 	VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
 	VkRect2D sc{{0, 0}, {W, H}};
 	VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -457,7 +462,8 @@ static VkPipeline MakePipeline(const Context& c, const LatteContextRegister& lcr
 			VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT,
 			VK_DYNAMIC_STATE_STENCIL_OP_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
 			VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT,
-			VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT});
+			VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE_EXT, VK_DYNAMIC_STATE_VERTEX_INPUT_EXT,
+			VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT});
 	VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
 	dsi.dynamicStateCount = (uint32_t)dyn.size();
 	dsi.pDynamicStates = dyn.data();
@@ -529,6 +535,7 @@ static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteCont
 		auto input = std::make_unique<VulkanVertexInput>();
 		VulkanPipelineKey_VertexInput(layout.fetchShader, layout.mapping, lcr, *input);
 		VulkanPipelineKey_SetVertexInput(cb, *input);
+		VulkanPipelineKey_SetInputAssembly(cb, VulkanPipelineKey_InputAssembly(lcr.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE()));
 		VkFormat formats[8] = {VK_FORMAT_R8G8B8A8_UNORM};
 		VkPipelineColorBlendAttachmentState att[8];
 		VulkanPipelineKey_Blend(lcr, formats, att);
@@ -549,8 +556,8 @@ static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteCont
 	for (uint32 d = 0; d < 4; d++)
 	{
 		vkCmdPushConstants(cb, c.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(draws[d]), &draws[d]);
-		// each draw its three vertices and the instance with its scale
-		vkCmdDraw(cb, 3, 1, d * 3, d);
+		// each draw its four vertices and the instance with its scale
+		vkCmdDraw(cb, 4, 1, d * 4, d);
 	}
 	vkCmdEndRenderPass(cb);
 	VkBufferImageCopy region{};
@@ -581,7 +588,8 @@ static void RandomState(std::mt19937& rng, LatteContextRegister& lcr)
 {
 	uint32* r = lcr.GetRawView();
 	auto bits = [&](uint32 n) { return rng() & ((1u << n) - 1); };
-	r[Latte::REGADDR::VGT_PRIMITIVE_TYPE] = 4; // triangles
+	// triangles, a fan or a strip
+	r[Latte::REGADDR::VGT_PRIMITIVE_TYPE] = 4 + rng() % 3;
 	// cull and front face, polygon offset on or off
 	r[Latte::REGADDR::PA_SU_SC_MODE_CNTL] = bits(3) | (bits(1) << 11);
 	// a constant offset of an eighth to a half of the depth range, up or
@@ -645,15 +653,20 @@ static void RandomLayout(std::mt19937& rng, LatteContextRegister& lcr, VertexLay
 	r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + l.instanceBuffer * 7 + 2] = l.instanceStride << 11;
 
 	std::memset(data, 0xA5, kVertexBufferSize);
-	static const float tri[3][2] = {{-1.0f, -1.0f}, {3.0f, -1.0f}, {-1.0f, 3.0f}};
+	// a quad in strip order: a list draws its first triangle, a strip both
+	// halves, a fan the first and the other diagonal's upper one
+	static const float quad[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, 1.0f}};
 	static const float scales[] = {0.75f, 0.5f, 1.0f, 0.875f};
 	for (uint32 d = 0; d < 4; d++)
 	{
 		const bool flip = rng() & 1;
-		for (uint32 v = 0; v < 3; v++)
+		for (uint32 v = 0; v < 4; v++)
 		{
-			const uint32 i = flip ? 2 - v : v;
-			std::memcpy(data + (d * 3 + v) * l.vertexStride + l.posOffset, tri[i], 8);
+			// mirrored, for the other winding
+			float p[2] = {quad[v][0], quad[v][1]};
+			if (flip)
+				p[0] = -p[0];
+			std::memcpy(data + (d * 4 + v) * l.vertexStride + l.posOffset, p, 8);
 		}
 		const float scale = scales[pick(4)];
 		std::memcpy(data + kInstanceData + d * l.instanceStride + l.scaleOffset, &scale, 4);

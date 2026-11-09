@@ -84,8 +84,11 @@ In: `test/pso` gates the compile corpus (each module's SPIR-V instruction
 count, and the corpus' modules, words and instructions) and the file
 cache's load path (allocations and bytes allocated per entry read), with
 rslc's time per shader reported; `PSO_TRACE=1` traces the draw path in the
-core. Still to come under M0: the Latte programs generated from a seed, and
-pipelines on lavapipe from a replayed draw sequence, which arrive with M1.
+core. The pipelines a replayed draw sequence makes are counted by the
+renderer's own key (`VulkanPipelineKey_Graphics`) for each set of state the
+device can leave to the draw, and gated; the state those sets leave out is
+drawn on lavapipe by `test/dynstate`. Still to come under M0: the Latte
+programs generated from a seed.
 
 `test/pso`, run in both CIs on every commit:
 
@@ -161,16 +164,36 @@ that differ only in offsets, the case the note in
 `draw_calculateGraphicsPipelineHash` describes, now share pipelines.
 `test/pipeline_key` replays 256 vertex layouts (one key).
 
+Done with `VK_EXT_extended_dynamic_state` and `_2` together: the primitive
+topology and restart are set by the draw (`draw_updateInputAssembly`, from
+`VulkanPipelineKey_InputAssembly`, which the pipeline compiler uses too),
+and the key keeps the primitive type's class only (points, lines,
+triangles; line strips with adjacency and rects each their own, rects for
+their geometry shader or fill mode): a dynamic topology has to be of the
+pipeline's class. Lists, strips, fans, quads and quad strips of the same
+shaders share a pipeline.
+
+The renderer's whole key is `VulkanPipelineKey_Graphics`, and `test/pso`
+replays 2000 draws from a seed with a frame's shape (40 shader sets in a
+scene, shadow and post pass; materials, stencil references, decals,
+depth-only draws, strips and fans, two attribute offset layouts and five
+strides) through it, gating the pipelines for each set of state left to
+the draw: 1511 with nothing, 1484 with extended dynamic state, 1314 with
+_3's blending, 1199 with _2, 302 with vertex input, 119 with topology.
+The sequence is synthetic. A title's own draws would replace it as a
+private corpus; `PSO_TRACE` logs what a draw waited for, not the state it
+drew with, so recording them is still to do.
+
 `test/dynstate` draws 400 register states from a seed on lavapipe, each
 with a pipeline that bakes the depth, stencil, cull, blend, polygon offset,
-discard state and vertex input in and one that takes it from the draw
-(through the same setters the renderer uses,
-`VulkanPipelineKey_SetDepthStencilCull`, `_SetBlend`, `_SetRasterizer` and
-`_SetVertexInput`), the triangles read from a vertex buffer in a layout
-from the seed (buffer slots, semantics, stride, offset, a per-instance
-attribute), and requires the same picture to the byte. Next: replaying a
-title's draws, then graphics pipeline libraries (M2).
-
+discard state, vertex input and topology in and one that takes it from the
+draw (through the same setters the renderer uses,
+`VulkanPipelineKey_SetDepthStencilCull`, `_SetBlend`, `_SetRasterizer`,
+`_SetVertexInput` and `_SetInputAssembly`): quads of four vertices drawn
+as a list, a strip or a fan, read from a vertex buffer in a layout from
+the seed (buffer slots, semantics, stride, offset, a per-instance
+attribute), and requires the same picture to the byte. Next: recording a
+title's draws for the gate, then graphics pipeline libraries (M2).
 
 - Make the state that only multiplies pipelines dynamic where the device
   has it: `VK_EXT_extended_dynamic_state` (cull, front face, topology,

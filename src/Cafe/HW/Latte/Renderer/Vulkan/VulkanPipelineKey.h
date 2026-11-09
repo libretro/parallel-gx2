@@ -22,12 +22,33 @@ enum
 	// VK_EXT_vertex_input_dynamic_state: vertex buffer strides and attribute
 	// offsets (VulkanRenderer::draw_updateVertexInput)
 	VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT = 1 << 3,
+	// VK_EXT_extended_dynamic_state with _2: the primitive topology within
+	// its class and primitive restart (VulkanRenderer::draw_updateInputAssembly)
+	VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY = 1 << 4,
 };
 uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dynamic);
 // The part of the key that can change between draws that keep their
 // shaders (VulkanRenderer::draw_execute_continued compares it): the vertex
 // layout, primitive type, streamout and rasterizer discard
 uint64 VulkanPipelineKey_Minimal(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr, uint32 dynamic);
+// The whole key (VulkanRenderer::draw_calculateGraphicsPipelineHash): the
+// above, the shaders (each one's hash, 0 for none), the render state and
+// the render pass
+uint64 VulkanPipelineKey_Graphics(const LatteFetchShader* fetchShader, uint64 vertexShaderHash, uint64 geometryShaderHash,
+	uint64 pixelShaderHash, uint64 renderPassHash, const LatteContextRegister& lcr, uint32 dynamic);
+
+// The topology and primitive restart of a primitive type, as the pipeline
+// bakes them in or the draw sets them; supported false for a type the
+// pipelines do not draw. Line loops, quads, quad strips and rects are
+// drawn as strips and lists of their own (LatteIndices_decode, the rect
+// geometry shader).
+struct VulkanInputAssembly
+{
+	VkPrimitiveTopology topology;
+	VkBool32 primitiveRestartEnable;
+	bool supported;
+};
+VulkanInputAssembly VulkanPipelineKey_InputAssembly(Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE mode);
 
 // The vertex buffer bindings and attributes of a fetch shader with the
 // strides of a register state, read at the locations the vertex shader
@@ -89,5 +110,7 @@ void VulkanPipelineKey_SetDepthStencilCull(VkCommandBuffer cb, const VulkanDepth
 void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAttachmentState* att, uint32 count);
 // and _2's (VulkanRenderer::draw_updateRasterizer)
 void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerEnables& s);
+// the input assembly's (VulkanRenderer::draw_updateInputAssembly)
+void VulkanPipelineKey_SetInputAssembly(VkCommandBuffer cb, const VulkanInputAssembly& s);
 // and the vertex input's (VulkanRenderer::draw_updateVertexInput)
 void VulkanPipelineKey_SetVertexInput(VkCommandBuffer cb, const VulkanVertexInput& s);

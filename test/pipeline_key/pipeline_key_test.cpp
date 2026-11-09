@@ -14,7 +14,9 @@
 //  - the part of the key draws that keep their shaders compare: with
 //    VK_EXT_vertex_input_dynamic_state the vertex buffer strides and
 //    attribute offsets make no new key, with _2 rasterizer discard none
-//    either, and the vertex input the draw sets is what a pipeline baked in.
+//    either, with dynamic topology a primitive type of the same class none,
+//    and the vertex input, topology and restart the draw sets are what a
+//    pipeline baked in.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
@@ -345,6 +347,76 @@ int main()
 		}
 		std::printf("pipeline keys for 256 vertex layouts with vertex input dynamic state: %zu\n", layouts.size());
 		CHECK(layouts.size() == 1);
+
+		// the primitive type: keyed, with dynamic topology by its class
+		{
+			using E = LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE;
+			const uint32 tp = VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY;
+			auto key = [&](E mode, uint32 flags) {
+				auto r = std::make_unique<LatteContextRegister>(*s0);
+				SetReg(*r, mmVGT_PRIMITIVE_TYPE, (uint32)mode);
+				return VulkanPipelineKey_Minimal(&fs, *r, flags);
+			};
+			const E all[] = {E::POINTS, E::LINES, E::LINE_STRIP, E::TRIANGLES, E::TRIANGLE_FAN, E::TRIANGLE_STRIP,
+				E::LINE_STRIP_ADJACENT, E::RECTS, E::LINE_LOOP, E::QUADS, E::QUAD_STRIP};
+			std::set<uint64> raw, classes;
+			for (E m : all)
+			{
+				raw.insert(key(m, 0));
+				classes.insert(key(m, tp));
+			}
+			// points, lines, triangles, line strips with adjacency, rects
+			std::printf("pipeline keys for %zu primitive types: %zu, with dynamic topology %zu\n", std::size(all), raw.size(), classes.size());
+			CHECK(raw.size() == std::size(all));
+			CHECK(classes.size() == 5);
+			CHECK(key(E::TRIANGLES, tp) == key(E::TRIANGLE_STRIP, tp) && key(E::TRIANGLES, tp) == key(E::TRIANGLE_FAN, tp) &&
+				key(E::TRIANGLES, tp) == key(E::QUADS, tp) && key(E::TRIANGLES, tp) == key(E::QUAD_STRIP, tp));
+			CHECK(key(E::LINES, tp) == key(E::LINE_STRIP, tp) && key(E::LINES, tp) == key(E::LINE_LOOP, tp));
+			CHECK(key(E::RECTS, tp) != key(E::TRIANGLES, tp));
+			CHECK(key(E::LINE_STRIP_ADJACENT, tp) != key(E::LINE_STRIP, tp));
+			CHECK(key(E::POINTS, tp) != key(E::LINES, tp) && key(E::POINTS, tp) != key(E::TRIANGLES, tp));
+			// the topology and restart the draw sets and the pipeline bakes in
+			struct Want { E mode; VkPrimitiveTopology topology; VkBool32 restart; };
+			const Want want[] = {
+				{E::POINTS, VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_FALSE},
+				{E::LINES, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_FALSE},
+				{E::LINE_STRIP, VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, VK_TRUE},
+				{E::LINE_LOOP, VK_PRIMITIVE_TOPOLOGY_LINE_STRIP, VK_TRUE},
+				{E::LINE_STRIP_ADJACENT, VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY, VK_TRUE},
+				{E::TRIANGLES, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE},
+				{E::TRIANGLE_FAN, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, VK_TRUE},
+				{E::TRIANGLE_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_TRUE},
+				{E::QUADS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE},
+				{E::QUAD_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE},
+				{E::RECTS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE},
+			};
+			for (const Want& w : want)
+			{
+				const VulkanInputAssembly ia = VulkanPipelineKey_InputAssembly(w.mode);
+				if (!ia.supported || ia.topology != w.topology || ia.primitiveRestartEnable != w.restart)
+				{
+					std::printf("FAIL: primitive type %x: topology %d restart %d\n", (uint32)w.mode, (int)ia.topology, (int)ia.primitiveRestartEnable);
+					s_failures++;
+				}
+			}
+			CHECK(!VulkanPipelineKey_InputAssembly(E::TRIANGLES_ADJACENT).supported);
+		}
+		// the whole key: each shader, the render pass and the rest
+		{
+			const uint32 f = vi | rz;
+			const uint64 g = VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *s0, f);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 12, 0, 13, 17, *s0, f) != g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 5, 13, 17, *s0, f) != g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 14, 17, *s0, f) != g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 18, *s0, f) != g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *s1, f) == g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *s1, 0) != VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *s0, 0));
+			auto c = std::make_unique<LatteContextRegister>(*s0);
+			SetReg(*c, REGADDR::CB_BLEND0_CONTROL, 0x00030003);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *c, f) != g);
+			CHECK(VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *c, f | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND) ==
+				VulkanPipelineKey_Graphics(&fs, 11, 0, 13, 17, *s0, f | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND));
+		}
 
 		// the vertex input: the attributes the vertex shader maps, at its
 		// locations, with the register's strides

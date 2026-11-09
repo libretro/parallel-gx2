@@ -278,9 +278,10 @@ jobs:
         # What the shader path costs - each module of the compile corpus, the
         # file cache's load path - against test/pso/baseline.txt: worse
         # fails, and better fails until the baseline is updated with it
-        # (AGENTS.md). The core's precompiled header wants fmt and glm.
+        # (AGENTS.md). The core's precompiled header wants fmt and glm, the
+        # replayed draws' pipeline key the Vulkan headers.
         run: |
-          git submodule update --init --depth 1 dependencies/cemu_graphic_packs dependencies/fmt dependencies/glm
+          git submodule update --init --depth 1 dependencies/cemu_graphic_packs dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
           ./test/pso/run_tests.sh
 
       - name: "Shader compiler"

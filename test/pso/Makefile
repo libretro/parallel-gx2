@@ -9,6 +9,8 @@ PACKS := $(DEP)/cemu_graphic_packs
 CXX ?= g++
 CC ?= gcc
 FLAGS := -O2 -g -DHAVE_THREADS -DFILECACHE_COUNT_PROBES -DRSLC_EXTENDED -DRSLC_NO_TEXT -I$(SRC) -I$(SRC)/Common -I$(SRC)/Cafe -I$(SRC)/util -I$(LRC)/include
+# the Vulkan pipeline key the replayed draws are counted with
+FLAGS += -I$(DEP)/Vulkan-Headers/include -DVK_NO_PROTOTYPES -DENABLE_VULKAN
 # what the core's precompiled header, which the file cache takes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
 	-include $(SRC)/Common/precompiled.h
@@ -19,6 +21,9 @@ ifneq (,$(findstring mingw,$(CC)))
    LIBS += -static
    EXE := .exe
    FILESTREAM := $(SRC)/Common/windows/FileStream_win32.cpp
+else
+   # the Vulkan loader the key's setters would call through
+   LIBS += -ldl
 endif
 LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/gfx/shaders/rslc_dxbc.c \
 	$(LRC)/encodings/encoding_deflate.c $(LRC)/encodings/encoding_crc32.c \
@@ -27,7 +32,8 @@ LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c
 CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) \
 	$(SRC)/util/helpers/Deflate.cpp $(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
-	$(SRC)/util/helpers/Serializer.cpp
+	$(SRC)/util/helpers/Serializer.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp
 
 all: pso_gate$(EXE)
 

@@ -411,6 +411,8 @@ private:
 		// and the one set
 		std::unique_ptr<VulkanVertexInput> vertexInput, prevVertexInput;
 		bool prevVertexInputValid{ false };
+		// the primitive topology and restart (dynamic topology)
+		uint32 prevInputAssembly{ 0xFFFFFFFF };
 
 		void resetCommandBufferState()
 		{
@@ -422,6 +424,7 @@ private:
 			prevBlendRenderPass = nullptr;
 			prevRasterizerEnables = 0xFFFFFFFF;
 			prevVertexInputValid = false;
+			prevInputAssembly = 0xFFFFFFFF;
 			prevPolygonFrontOffsetU32 = 0xFFFFFFFF;
 			prevPolygonFrontScaleU32 = 0xFFFFFFFF;
 			prevPolygonFrontClampU32 = 0xFFFFFFFF;
@@ -550,6 +553,7 @@ private:
 	void draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* renderPass);
 	void draw_updateRasterizer(bool forceUpdate);
 	void draw_updateVertexInput(bool forceUpdate, const PipelineInfo* pipelineInfo);
+	void draw_updateInputAssembly(bool forceUpdate);
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();
