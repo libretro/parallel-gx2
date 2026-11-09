@@ -8,6 +8,9 @@
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/PsoTrace.h"
+#ifdef PSO_TRACE
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
+#endif
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -1166,6 +1169,43 @@ void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* ren
 	VulkanPipelineKey_SetBlend(m_state.currentCommandBuffer, att, 8);
 }
 
+#ifdef PSO_TRACE
+// With PSO_RECORD naming a file, each draw state not drawn before, appended
+// to it for the gate (VulkanPipelineRecord.h, pso_gate --replay). Read on
+// the first draw; the GPU thread's alone.
+void VulkanRenderer::draw_record()
+{
+	static bool s_opened = false;
+	static std::FILE* s_file = nullptr;
+	static VulkanPipelineRecorder* s_recorder = nullptr;
+	if (!s_opened)
+	{
+		s_opened = true;
+		const char* path = std::getenv("PSO_RECORD");
+		if (path && *path)
+			s_file = std::fopen(path, "ab");
+		if (s_file)
+			s_recorder = new VulkanPipelineRecorder();
+		cemuLog_log(LogType::Force, "PSO_TRACE recording draw states to {}", s_file ? path : "nothing (set PSO_RECORD)");
+	}
+	if (!s_recorder)
+		return;
+	const LatteFetchShader* fetchShader = LatteSHRC_GetActiveFetchShader();
+	if (!fetchShader)
+		return;
+	const LatteDecompilerShader* vs = LatteSHRC_GetActiveVertexShader();
+	const LatteDecompilerShader* gs = LatteSHRC_GetActiveGeometryShader();
+	const LatteDecompilerShader* ps = LatteSHRC_GetActivePixelShader();
+	if (!s_recorder->Draw(*fetchShader, vs ? vs->baseHash : 0, gs ? gs->baseHash : 0, ps ? ps->baseHash + ps->auxHash : 0,
+			m_state.activeFBO->GetRenderPassObj()->m_hashForPipeline, LatteGPUState.contextNew))
+		return;
+	const std::span<const uint8> out = s_recorder->Output();
+	std::fwrite(out.data(), 1, out.size(), s_file);
+	std::fflush(s_file);
+	s_recorder->Taken();
+}
+#endif
+
 // The primitive topology and restart, dynamic in every pipeline with
 // VK_EXT_extended_dynamic_state and _2: the primitive type's, within the
 // class the pipeline was made for (VulkanPipelineKey_Minimal keys it). Set
@@ -1517,6 +1557,9 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 	m_state.activeGeometryDS = geometryDS;
 	m_state.descriptorSetsChanged = true;
 
+#ifdef PSO_TRACE
+	draw_record();
+#endif
 	draw_setRenderPass();
 
 	if (m_state.currentPipeline != vkObjPipeline->GetPipeline())
@@ -1724,6 +1767,9 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 	VkDescriptorSetInfo* pixelDS = m_state.activePixelDS;
 	VkDescriptorSetInfo* geometryDS = m_state.activeGeometryDS;
 
+#ifdef PSO_TRACE
+	draw_record();
+#endif
 	draw_setRenderPass();
 
 	if (m_state.currentPipeline != vkObjPipeline->GetPipeline())

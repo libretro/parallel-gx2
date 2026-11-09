@@ -33,7 +33,8 @@ LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/
 CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) \
 	$(SRC)/util/helpers/Deflate.cpp $(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
 	$(SRC)/util/helpers/Serializer.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
-	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.cpp \
+	$(SRC)/util/helpers/MappedFile.cpp
 
 all: pso_gate$(EXE)
 

@@ -56,3 +56,5 @@ bin/graphicPacks/*
 .DS_Store
 # the Makefile build
 /obj/
+# draw state recordings (PSO_RECORD, the shader/PSO gate)
+*.psorec

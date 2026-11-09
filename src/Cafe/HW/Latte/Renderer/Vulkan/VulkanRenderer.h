@@ -554,6 +554,9 @@ private:
 	void draw_updateRasterizer(bool forceUpdate);
 	void draw_updateVertexInput(bool forceUpdate, const PipelineInfo* pipelineInfo);
 	void draw_updateInputAssembly(bool forceUpdate);
+#ifdef PSO_TRACE
+	void draw_record();
+#endif
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();

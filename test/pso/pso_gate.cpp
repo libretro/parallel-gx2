@@ -19,13 +19,19 @@
 //    pipeline key, VulkanPipelineKey_Graphics), with each set of state the
 //    device can leave to the draw: a frame's shape from a seed, shader sets
 //    drawn into a scene, shadow and post pass with the materials, decals,
-//    depth-only passes, strips, fans and vertex layouts a title draws.
+//    depth-only passes, strips, fans and vertex layouts a title draws -
+//    and the same again after a round trip through the recording a
+//    PSO_TRACE build makes of a title's draws (VulkanPipelineRecord.h).
 //
 // Timed, reported, never gated (CI machines are shared; times are taken on
 // the developer's machines, docs/SHADER-STUTTER.md): rslc per shader, median,
 // p95, p99 and max over the corpus, with --repeat N.
 //
-// pso_gate <graphic packs> [--baseline FILE] [--write FILE] [--repeat N]
+// pso_gate <graphic packs> [--baseline FILE] [--write FILE] [--repeat N] [--record FILE]
+//   --record    write the replayed draws as a recording (an example for --replay)
+// pso_gate --replay FILE
+//   the pipelines a title's recorded draws make with each set of dynamic
+//   state (PSO_TRACE=1 build, PSO_RECORD=FILE): a private corpus, not gated
 //   --baseline  compare with FILE; worse fails, better fails too until FILE
 //               is updated in the same commit (the gate only ratchets down)
 //   --write     write the measured numbers to FILE
@@ -48,6 +54,8 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.h"
+#include "util/helpers/MappedFile.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <random>
@@ -239,6 +247,40 @@ static void MeasureRegisterRebuild()
 	s_metrics["cache entry register files: bytes allocated per 1000 rebuilt"] = s_allocBytes.load();
 }
 
+// Each set of state the device can leave to the draw: none, then each
+// extension the core enables on top of the ones before
+struct DynamicCaps
+{
+	const char* name;
+	uint32 flags;
+};
+static const DynamicCaps s_caps[] = {
+	{"nothing dynamic", 0},
+	{"extended dynamic state", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL},
+	{"+ _3 blend", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND},
+	{"+ _2", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND | VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER},
+	{"+ vertex input", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
+		VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT},
+	{"+ topology", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
+		VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT | VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY},
+};
+
+// the pipelines a recording's states make with each set
+static std::vector<size_t> CountRecording(std::span<const uint8> data, size_t& states, bool& valid)
+{
+	std::vector<std::set<uint64>> keys(std::size(s_caps));
+	states = 0;
+	valid = VulkanPipelineRecord_Read(data, [&](const VulkanPipelineRecordEntry& e) {
+		states++;
+		for (size_t c = 0; c < std::size(s_caps); c++)
+			keys[c].insert(VulkanPipelineRecord_Key(e, s_caps[c].flags));
+	});
+	std::vector<size_t> counts;
+	for (auto& k : keys)
+		counts.push_back(k.size());
+	return counts;
+}
+
 // A frame's draws from a seed: what changes between them is what a title
 // changes - the shaders, the render pass, a material's depth, cull and
 // blend state, the stencil reference, polygon offset on decals, depth-only
@@ -246,6 +288,8 @@ static void MeasureRegisterRebuild()
 // the vertex buffers' strides and offsets. The pipelines they make, counted
 // by the renderer's own key, with each set of state the device can leave
 // to the draw (none, then each extension the core enables on top).
+static std::string s_recordFile;
+
 static void MeasureReplay()
 {
 	using namespace Latte;
@@ -283,16 +327,22 @@ static void MeasureReplay()
 		sets.push_back(set);
 	}
 	LatteParsedFetchShaderAttribute attrs[2]{};
-	attrs[0] = {0, 0, E_HWFMT::HWFMT_32_32_32_FLOAT, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 0};
-	attrs[1] = {0, 1, E_HWFMT::HWFMT_8_8_8_8, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 12};
-	LatteParsedFetchShaderBufferGroup group{};
-	group.attributeBufferIndex = 0;
+	// positions and colors from buffer 3, a second set of coordinates from
+	// buffer 5 at a fixed stride
+	attrs[0] = {3, 0, E_HWFMT::HWFMT_32_32_32_FLOAT, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 0};
+	attrs[1] = {3, 1, E_HWFMT::HWFMT_8_8_8_8, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 12};
+	LatteParsedFetchShaderAttribute uv{5, 2, E_HWFMT::HWFMT_16_16_FLOAT, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 0};
+	LatteParsedFetchShaderBufferGroup group{}, group2{};
+	group.attributeBufferIndex = 3;
 	group.attribCount = 2;
 	group.attrib = attrs;
+	group2.attributeBufferIndex = 5;
+	group2.attribCount = 1;
+	group2.attrib = &uv;
 	LatteFetchShader fetch[2];
 	for (int f = 0; f < 2; f++)
 	{
-		fetch[f].bufferGroups = {group};
+		fetch[f].bufferGroups = {group, group2};
 		fetch[f].vkPipelineHashFragment = 0x51ED + f * 0x1000193;
 	}
 	const uint32 strides[] = {16, 20, 24, 28, 32};
@@ -321,24 +371,14 @@ static void MeasureReplay()
 		draws.push_back(d);
 	}
 
-	struct Caps
-	{
-		const char* name;
-		uint32 flags;
-	};
-	const Caps caps[] = {
-		{"nothing dynamic", 0},
-		{"extended dynamic state", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL},
-		{"+ _3 blend", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND},
-		{"+ _2", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND | VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER},
-		{"+ vertex input", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
-			VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT},
-		{"+ topology", VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL | VULKAN_PIPELINE_KEY_DYNAMIC_BLEND |
-			VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER | VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT | VULKAN_PIPELINE_KEY_DYNAMIC_TOPOLOGY},
-	};
 	auto lcr = std::make_unique<LatteContextRegister>();
 	uint64 previous = ~0ull;
-	for (const Caps& c : caps)
+	std::vector<size_t> direct;
+	// and recorded as a PSO_TRACE build records a title's draws: kept
+	// whole, and written out after each state as the core does
+	VulkanPipelineRecorder recorder, streamed;
+	std::vector<uint8> streamedOut;
+	for (const DynamicCaps& c : s_caps)
 	{
 		std::set<uint64> pipelines;
 		for (const Draw& d : draws)
@@ -355,10 +395,21 @@ static void MeasureReplay()
 			r[REGADDR::CB_BLEND0_CONTROL] = m.blend;
 			r[REGADDR::CB_TARGET_MASK] = d.depthOnly ? 0 : m.targetMask;
 			r[mmVGT_PRIMITIVE_TYPE] = d.primitive;
-			r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + 2] = d.stride << 11;
+			r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + 3 * 7 + 2] = d.stride << 11;
+			r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + 5 * 7 + 2] = 4 << 11;
 			pipelines.insert(VulkanPipelineKey_Graphics(&fetch[d.fetch], sets[d.set].vs, 0, sets[d.set].ps,
 				renderPasses[d.pass], *lcr, c.flags));
+			if (c.flags == 0)
+			{
+				recorder.Draw(fetch[d.fetch], sets[d.set].vs, 0, sets[d.set].ps, renderPasses[d.pass], *lcr);
+				if (streamed.Draw(fetch[d.fetch], sets[d.set].vs, 0, sets[d.set].ps, renderPasses[d.pass], *lcr))
+				{
+					streamedOut.insert(streamedOut.end(), streamed.Output().begin(), streamed.Output().end());
+					streamed.Taken();
+				}
+			}
 		}
+		direct.push_back(pipelines.size());
 		std::printf("replayed draws: %zu pipelines for %zu draws, %s\n", pipelines.size(), draws.size(), c.name);
 		s_metrics[std::string("replayed draws: pipelines, ") + c.name] = pipelines.size();
 		// each set leaves more to the draw: never more pipelines
@@ -369,8 +420,67 @@ static void MeasureReplay()
 		}
 		previous = pipelines.size();
 	}
+	// the recording replayed: the same pipelines with every set, one state
+	// for each the finest key tells apart
+	size_t states = 0;
+	bool valid = false;
+	const std::vector<size_t> replayed = CountRecording(recorder.Output(), states, valid);
+	std::printf("replayed draws, recorded: %zu states in %zu bytes\n", states, recorder.Output().size());
+	if (!valid || states != direct[0] || states != recorder.States() || replayed != direct)
+	{
+		std::printf("FAIL: the recording replays to other pipelines (%zu states for %zu)\n", states, direct[0]);
+		for (size_t c = 0; c < replayed.size(); c++)
+			std::printf("  %s: %zu, drawn %zu\n", s_caps[c].name, replayed[c], direct[c]);
+		s_failures++;
+	}
+	if (!std::equal(recorder.Output().begin(), recorder.Output().end(), streamedOut.begin(), streamedOut.end()) ||
+		!streamed.Output().empty())
+	{
+		std::printf("FAIL: written out after each state, the recording is not the same\n");
+		s_failures++;
+	}
+	// cut short: what was whole still read, the rest refused
+	const std::span<const uint8> recording = recorder.Output();
+	const std::span<const uint8> cut = recording.first(recording.size() - 5);
+	size_t cutStates = 0;
+	bool cutValid = true;
+	CountRecording(cut, cutStates, cutValid);
+	if (cutValid || cutStates != states - 1)
+	{
+		std::printf("FAIL: a recording cut short reads as whole (%zu states)\n", cutStates);
+		s_failures++;
+	}
+	// two sessions appended: each state still counted once
+	std::vector<uint8> twice(recording.begin(), recording.end());
+	twice.insert(twice.end(), recording.begin(), recording.end());
+	size_t twiceStates = 0;
+	bool twiceValid = false;
+	if (CountRecording(twice, twiceStates, twiceValid) != direct || !twiceValid || twiceStates != 2 * states)
+	{
+		std::printf("FAIL: two sessions in one recording count differently\n");
+		s_failures++;
+	}
+	if (!s_recordFile.empty())
+	{
+		std::ofstream out(s_recordFile, std::ios::binary);
+		out.write((const char*)recording.data(), recording.size());
+	}
 	for (int f = 0; f < 2; f++)
 		fetch[f].bufferGroups.clear();
+}
+
+// a title's recorded draws (PSO_TRACE=1 build, PSO_RECORD=FILE)
+static int Replay(const char* file)
+{
+	// read where the file is mapped, for as long as it is
+	const MappedFile data{fs::path(file)};
+	size_t states = 0;
+	bool valid = false;
+	const std::vector<size_t> counts = CountRecording({data.data(), data.size()}, states, valid);
+	std::printf("%s: %zu draw states%s\n", file, states, valid ? "" : " (then not a recording, or cut short)");
+	for (size_t c = 0; c < counts.size(); c++)
+		std::printf("  pipelines, %s: %zu\n", s_caps[c].name, counts[c]);
+	return valid ? 0 : 1;
 }
 
 static void ReportTimes()
@@ -444,9 +554,12 @@ static int Compare(const std::map<std::string, uint64_t>& base)
 
 int main(int argc, char** argv)
 {
+	if (argc == 3 && !std::strcmp(argv[1], "--replay"))
+		return Replay(argv[2]);
 	if (argc < 2)
 	{
-		std::fprintf(stderr, "usage: pso_gate <cemu_graphic_packs> [--baseline FILE] [--write FILE] [--repeat N]\n");
+		std::fprintf(stderr, "usage: pso_gate <cemu_graphic_packs> [--baseline FILE] [--write FILE] [--repeat N] [--record FILE]\n"
+			"       pso_gate --replay FILE\n");
 		return 2;
 	}
 	std::string baseline, write;
@@ -457,6 +570,8 @@ int main(int argc, char** argv)
 			baseline = argv[i + 1];
 		else if (!std::strcmp(argv[i], "--write"))
 			write = argv[i + 1];
+		else if (!std::strcmp(argv[i], "--record"))
+			s_recordFile = argv[i + 1];
 		else if (!std::strcmp(argv[i], "--repeat"))
 			repeat = std::max(1, std::atoi(argv[i + 1]));
 	}

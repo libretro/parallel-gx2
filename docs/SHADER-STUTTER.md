@@ -180,9 +180,16 @@ depth-only draws, strips and fans, two attribute offset layouts and five
 strides) through it, gating the pipelines for each set of state left to
 the draw: 1511 with nothing, 1484 with extended dynamic state, 1314 with
 _3's blending, 1199 with _2, 302 with vertex input, 119 with topology.
-The sequence is synthetic. A title's own draws would replace it as a
-private corpus; `PSO_TRACE` logs what a draw waited for, not the state it
-drew with, so recording them is still to do.
+The sequence is synthetic; a title's own draws are a private corpus. A
+`PSO_TRACE=1` build with `PSO_RECORD=FILE` in its environment appends each
+draw state that makes a key of its own with nothing left to the draw - the
+finest key, so every set's count follows from it - to FILE
+(`VulkanPipelineRecord.h`: the shaders, the render pass, the fetch
+shader's buffers and offsets, the register state compacted as the pipeline
+cache keeps it; about 100 bytes a state), and `pso_gate --replay FILE`
+counts the pipelines each set makes. Sessions append to one file; each
+state counts once. The gate round-trips its own draws through the
+recording and requires the same counts.
 
 `test/dynstate` draws 400 register states from a seed on lavapipe, each
 with a pipeline that bakes the depth, stencil, cull, blend, polygon offset,
@@ -192,8 +199,8 @@ draw (through the same setters the renderer uses,
 `_SetVertexInput` and `_SetInputAssembly`): quads of four vertices drawn
 as a list, a strip or a fan, read from a vertex buffer in a layout from
 the seed (buffer slots, semantics, stride, offset, a per-instance
-attribute), and requires the same picture to the byte. Next: recording a
-title's draws for the gate, then graphics pipeline libraries (M2).
+attribute), and requires the same picture to the byte. Next: graphics
+pipeline libraries (M2), measured on titles' recordings.
 
 - Make the state that only multiplies pipelines dynamic where the device
   has it: `VK_EXT_extended_dynamic_state` (cull, front face, topology,

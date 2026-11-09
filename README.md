@@ -40,7 +40,9 @@ with `CC`/`CXX` set to a MinGW-w64 cross compiler) for Windows,
 and a webOS SDK compiler as `CC`/`CXX` for webOS. `DEBUG=1` builds without
 optimisation, `SANITIZER=address` with a sanitizer, `PSO_TRACE=1` with every
 shader or pipeline compile a draw waits for written to the log with its frame
-and duration (`docs/SHADER-STUTTER.md`).
+and duration, and with `PSO_RECORD=FILE` set when the frontend starts, the
+draw states a title used recorded to FILE for `test/pso/pso_gate --replay`
+(`docs/SHADER-STUTTER.md`).
 
 ## Install
 

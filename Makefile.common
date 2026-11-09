@@ -438,6 +438,10 @@ ifeq ($(HAVE_VULKAN),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp \
 	$(CORE_DIR)/src/libretro/LibretroVkDevice.cpp \
 	$(CORE_DIR)/src/libretro/LibretroVkQueue.cpp
+   # the draw states a title used, recorded for the shader/PSO gate
+   ifeq ($(PSO_TRACE),1)
+      CORE_SOURCES_CXX += $(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.cpp
+   endif
 endif
 ifeq ($(HAVE_METAL),1)
    CORE_SOURCES_CXX += \
