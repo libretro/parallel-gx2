@@ -180,6 +180,18 @@ jobs:
           make -C test/pipeline_key clean
           SANITIZER=address,undefined ./test/pipeline_key/run_tests.sh
 
+      - name: "Dynamic state drawn"
+        # register states from a seed drawn on lavapipe with the depth,
+        # stencil, cull and blend state baked into the pipeline and left to
+        # the draw: the pictures match to the byte; plain, then under ASan +
+        # UBSan
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+          VN_REQUIRE_DEVICE=1 ./test/dynstate/run_tests.sh
+          make -C test/dynstate clean
+          VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined ./test/dynstate/run_tests.sh
+
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
         # files on it: plain, then under ASan + UBSan. The core's precompiled

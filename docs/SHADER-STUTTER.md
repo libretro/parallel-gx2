@@ -138,9 +138,14 @@ Done with `VK_EXT_extended_dynamic_state3` where the GPU has its color
 blend enable, equation and write mask features: the blend state is set by
 the draw (`draw_updateBlend`, from `VulkanPipelineKey_Blend`, which the
 pipeline compiler uses too) and out of the key, all but the logic op;
-`test/pipeline_key` replays 4096 blend states (one key). Next: `_2`
-(primitive restart, depth bias enable), dynamic vertex input, and the
-lavapipe replay that checks pipelines and pictures.
+`test/pipeline_key` replays 4096 blend states (one key).
+
+`test/dynstate` draws 400 register states from a seed on lavapipe, each
+with a pipeline that bakes the depth, stencil, cull and blend state in and
+one that takes it from the draw (through the same setters the renderer
+uses, `VulkanPipelineKey_SetDepthStencilCull` and `_SetBlend`), and
+requires the same picture to the byte. Next: `_2` (primitive restart,
+depth bias enable), dynamic vertex input, and replaying a title's draws.
 
 
 - Make the state that only multiplies pipelines dynamic where the device

@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 
 #include <bit>
 
@@ -260,4 +261,39 @@ bool VulkanPipelineKey_Blend(const LatteContextRegister& lcr, const VkFormat col
 			ConsumesBlendConstants(entry.dstAlphaBlendFactor);
 	}
 	return usesBlendConstants;
+}
+
+void VulkanPipelineKey_SetDepthStencilCull(VkCommandBuffer cb, const VulkanDepthStencilCull& s)
+{
+	vkCmdSetCullModeEXT(cb, s.cullMode);
+	vkCmdSetFrontFaceEXT(cb, s.frontFace);
+	vkCmdSetDepthTestEnableEXT(cb, s.depthTestEnable);
+	vkCmdSetDepthWriteEnableEXT(cb, s.depthWriteEnable);
+	vkCmdSetDepthCompareOpEXT(cb, s.depthCompareOp);
+	vkCmdSetStencilTestEnableEXT(cb, s.stencilTestEnable);
+	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_FRONT_BIT, s.frontFailOp, s.frontPassOp, s.frontDepthFailOp, s.frontCompareOp);
+	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_BACK_BIT, s.backFailOp, s.backPassOp, s.backDepthFailOp, s.backCompareOp);
+}
+
+void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAttachmentState* att, uint32 count)
+{
+	VkBool32 enables[8];
+	VkColorBlendEquationEXT equations[8];
+	VkColorComponentFlags masks[8];
+	if (count > 8)
+		count = 8;
+	for (uint32 i = 0; i < count; i++)
+	{
+		enables[i] = att[i].blendEnable;
+		equations[i].srcColorBlendFactor = att[i].srcColorBlendFactor;
+		equations[i].dstColorBlendFactor = att[i].dstColorBlendFactor;
+		equations[i].colorBlendOp = att[i].colorBlendOp;
+		equations[i].srcAlphaBlendFactor = att[i].srcAlphaBlendFactor;
+		equations[i].dstAlphaBlendFactor = att[i].dstAlphaBlendFactor;
+		equations[i].alphaBlendOp = att[i].alphaBlendOp;
+		masks[i] = att[i].colorWriteMask;
+	}
+	vkCmdSetColorBlendEnableEXT(cb, 0, count, enables);
+	vkCmdSetColorBlendEquationEXT(cb, 0, count, equations);
+	vkCmdSetColorWriteMaskEXT(cb, 0, count, masks);
 }

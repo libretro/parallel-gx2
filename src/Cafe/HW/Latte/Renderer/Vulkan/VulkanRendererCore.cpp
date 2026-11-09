@@ -1173,16 +1173,7 @@ void VulkanRenderer::draw_updateDepthStencilCull(bool forceUpdate)
 	m_state.prevPolygonCtrlU32 = polygonCtrl;
 	m_state.prevDepthControlU32 = depthControl;
 	m_state.prevPrimitiveTypeU32 = primitiveType;
-	const VulkanDepthStencilCull s = VulkanPipelineKey_DepthStencilCull(lcr);
-	VkCommandBuffer cb = m_state.currentCommandBuffer;
-	vkCmdSetCullModeEXT(cb, s.cullMode);
-	vkCmdSetFrontFaceEXT(cb, s.frontFace);
-	vkCmdSetDepthTestEnableEXT(cb, s.depthTestEnable);
-	vkCmdSetDepthWriteEnableEXT(cb, s.depthWriteEnable);
-	vkCmdSetDepthCompareOpEXT(cb, s.depthCompareOp);
-	vkCmdSetStencilTestEnableEXT(cb, s.stencilTestEnable);
-	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_FRONT_BIT, s.frontFailOp, s.frontPassOp, s.frontDepthFailOp, s.frontCompareOp);
-	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_BACK_BIT, s.backFailOp, s.backPassOp, s.backDepthFailOp, s.backCompareOp);
+	VulkanPipelineKey_SetDepthStencilCull(m_state.currentCommandBuffer, VulkanPipelineKey_DepthStencilCull(lcr));
 }
 
 // Blend enables, equations and write masks, dynamic in every pipeline with
@@ -1209,24 +1200,7 @@ void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* ren
 		formats[i] = renderPass->GetColorFormat(i);
 	VkPipelineColorBlendAttachmentState att[8];
 	VulkanPipelineKey_Blend(lcr, formats, att);
-	VkBool32 enables[8];
-	VkColorBlendEquationEXT equations[8];
-	VkColorComponentFlags masks[8];
-	for (int i = 0; i < 8; i++)
-	{
-		enables[i] = att[i].blendEnable;
-		equations[i].srcColorBlendFactor = att[i].srcColorBlendFactor;
-		equations[i].dstColorBlendFactor = att[i].dstColorBlendFactor;
-		equations[i].colorBlendOp = att[i].colorBlendOp;
-		equations[i].srcAlphaBlendFactor = att[i].srcAlphaBlendFactor;
-		equations[i].dstAlphaBlendFactor = att[i].dstAlphaBlendFactor;
-		equations[i].alphaBlendOp = att[i].alphaBlendOp;
-		masks[i] = att[i].colorWriteMask;
-	}
-	VkCommandBuffer cb = m_state.currentCommandBuffer;
-	vkCmdSetColorBlendEnableEXT(cb, 0, 8, enables);
-	vkCmdSetColorBlendEquationEXT(cb, 0, 8, equations);
-	vkCmdSetColorWriteMaskEXT(cb, 0, 8, masks);
+	VulkanPipelineKey_SetBlend(m_state.currentCommandBuffer, att, 8);
 }
 
 void VulkanRenderer::draw_updateDepthBias(bool forceUpdate)

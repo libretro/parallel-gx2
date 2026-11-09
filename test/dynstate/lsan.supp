@@ -1,0 +1,4 @@
+# The driver's own threads (lavapipe's rasterizer workers) keep allocations
+# past vkDestroyDevice; this test starts no thread of its own, so a leak
+# from a thread is the driver's.
+leak:start_thread

@@ -43,3 +43,9 @@ VulkanDepthStencilCull VulkanPipelineKey_DepthStencilCull(const LatteContextRegi
 // Returns whether a blend factor reads the blend constants.
 bool VulkanPipelineKey_Blend(const LatteContextRegister& lcr, const VkFormat colorFormats[8],
 	VkPipelineColorBlendAttachmentState out[8]);
+
+// Sets them on a command buffer, as dynamic state: what the draw does with
+// VK_EXT_extended_dynamic_state (the first) and _3's blend states (the
+// second, for count color attachments from the first)
+void VulkanPipelineKey_SetDepthStencilCull(VkCommandBuffer cb, const VulkanDepthStencilCull& s);
+void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAttachmentState* att, uint32 count);
