@@ -183,6 +183,18 @@ jobs:
           make -C test/pipeline_key clean
           SANITIZER=thread ./test/pipeline_key/run_tests.sh
 
+      - name: "Thread exit"
+        # a thread ended from deep inside what it runs, as the GPU thread
+        # ends on a close, linked as the core links its C++ runtime
+        # (statically): every destructor runs and nothing aborts; plain,
+        # under ASan + UBSan, and sixteen threads at once under TSan
+        run: |
+          ./test/thread_exit/run_tests.sh
+          make -C test/thread_exit clean
+          SANITIZER=address,undefined ./test/thread_exit/run_tests.sh
+          make -C test/thread_exit clean
+          SANITIZER=thread ./test/thread_exit/run_tests.sh
+
       - name: "Dynamic state drawn"
         # register states from a seed drawn on lavapipe with the state the
         # draw can set baked into the pipeline, left to the draw, and linked

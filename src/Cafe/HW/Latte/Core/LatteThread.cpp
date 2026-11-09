@@ -1,6 +1,7 @@
 #include <mutex>
 #include <thread>
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
+#include "util/helpers/ThreadExit.h"
 #ifdef _WIN32
 #include <process.h> // _endthreadex
 #endif
@@ -684,7 +685,8 @@ void Latte_Start()
 			;
 		return;
 	}
-	sLatteThread = std::thread(Latte_ThreadEntry);
+	// LatteThread_Exit ends it from wherever it is, through ThreadExit_Run
+	sLatteThread = std::thread([] { ThreadExit_Run(Latte_ThreadEntry); });
 	// wait until initialized - or until the thread is gone without getting
 	// there, which would otherwise be a wait for good
 	LatteGpuWake_WaitUntil([] {
@@ -813,8 +815,11 @@ void LatteThread_Exit()
 	// never unloaded (NNshi's module trace: one more after each game, with
 	// none of the threads still running).
 	_endthreadex(0);
-	#else
-	pthread_exit(nullptr);
-	#endif
 	cemu_assert_unimplemented();
+	#else
+	// back to Latte_Start's ThreadExit_Run, where the thread returns: a
+	// pthread_exit aborts in the statically linked C++ runtime's thread
+	// entry (ThreadExit.h)
+	ThreadExit_Unwind();
+	#endif
 }
