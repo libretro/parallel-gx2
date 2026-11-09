@@ -171,6 +171,9 @@ VKFUNC_DEVICE(vkCmdSetDepthWriteEnableEXT);
 VKFUNC_DEVICE(vkCmdSetDepthCompareOpEXT);
 VKFUNC_DEVICE(vkCmdSetStencilTestEnableEXT);
 VKFUNC_DEVICE(vkCmdSetStencilOpEXT);
+VKFUNC_DEVICE(vkCmdSetColorBlendEnableEXT);
+VKFUNC_DEVICE(vkCmdSetColorBlendEquationEXT);
+VKFUNC_DEVICE(vkCmdSetColorWriteMaskEXT);
 
 // synchronization2
 

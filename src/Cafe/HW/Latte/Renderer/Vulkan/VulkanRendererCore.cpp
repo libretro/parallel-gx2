@@ -77,7 +77,10 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 
 	stateHash = std::rotl<uint64>(stateHash, 13);
 
-	stateHash += VulkanPipelineKey_RenderState(lcr, VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state);
+	const auto& ext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions;
+	stateHash += VulkanPipelineKey_RenderState(lcr,
+		(ext.extended_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL : 0) |
+		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0));
 	stateHash = std::rotl<uint64>(stateHash, 17);
 	stateHash += renderPassObj->m_hashForPipeline;
 
@@ -1182,6 +1185,50 @@ void VulkanRenderer::draw_updateDepthStencilCull(bool forceUpdate)
 	vkCmdSetStencilOpEXT(cb, VK_STENCIL_FACE_BACK_BIT, s.backFailOp, s.backPassOp, s.backDepthFailOp, s.backCompareOp);
 }
 
+// Blend enables, equations and write masks, dynamic in every pipeline with
+// VK_EXT_extended_dynamic_state3: set when their registers or the render
+// pass (blending is off for its integer formats) changed, and with every
+// pipeline bound
+void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* renderPass)
+{
+	if (!m_featureControl.deviceExtensions.extended_dynamic_state3_blend)
+		return;
+	const LatteContextRegister& lcr = LatteGPUState.contextNew;
+	const uint32* regs = lcr.GetRawView();
+	uint32 key[10];
+	key[0] = regs[Latte::REGADDR::CB_COLOR_CONTROL];
+	key[1] = regs[Latte::REGADDR::CB_TARGET_MASK];
+	for (int i = 0; i < 8; i++)
+		key[2 + i] = regs[Latte::REGADDR::CB_BLEND0_CONTROL + i];
+	if (!forceUpdate && m_state.prevBlendRenderPass == renderPass && memcmp(m_state.prevBlendRegs, key, sizeof(key)) == 0)
+		return;
+	memcpy(m_state.prevBlendRegs, key, sizeof(key));
+	m_state.prevBlendRenderPass = renderPass;
+	VkFormat formats[8];
+	for (size_t i = 0; i < 8; i++)
+		formats[i] = renderPass->GetColorFormat(i);
+	VkPipelineColorBlendAttachmentState att[8];
+	VulkanPipelineKey_Blend(lcr, formats, att);
+	VkBool32 enables[8];
+	VkColorBlendEquationEXT equations[8];
+	VkColorComponentFlags masks[8];
+	for (int i = 0; i < 8; i++)
+	{
+		enables[i] = att[i].blendEnable;
+		equations[i].srcColorBlendFactor = att[i].srcColorBlendFactor;
+		equations[i].dstColorBlendFactor = att[i].dstColorBlendFactor;
+		equations[i].colorBlendOp = att[i].colorBlendOp;
+		equations[i].srcAlphaBlendFactor = att[i].srcAlphaBlendFactor;
+		equations[i].dstAlphaBlendFactor = att[i].dstAlphaBlendFactor;
+		equations[i].alphaBlendOp = att[i].alphaBlendOp;
+		masks[i] = att[i].colorWriteMask;
+	}
+	VkCommandBuffer cb = m_state.currentCommandBuffer;
+	vkCmdSetColorBlendEnableEXT(cb, 0, 8, enables);
+	vkCmdSetColorBlendEquationEXT(cb, 0, 8, equations);
+	vkCmdSetColorWriteMaskEXT(cb, 0, 8, masks);
+}
+
 void VulkanRenderer::draw_updateDepthBias(bool forceUpdate)
 {
 	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
@@ -1486,6 +1533,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 			draw_updateDepthBias(true);
 		draw_updateStencilState(true);
 		draw_updateDepthStencilCull(true);
+		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 	}
 	else
 	{
@@ -1493,6 +1541,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 			draw_updateDepthBias(false);
 		draw_updateStencilState(false);
 		draw_updateDepthStencilCull(false);
+		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1685,6 +1734,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 			draw_updateDepthBias(true);
 		draw_updateStencilState(true);
 		draw_updateDepthStencilCull(true);
+		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 	}
 	else
 	{
@@ -1692,6 +1742,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 			draw_updateDepthBias(false);
 		draw_updateStencilState(false);
 		draw_updateDepthStencilCull(false);
+		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 	}
 
 	// update blend constants

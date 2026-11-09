@@ -7,8 +7,9 @@
 //  - every state a pipeline bakes in still makes a key of its own, so
 //    nothing is drawn with a pipeline made for other state;
 //  - with VK_EXT_extended_dynamic_state the cull mode, front face and depth
-//    and stencil tests make no new key either, and what the draw sets for
-//    them is what a pipeline baked in before.
+//    and stencil tests make no new key either, with _3 the blend enables,
+//    equations and write masks, and what the draw sets for them is what a
+//    pipeline baked in before.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 
 #include <cstdio>
@@ -35,7 +36,7 @@ int main()
 	SetReg(*base, REGADDR::CB_COLOR_CONTROL, 0xCC0000 | (1 << 8));
 	SetReg(*base, REGADDR::CB_BLEND0_CONTROL, 0x00010001);
 	SetReg(*base, REGADDR::CB_TARGET_MASK, 0xF);
-	const uint64 key0 = VulkanPipelineKey_RenderState(*base, false);
+	const uint64 key0 = VulkanPipelineKey_RenderState(*base, 0);
 
 	// the replayed sequence: every stencil reference, with masks and the
 	// back face's values stepping along
@@ -45,7 +46,7 @@ int main()
 	{
 		SetReg(*r, REGADDR::DB_STENCILREFMASK, (i & 0xFF) | ((i * 7 & 0xFF) << 8) | ((i * 13 & 0xFF) << 16));
 		SetReg(*r, REGADDR::DB_STENCILREFMASK_BF, ((i * 3) & 0xFF) | ((i * 5 & 0xFF) << 8) | ((i * 11 & 0xFF) << 16));
-		keys.insert(VulkanPipelineKey_RenderState(*r, false));
+		keys.insert(VulkanPipelineKey_RenderState(*r, 0));
 	}
 	std::printf("pipeline keys for 1024 stencil reference and mask states: %zu\n", keys.size());
 	CHECK(keys.size() == 1 && *keys.begin() == key0);
@@ -76,7 +77,7 @@ int main()
 	{
 		auto s = std::make_unique<LatteContextRegister>(*base);
 		SetReg(*s, c.reg, c.value);
-		const uint64 k = VulkanPipelineKey_RenderState(*s, false);
+		const uint64 k = VulkanPipelineKey_RenderState(*s, 0);
 		if (k == key0)
 		{
 			std::printf("FAIL: %s does not change the key\n", c.what);
@@ -91,7 +92,7 @@ int main()
 		SetReg(*a, REGADDR::PA_CL_CLIP_CNTL, 1 << 22);
 		auto b = std::make_unique<LatteContextRegister>(*a);
 		SetReg(*b, REGADDR::PA_CL_VTE_CNTL, 1 << 1); // VPORT_X_OFFSET_ENA
-		CHECK(VulkanPipelineKey_RenderState(*a, false) != VulkanPipelineKey_RenderState(*b, false));
+		CHECK(VulkanPipelineKey_RenderState(*a, 0) != VulkanPipelineKey_RenderState(*b, 0));
 	}
 	// with stencil off, its fields are no part of the key
 	{
@@ -99,19 +100,19 @@ int main()
 		SetReg(*a, REGADDR::DB_DEPTH_CONTROL, depthControl & ~1u);
 		auto b = std::make_unique<LatteContextRegister>(*a);
 		SetReg(*b, REGADDR::DB_DEPTH_CONTROL, (depthControl & ~1u) ^ (1 << 8));
-		CHECK(VulkanPipelineKey_RenderState(*a, false) == VulkanPipelineKey_RenderState(*b, false));
+		CHECK(VulkanPipelineKey_RenderState(*a, 0) == VulkanPipelineKey_RenderState(*b, 0));
 	}
 	// extended dynamic state: cull, front face, depth and stencil are the
 	// draw's, everything else still keyed
 	{
 		std::set<uint64> dyn;
-		const uint64 dkey = VulkanPipelineKey_RenderState(*base, true);
+		const uint64 dkey = VulkanPipelineKey_RenderState(*base, VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL);
 		size_t keyed = 0;
 		for (const Change& c : baked)
 		{
 			auto s2 = std::make_unique<LatteContextRegister>(*base);
 			SetReg(*s2, c.reg, c.value);
-			const uint64 k = VulkanPipelineKey_RenderState(*s2, true);
+			const uint64 k = VulkanPipelineKey_RenderState(*s2, VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL);
 			const bool dynamic = c.reg == REGADDR::DB_DEPTH_CONTROL ||
 				(c.reg == REGADDR::PA_SU_SC_MODE_CNTL && c.value < 8);
 			if (dynamic && k != dkey)
@@ -138,10 +139,80 @@ int main()
 		{
 			SetReg(*r2, REGADDR::DB_DEPTH_CONTROL, i * 0x9E3779B1u);
 			SetReg(*r2, REGADDR::PA_SU_SC_MODE_CNTL, i & 7);
-			seq.insert(VulkanPipelineKey_RenderState(*r2, true));
+			seq.insert(VulkanPipelineKey_RenderState(*r2, VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL));
 		}
 		std::printf("pipeline keys for 4096 depth, stencil and cull states with extended dynamic state: %zu\n", seq.size());
 		CHECK(seq.size() == 1);
+	}
+	// extended dynamic state 3: blend enables, equations and write masks are
+	// the draw's, everything else (depth too, without the first) still keyed
+	{
+		const uint32 flags = VULKAN_PIPELINE_KEY_DYNAMIC_BLEND;
+		const uint64 bkey = VulkanPipelineKey_RenderState(*base, flags);
+		std::set<uint64> others;
+		size_t keyed = 0;
+		for (const Change& c : baked)
+		{
+			auto s2 = std::make_unique<LatteContextRegister>(*base);
+			SetReg(*s2, c.reg, c.value);
+			const uint64 k = VulkanPipelineKey_RenderState(*s2, flags);
+			const bool dynamic = c.reg == REGADDR::CB_BLEND0_CONTROL || c.reg == REGADDR::CB_TARGET_MASK ||
+				(c.reg == REGADDR::CB_COLOR_CONTROL && ((c.value ^ (0xCC0000 | (1 << 8))) & ~0xFF00u) == 0);
+			if (dynamic && k != bkey)
+			{
+				std::printf("FAIL: %s makes a new key with dynamic blending\n", c.what);
+				s_failures++;
+			}
+			if (!dynamic)
+			{
+				keyed++;
+				others.insert(k);
+				if (k == bkey)
+				{
+					std::printf("FAIL: %s does not change the key with dynamic blending\n", c.what);
+					s_failures++;
+				}
+			}
+		}
+		CHECK(others.size() == keyed);
+		// the logic op stays in the pipeline
+		auto rop = std::make_unique<LatteContextRegister>(*base);
+		SetReg(*rop, REGADDR::CB_COLOR_CONTROL, 0xEE0000 | (1 << 8));
+		CHECK(VulkanPipelineKey_RenderState(*rop, flags) != bkey);
+		std::set<uint64> seq;
+		auto r2 = std::make_unique<LatteContextRegister>(*base);
+		for (uint32 i = 0; i < 4096; i++)
+		{
+			SetReg(*r2, REGADDR::CB_COLOR_CONTROL, 0xCC0000 | ((i & 0xFF) << 8));
+			SetReg(*r2, REGADDR::CB_TARGET_MASK, i * 0x9E3779B1u);
+			for (int t = 0; t < 8; t++)
+				SetReg(*r2, REGADDR::CB_BLEND0_CONTROL + t, (i * 0x85EBCA6Bu) ^ (t * 0x1010101u));
+			seq.insert(VulkanPipelineKey_RenderState(*r2, flags));
+		}
+		std::printf("pipeline keys for 4096 blend states with dynamic blending: %zu\n", seq.size());
+		CHECK(seq.size() == 1);
+	}
+	// the blend state the draw sets and the pipeline bakes in
+	{
+		auto s2 = std::make_unique<LatteContextRegister>(*base);
+		VkFormat formats[8] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_UNORM};
+		// blending on 0 and 1; 1 is an integer format
+		SetReg(*s2, REGADDR::CB_COLOR_CONTROL, 0xCC0000 | (3 << 8));
+		// 0: src alpha, one minus src alpha, add
+		SetReg(*s2, REGADDR::CB_BLEND0_CONTROL, 4 | (0 << 5) | (5 << 8));
+		// 1: separate alpha, a constant color factor
+		SetReg(*s2, REGADDR::CB_BLEND0_CONTROL + 1, 1 | (0xD << 8) | (1u << 29) | (1 << 16) | (0 << 24));
+		SetReg(*s2, REGADDR::CB_TARGET_MASK, 0x7F);
+		VkPipelineColorBlendAttachmentState att[8];
+		const bool constants = VulkanPipelineKey_Blend(*s2, formats, att);
+		CHECK(att[0].blendEnable == VK_TRUE && att[1].blendEnable == VK_FALSE && att[2].blendEnable == VK_FALSE);
+		CHECK(att[0].srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA && att[0].dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+		CHECK(att[0].colorBlendOp == VK_BLEND_OP_ADD && att[0].srcAlphaBlendFactor == att[0].srcColorBlendFactor);
+		CHECK(att[0].colorWriteMask == 0xF && att[1].colorWriteMask == 0x7 && att[2].colorWriteMask == 0);
+		CHECK(att[1].dstColorBlendFactor == VK_BLEND_FACTOR_CONSTANT_COLOR && att[1].srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE);
+		CHECK(constants);
+		SetReg(*s2, REGADDR::CB_BLEND0_CONTROL + 1, 0);
+		CHECK(!VulkanPipelineKey_Blend(*s2, formats, att));
 	}
 	// what the draw sets is what the pipeline bakes in
 	{

@@ -177,56 +177,6 @@ VkFormat PipelineCompiler::GetVertexFormat(Latte::E_HWFMT format)
 	}
 }
 
-static VkBlendOp GetVkBlendOp(Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC combineFunc)
-{
-	switch (combineFunc)
-	{
-	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::DST_PLUS_SRC:
-		return VK_BLEND_OP_ADD;
-	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::SRC_MINUS_DST:
-		return VK_BLEND_OP_SUBTRACT;
-	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::MIN_DST_SRC:
-		return VK_BLEND_OP_MIN;
-	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::MAX_DST_SRC:
-		return VK_BLEND_OP_MAX;
-	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::DST_MINUS_SRC:
-		return VK_BLEND_OP_REVERSE_SUBTRACT;
-	default:
-		cemu_assert_suspicious();
-		return VK_BLEND_OP_ADD;
-	}
-}
-
-static VkBlendFactor GetVkBlendFactor(Latte::LATTE_CB_BLENDN_CONTROL::E_BLENDFACTOR factor)
-{
-	const VkBlendFactor factors[] =
-	{
-		/* 0x00 */ VK_BLEND_FACTOR_ZERO,
-		/* 0x01 */ VK_BLEND_FACTOR_ONE,
-		/* 0x02 */ VK_BLEND_FACTOR_SRC_COLOR,
-		/* 0x03 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
-		/* 0x04 */ VK_BLEND_FACTOR_SRC_ALPHA,
-		/* 0x05 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-		/* 0x06 */ VK_BLEND_FACTOR_DST_ALPHA,
-		/* 0x07 */ VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
-		/* 0x08 */ VK_BLEND_FACTOR_DST_COLOR,
-		/* 0x09 */ VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
-		/* 0x0A */ VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
-		/* 0x0B */ VK_BLEND_FACTOR_MAX_ENUM, // todo
-		/* 0x0C */ VK_BLEND_FACTOR_MAX_ENUM, // todo
-		/* 0x0D */ VK_BLEND_FACTOR_CONSTANT_COLOR,
-		/* 0x0E */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR,
-		/* 0x0F */ VK_BLEND_FACTOR_SRC1_COLOR,
-		/* 0x10 */ VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
-		/* 0x11 */ VK_BLEND_FACTOR_SRC1_ALPHA,
-		/* 0x12 */ VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA,
-		/* 0x13 */ VK_BLEND_FACTOR_CONSTANT_ALPHA,
-		/* 0x14 */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA
-	};
-	cemu_assert_debug((uint32)factor < std::size(factors));
-	return factors[(uint32)factor];
-}
-
 bool PipelineCompiler::ConsumesBlendConstants(VkBlendFactor blendFactor)
 {
 	if (blendFactor == VK_BLEND_FACTOR_CONSTANT_COLOR ||
@@ -537,74 +487,18 @@ void PipelineCompiler::InitRasterizerState(const LatteContextRegister& latteRegi
 	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 }
 
-bool _IsVkIntegerFormat(VkFormat fmt)
-{
-	return
-		// 8bit integer formats
-		fmt == VK_FORMAT_R8_UINT || fmt == VK_FORMAT_R8_SINT ||
-		fmt == VK_FORMAT_R8G8_UINT || fmt == VK_FORMAT_R8G8_SINT ||
-		fmt == VK_FORMAT_R8G8B8_UINT || fmt == VK_FORMAT_R8G8B8_SINT ||
-		fmt == VK_FORMAT_R8G8B8A8_UINT || fmt == VK_FORMAT_R8G8B8A8_SINT ||
-		fmt == VK_FORMAT_B8G8R8A8_UINT || fmt == VK_FORMAT_B8G8R8A8_SINT ||
-		// 16bit integer formats
-		fmt == VK_FORMAT_R16_UINT || fmt == VK_FORMAT_R16_SINT ||
-		fmt == VK_FORMAT_R16G16_UINT || fmt == VK_FORMAT_R16G16_SINT ||
-		fmt == VK_FORMAT_R16G16B16_UINT || fmt == VK_FORMAT_R16G16B16_SINT ||
-		fmt == VK_FORMAT_R16G16B16A16_UINT || fmt == VK_FORMAT_R16G16B16A16_SINT ||
-		// 32bit integer formats
-		fmt == VK_FORMAT_R32_UINT || fmt == VK_FORMAT_R32_SINT ||
-		fmt == VK_FORMAT_R32G32_UINT || fmt == VK_FORMAT_R32G32_SINT ||
-		fmt == VK_FORMAT_R32G32B32_UINT || fmt == VK_FORMAT_R32G32B32_SINT ||
-		fmt == VK_FORMAT_R32G32B32A32_UINT || fmt == VK_FORMAT_R32G32B32A32_SINT;
-}
-
-
 void PipelineCompiler::InitBlendState(const LatteContextRegister& latteRegister, PipelineInfo* pipelineInfo, bool& usesBlendConstants, VKRObjectRenderPass* renderPassObj)
 {
 	const Latte::LATTE_CB_COLOR_CONTROL& colorControlReg = latteRegister.CB_COLOR_CONTROL;
-	uint32 blendEnableMask = colorControlReg.get_BLEND_MASK();
-	uint32 renderTargetMask = latteRegister.CB_TARGET_MASK.get_MASK();
 
-	usesBlendConstants = false;
-
-	for (size_t i = 0; i < colorBlendAttachments.size(); i++)
-	{
-		auto& entry = colorBlendAttachments[i];
-		if (((blendEnableMask & (1 << i))) != 0)
-			entry.blendEnable = VK_TRUE;
-		else
-			entry.blendEnable = VK_FALSE;
-
-		if (entry.blendEnable != VK_FALSE && _IsVkIntegerFormat(renderPassObj->GetColorFormat(i)))
-		{
-			// force-disable blending for integer formats
-			entry.blendEnable = VK_FALSE;
-		}
-		
-		const auto& blendControlReg = latteRegister.CB_BLENDN_CONTROL[i];
-
-		entry.colorWriteMask = (renderTargetMask >> (i * 4)) & 0xF;
-		entry.colorBlendOp = GetVkBlendOp(blendControlReg.get_COLOR_COMB_FCN());
-		entry.srcColorBlendFactor = GetVkBlendFactor(blendControlReg.get_COLOR_SRCBLEND());
-		entry.dstColorBlendFactor = GetVkBlendFactor(blendControlReg.get_COLOR_DSTBLEND());
-		if (blendControlReg.get_SEPARATE_ALPHA_BLEND())
-		{
-			entry.alphaBlendOp = GetVkBlendOp(blendControlReg.get_ALPHA_COMB_FCN());
-			entry.srcAlphaBlendFactor = GetVkBlendFactor(blendControlReg.get_ALPHA_SRCBLEND());
-			entry.dstAlphaBlendFactor = GetVkBlendFactor(blendControlReg.get_ALPHA_DSTBLEND());
-		}
-		else
-		{
-			entry.alphaBlendOp = entry.colorBlendOp;
-			entry.srcAlphaBlendFactor = entry.srcColorBlendFactor;
-			entry.dstAlphaBlendFactor = entry.dstColorBlendFactor;
-		}
-
-		usesBlendConstants |= ConsumesBlendConstants(entry.srcColorBlendFactor);
-		usesBlendConstants |= ConsumesBlendConstants(entry.dstColorBlendFactor);
-		usesBlendConstants |= ConsumesBlendConstants(entry.srcAlphaBlendFactor);
-		usesBlendConstants |= ConsumesBlendConstants(entry.dstAlphaBlendFactor);
-	}
+	VkFormat colorFormats[8];
+	for (size_t i = 0; i < 8; i++)
+		colorFormats[i] = renderPassObj->GetColorFormat(i);
+	usesBlendConstants = VulkanPipelineKey_Blend(latteRegister, colorFormats, colorBlendAttachments.data());
+	// with the blend equations dynamic state (draw_updateBlend), the draw may
+	// pick factors that read them
+	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state3_blend)
+		usesBlendConstants = true;
 
 	// setup VkPipelineColorBlendStateCreateInfo
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -741,6 +635,12 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT);
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_OP_EXT);
+	}
+	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state3_blend)
+	{
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
 	}
 
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;

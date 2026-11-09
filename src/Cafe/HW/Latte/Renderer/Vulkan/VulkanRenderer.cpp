@@ -322,7 +322,7 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 		extern bool g_libretroVkCustomBorderColorWithoutFormat;
 		extern bool g_libretroVkHasPipelineCreationCacheControl, g_libretroVkHasCustomBorderColors;
 		extern bool g_libretroVkHasPipelineRobustness, g_libretroVkHasDepthClipEnable;
-		extern bool g_libretroVkHasExtendedDynamicState;
+		extern bool g_libretroVkHasExtendedDynamicState, g_libretroVkHasExtendedDynamicState3Blend;
 		const auto enabled = [](const char* name) {
 			return std::find(g_libretroVkDeviceExtensions.begin(), g_libretroVkDeviceExtensions.end(), name) != g_libretroVkDeviceExtensions.end();
 		};
@@ -363,6 +363,7 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 			ext.depth_clip_enable = false;
 		// on the core's device with its feature, or not used
 		ext.extended_dynamic_state = g_libretroVkHasExtendedDynamicState && enabled(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+		ext.extended_dynamic_state3_blend = g_libretroVkHasExtendedDynamicState3Blend && enabled(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 	}
 
 	memoryManager.reset(new VKRMemoryManager(this));

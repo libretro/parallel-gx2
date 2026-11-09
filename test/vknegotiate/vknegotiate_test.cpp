@@ -148,6 +148,24 @@ static void TestDevices()
 		if (gpuEds)
 			CHECK(g_libretroVkHasExtendedDynamicState && Has(w.asked, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME));
 		std::printf("extended dynamic state: %s\n", gpuEds ? (g_libretroVkHasExtendedDynamicState ? "on" : "NOT ON") : "the GPU has none");
+		// blending as dynamic state where the GPU has all three of its features
+		bool gpuEds3 = false;
+		for (auto& e : exts)
+			gpuEds3 = gpuEds3 || !strcmp(e.extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+		bool gpuEds3Blend = false;
+		if (gpuEds3)
+		{
+			VkPhysicalDeviceExtendedDynamicState3FeaturesEXT f3{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+			VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			f2.pNext = &f3;
+			vkGetPhysicalDeviceFeatures2(gpu, &f2);
+			gpuEds3Blend = f3.extendedDynamicState3ColorBlendEnable && f3.extendedDynamicState3ColorBlendEquation && f3.extendedDynamicState3ColorWriteMask;
+		}
+		if (gpuEds3Blend)
+			CHECK(g_libretroVkHasExtendedDynamicState3Blend && Has(w.asked, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME));
+		else
+			CHECK(!g_libretroVkHasExtendedDynamicState3Blend);
+		std::printf("dynamic blending: %s\n", gpuEds3Blend ? (g_libretroVkHasExtendedDynamicState3Blend ? "on" : "NOT ON") : "the GPU has none");
 		const char* own = nullptr;
 		for (auto& e : exts)
 			if (!Has(w.asked, e.extensionName))

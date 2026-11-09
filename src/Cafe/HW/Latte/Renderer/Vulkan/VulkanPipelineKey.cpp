@@ -2,8 +2,10 @@
 
 #include <bit>
 
-uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, bool dynamicDepthStencilCull)
+uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dynamic)
 {
+	const bool dynamicDepthStencilCull = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL) != 0;
+	const bool dynamicBlend = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_BLEND) != 0;
 	const uint32* ctxRegister = lcr.GetRawView();
 	uint64 stateHash = 0;
 
@@ -20,11 +22,14 @@ uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, bool dynam
 		stateHash += 0x2222;
 
 	const auto colorControlReg = ctxRegister[Latte::REGADDR::CB_COLOR_CONTROL];
-	stateHash += colorControlReg;
+	// BLEND_MASK (8-15), the write masks and the blend controls are dynamic
+	// state with the extension; the logic op and the rest are not
+	stateHash += dynamicBlend ? (colorControlReg & ~0xFF00u) : colorControlReg;
 
-	stateHash += ctxRegister[Latte::REGADDR::CB_TARGET_MASK];
+	if (!dynamicBlend)
+		stateHash += ctxRegister[Latte::REGADDR::CB_TARGET_MASK];
 
-	const uint32 blendEnableMask = (colorControlReg >> 8) & 0xFF;
+	const uint32 blendEnableMask = dynamicBlend ? 0 : (colorControlReg >> 8) & 0xFF;
 	if (blendEnableMask)
 	{
 		for (auto i = 0; i < 8; ++i)
@@ -139,4 +144,120 @@ VulkanDepthStencilCull VulkanPipelineKey_DepthStencilCull(const LatteContextRegi
 		s.backFailOp = s.frontFailOp;
 	}
 	return s;
+}
+
+static VkBlendOp BlendOp(Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC combineFunc)
+{
+	switch (combineFunc)
+	{
+	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::DST_PLUS_SRC:
+		return VK_BLEND_OP_ADD;
+	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::SRC_MINUS_DST:
+		return VK_BLEND_OP_SUBTRACT;
+	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::MIN_DST_SRC:
+		return VK_BLEND_OP_MIN;
+	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::MAX_DST_SRC:
+		return VK_BLEND_OP_MAX;
+	case Latte::LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC::DST_MINUS_SRC:
+		return VK_BLEND_OP_REVERSE_SUBTRACT;
+	default:
+		cemu_assert_suspicious();
+		return VK_BLEND_OP_ADD;
+	}
+}
+
+static VkBlendFactor BlendFactor(Latte::LATTE_CB_BLENDN_CONTROL::E_BLENDFACTOR factor)
+{
+	static const VkBlendFactor factors[] =
+	{
+		/* 0x00 */ VK_BLEND_FACTOR_ZERO,
+		/* 0x01 */ VK_BLEND_FACTOR_ONE,
+		/* 0x02 */ VK_BLEND_FACTOR_SRC_COLOR,
+		/* 0x03 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+		/* 0x04 */ VK_BLEND_FACTOR_SRC_ALPHA,
+		/* 0x05 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+		/* 0x06 */ VK_BLEND_FACTOR_DST_ALPHA,
+		/* 0x07 */ VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+		/* 0x08 */ VK_BLEND_FACTOR_DST_COLOR,
+		/* 0x09 */ VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+		/* 0x0A */ VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+		/* 0x0B */ VK_BLEND_FACTOR_MAX_ENUM, // todo
+		/* 0x0C */ VK_BLEND_FACTOR_MAX_ENUM, // todo
+		/* 0x0D */ VK_BLEND_FACTOR_CONSTANT_COLOR,
+		/* 0x0E */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR,
+		/* 0x0F */ VK_BLEND_FACTOR_SRC1_COLOR,
+		/* 0x10 */ VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
+		/* 0x11 */ VK_BLEND_FACTOR_SRC1_ALPHA,
+		/* 0x12 */ VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA,
+		/* 0x13 */ VK_BLEND_FACTOR_CONSTANT_ALPHA,
+		/* 0x14 */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA
+	};
+	cemu_assert_debug((uint32)factor < std::size(factors));
+	return (uint32)factor < std::size(factors) ? factors[(uint32)factor] : VK_BLEND_FACTOR_MAX_ENUM;
+}
+
+static bool ConsumesBlendConstants(VkBlendFactor f)
+{
+	return f == VK_BLEND_FACTOR_CONSTANT_COLOR || f == VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR ||
+		f == VK_BLEND_FACTOR_CONSTANT_ALPHA || f == VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+}
+
+static bool IsIntegerFormat(VkFormat fmt)
+{
+	return
+		// 8bit integer formats
+		fmt == VK_FORMAT_R8_UINT || fmt == VK_FORMAT_R8_SINT ||
+		fmt == VK_FORMAT_R8G8_UINT || fmt == VK_FORMAT_R8G8_SINT ||
+		fmt == VK_FORMAT_R8G8B8_UINT || fmt == VK_FORMAT_R8G8B8_SINT ||
+		fmt == VK_FORMAT_R8G8B8A8_UINT || fmt == VK_FORMAT_R8G8B8A8_SINT ||
+		fmt == VK_FORMAT_B8G8R8A8_UINT || fmt == VK_FORMAT_B8G8R8A8_SINT ||
+		// 16bit integer formats
+		fmt == VK_FORMAT_R16_UINT || fmt == VK_FORMAT_R16_SINT ||
+		fmt == VK_FORMAT_R16G16_UINT || fmt == VK_FORMAT_R16G16_SINT ||
+		fmt == VK_FORMAT_R16G16B16_UINT || fmt == VK_FORMAT_R16G16B16_SINT ||
+		fmt == VK_FORMAT_R16G16B16A16_UINT || fmt == VK_FORMAT_R16G16B16A16_SINT ||
+		// 32bit integer formats
+		fmt == VK_FORMAT_R32_UINT || fmt == VK_FORMAT_R32_SINT ||
+		fmt == VK_FORMAT_R32G32_UINT || fmt == VK_FORMAT_R32G32_SINT ||
+		fmt == VK_FORMAT_R32G32B32_UINT || fmt == VK_FORMAT_R32G32B32_SINT ||
+		fmt == VK_FORMAT_R32G32B32A32_UINT || fmt == VK_FORMAT_R32G32B32A32_SINT;
+}
+
+bool VulkanPipelineKey_Blend(const LatteContextRegister& lcr, const VkFormat colorFormats[8],
+	VkPipelineColorBlendAttachmentState out[8])
+{
+	const uint32 blendEnableMask = lcr.CB_COLOR_CONTROL.get_BLEND_MASK();
+	const uint32 renderTargetMask = lcr.CB_TARGET_MASK.get_MASK();
+	bool usesBlendConstants = false;
+	for (size_t i = 0; i < 8; i++)
+	{
+		auto& entry = out[i];
+		entry.blendEnable = (blendEnableMask & (1 << i)) != 0 ? VK_TRUE : VK_FALSE;
+		// force-disable blending for integer formats
+		if (entry.blendEnable != VK_FALSE && IsIntegerFormat(colorFormats[i]))
+			entry.blendEnable = VK_FALSE;
+
+		const auto& blendControlReg = lcr.CB_BLENDN_CONTROL[i];
+		entry.colorWriteMask = (renderTargetMask >> (i * 4)) & 0xF;
+		entry.colorBlendOp = BlendOp(blendControlReg.get_COLOR_COMB_FCN());
+		entry.srcColorBlendFactor = BlendFactor(blendControlReg.get_COLOR_SRCBLEND());
+		entry.dstColorBlendFactor = BlendFactor(blendControlReg.get_COLOR_DSTBLEND());
+		if (blendControlReg.get_SEPARATE_ALPHA_BLEND())
+		{
+			entry.alphaBlendOp = BlendOp(blendControlReg.get_ALPHA_COMB_FCN());
+			entry.srcAlphaBlendFactor = BlendFactor(blendControlReg.get_ALPHA_SRCBLEND());
+			entry.dstAlphaBlendFactor = BlendFactor(blendControlReg.get_ALPHA_DSTBLEND());
+		}
+		else
+		{
+			entry.alphaBlendOp = entry.colorBlendOp;
+			entry.srcAlphaBlendFactor = entry.srcColorBlendFactor;
+			entry.dstAlphaBlendFactor = entry.dstColorBlendFactor;
+		}
+		usesBlendConstants |= ConsumesBlendConstants(entry.srcColorBlendFactor) ||
+			ConsumesBlendConstants(entry.dstColorBlendFactor) ||
+			ConsumesBlendConstants(entry.srcAlphaBlendFactor) ||
+			ConsumesBlendConstants(entry.dstAlphaBlendFactor);
+	}
+	return usesBlendConstants;
 }

@@ -132,9 +132,15 @@ and the stencil test and operations are set by the draw
 (`draw_updateDepthStencilCull`) from the same function the pipeline
 compiler uses (`VulkanPipelineKey_DepthStencilCull`), and out of the key;
 `test/pipeline_key` replays 4096 such states (one key) and checks the
-values against what a pipeline baked in. Next: `_2` (primitive restart,
-depth bias enable), blend state with `_3` where present, dynamic vertex
-input, and the lavapipe replay that checks pipelines and pictures.
+values against what a pipeline baked in.
+
+Done with `VK_EXT_extended_dynamic_state3` where the GPU has its color
+blend enable, equation and write mask features: the blend state is set by
+the draw (`draw_updateBlend`, from `VulkanPipelineKey_Blend`, which the
+pipeline compiler uses too) and out of the key, all but the logic op;
+`test/pipeline_key` replays 4096 blend states (one key). Next: `_2`
+(primitive restart, depth bias enable), dynamic vertex input, and the
+lavapipe replay that checks pipelines and pictures.
 
 
 - Make the state that only multiplies pipelines dynamic where the device
