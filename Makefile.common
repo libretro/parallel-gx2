@@ -435,6 +435,7 @@ ifeq ($(HAVE_VULKAN),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp \
+	$(CORE_DIR)/src/libretro/LibretroVkDevice.cpp \
 	$(CORE_DIR)/src/libretro/LibretroVkQueue.cpp
 endif
 ifeq ($(HAVE_METAL),1)

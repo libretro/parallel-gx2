@@ -152,6 +152,17 @@ jobs:
           make -C test/audio_mix clean
           SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+      - name: "Vulkan negotiation"
+        # the device the core makes for the frontend: version 2 through the
+        # frontend's wrapper (how it adds Reflex's extensions), version 1 for
+        # a frontend without it; on lavapipe, plain then under ASan + UBSan
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+          VN_REQUIRE_DEVICE=1 ./test/vknegotiate/run_tests.sh
+          make -C test/vknegotiate clean
+          VN_REQUIRE_DEVICE=1 SANITIZER=address,undefined ./test/vknegotiate/run_tests.sh
+
       - name: "XML"
         # the core's XML layer over libretro-common's rxml and the settings
         # files on it: plain, then under ASan + UBSan. The core's precompiled

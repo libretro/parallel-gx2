@@ -214,6 +214,26 @@ test-audio-mix:
     - make -C test/audio_mix clean
     - SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+# The Vulkan context negotiation the core offers the frontend, on lavapipe:
+# version 2 through the frontend's wrapper, version 1 for a frontend without it.
+test-vknegotiate:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm dependencies/Vulkan-Headers
+    CC: gcc-12
+    CXX: g++-12
+    VN_REQUIRE_DEVICE: "1"
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+  script:
+    - ./test/vknegotiate/run_tests.sh
+    - make -C test/vknegotiate clean
+    - SANITIZER=address,undefined ./test/vknegotiate/run_tests.sh
+
 # The core's XML layer over libretro-common's rxml and the settings files on
 # it. The core's precompiled header wants fmt and glm.
 test-xml:
