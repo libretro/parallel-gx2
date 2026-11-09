@@ -8,7 +8,7 @@ CXX ?= g++
 CC ?= gcc
 DEP := ../../dependencies
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_RZSTD -DENABLE_VULKAN
-# what the core's precompiled header, which VFSFileStream.h includes, wants
+# what the core's precompiled header, which FileStream.h includes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
@@ -18,6 +18,8 @@ ifneq (,$(findstring mingw,$(CC)))
    LIBS += -static
    EXE := .exe
 endif
+include ../file_io.mk
+FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c \
 	$(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c \

@@ -3,7 +3,7 @@
 // What the last 144 octets of a file say, against what an archive's footer
 // has there: its magic, its version, and the archive's size, which has to be
 // the file's (as the stream reports it)
-static std::string DescribeFooter(VFSFileStream* stream, uint64 fileSize)
+static std::string DescribeFooter(FileStream* stream, uint64 fileSize)
 {
 	if (fileSize < 144)
 		return fmt::format("it is {} bytes long, too short for an archive", fileSize);
@@ -24,7 +24,7 @@ ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
 			*whyNot = std::move(why);
 		return nullptr;
 	};
-	std::unique_ptr<VFSFileStream> stream(VFSFileStream::openFile2(path));
+	std::unique_ptr<FileStream> stream(FileStream::openFile2(path));
 	if (!stream)
 		return fail("it could not be opened");
 	std::unique_ptr<ZArchive> archive(new ZArchive());
@@ -50,7 +50,7 @@ ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
 	return archive.release();
 }
 
-size_t ZArchive::Supply(const zar_request_t& req, VFSFileStream* stream) const
+size_t ZArchive::Supply(const zar_request_t& req, FileStream* stream) const
 {
 	size_t length = req.length;
 	if (!m_index.empty() && req.offset >= m_indexOffset)
@@ -157,7 +157,7 @@ uint64 ZArchiveFile::Read(uint64 offset, void* buffer, uint64 size)
 	}
 	if (!m_stream)
 	{
-		m_stream.reset(VFSFileStream::openFile2(m_archive.GetPath()));
+		m_stream.reset(FileStream::openFile2(m_archive.GetPath()));
 		if (!m_stream)
 			return 0;
 	}

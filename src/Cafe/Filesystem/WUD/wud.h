@@ -11,7 +11,7 @@ struct wuxHeader_t
 
 struct wud_t
 {
-	class VFSFileStream* fs;
+	class FileStream* fs;
 	long long		uncompressedSize;
 	bool			isCompressed;
 	// data used when compressed

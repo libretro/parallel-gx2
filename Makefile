@@ -235,6 +235,12 @@ ifeq ($(OS_APPLE),1)
    FLAGS += -D_XOPEN_SOURCE -D_DARWIN_C_SOURCE
 endif
 FLAGS += -fno-strict-aliasing
+# files read through their mapping (filestream_get_mapped_ptr, _view): mmap
+# where there is one, Windows through its own path without it. In every
+# translation unit, C and C++: libretro-common's vfs.h lays its file out by it
+ifneq ($(OS_WIN),1)
+   FLAGS += -DHAVE_MMAP
+endif
 
 # Everything the core does not export stays hidden; the libretro entry points
 # carry visibility("default") through RETRO_API.

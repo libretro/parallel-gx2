@@ -15,10 +15,12 @@
 //    Wild's .wua holds its meta/ (meta.xml first and last, the rest unsorted
 //    between): every name is found, the first of the two the one a lookup
 //    gives, as Cemu's reader takes it.
-// VFSFileStream is the stdio one below, counting what the reader opens and
-// reads, in place of the frontend's VFS.
+// FileStream is the one below, over libretro-common's filestream as the core's
+// is, counting what the reader opens and reads.
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 #include "Cafe/TitleList/ParsedMetaXml.h"
+
+#include <streams/file_stream.h>
 
 #include <atomic>
 #include <cstdio>
@@ -35,40 +37,36 @@ static int s_failures = 0;
 static std::atomic<uint32> s_opens{0};
 static std::atomic<uint32> s_reads{0};
 
-VFSFileStream* VFSFileStream::openFile2(const fs::path& path, bool allowWrite)
+FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
 {
-	FILE* f = std::fopen(path.string().c_str(), "rb");
+	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (!f)
 		return nullptr;
 	s_opens++;
-	VFSFileStream* s = new VFSFileStream();
-	s->m_vfsHandle = (struct retro_vfs_file_handle*)f;
-	s->m_isValid = true;
-	return s;
+	return new FileStream(f);
 }
 
-VFSFileStream::~VFSFileStream()
+FileStream::~FileStream()
 {
-	if (m_vfsHandle)
-		std::fclose((FILE*)m_vfsHandle);
+	filestream_close(m_file);
 }
 
-uint64 VFSFileStream::GetSize()
+uint64 FileStream::GetSize()
 {
-	FILE* f = (FILE*)m_vfsHandle;
-	std::fseek(f, 0, SEEK_END);
-	return (uint64)std::ftell(f);
+	const int64_t size = filestream_get_size(m_file);
+	return size < 0 ? 0 : (uint64)size;
 }
 
-void VFSFileStream::SetPosition(uint64 pos)
+void FileStream::SetPosition(uint64 pos)
 {
-	std::fseek((FILE*)m_vfsHandle, (long)pos, SEEK_SET);
+	filestream_seek(m_file, (int64_t)pos, RETRO_VFS_SEEK_POSITION_START);
 }
 
-uint32 VFSFileStream::readData(void* data, uint32 length)
+uint32 FileStream::readData(void* data, uint32 length)
 {
 	s_reads++;
-	return (uint32)std::fread(data, 1, length, (FILE*)m_vfsHandle);
+	const int64_t n = filestream_read(m_file, data, length);
+	return n < 0 ? 0 : (uint32)n;
 }
 
 // --- an archive ----------------------------------------------------------

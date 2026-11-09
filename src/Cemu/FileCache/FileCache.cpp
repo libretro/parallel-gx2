@@ -15,13 +15,29 @@ std::atomic<uint64> g_fileCacheProbes{0};
 #define FILECACHE_PROBE() ((void)0)
 #endif
 
+// test/compression holds a reader between finding an entry and reading it,
+// to change the file under it; nothing in the core's own build
+#ifdef FILECACHE_TEST_HOOKS
+void (*g_fileCacheReadHook)(uint64 name1, uint64 name2) = nullptr;
+#endif
+
 struct FileCacheAsyncJob
 {
 	FileCache* fileCache;
 	uint64 name1;
 	uint64 name2;
 	std::vector<uint8> fileData;
+	bool isDelete;
 };
+
+// a cache's writes done (FileCache::WaitForWrites); not the cache's own, as
+// the writer notifies after the last thing it does with the cache, when the
+// cache may already be going
+static EventWake& _fileCacheWritten()
+{
+	static ImmortalEventWake s_wake;
+	return s_wake.Get();
+}
 
 struct _FileCacheAsyncWriter
 {
@@ -52,14 +68,17 @@ struct _FileCacheAsyncWriter
 	// No lock (a mutex and condition variable before): the jobs go through
 	// an MpscList the one writer thread takes them all from at once, and it
 	// sleeps on an eventcount the jobs notify
-	void AddJob(FileCache* fileCache, const FileCache::FileName& name, const uint8* fileData, sint32 fileSize)
+	void AddJob(FileCache* fileCache, const FileCache::FileName& name, const uint8* fileData, sint32 fileSize, bool isDelete = false)
 	{
 		FileCacheAsyncJob async;
 		async.fileCache = fileCache;
 		async.name1 = name.name1;
 		async.name2 = name.name2;
-		async.fileData = { fileData, fileData + fileSize };
+		if (fileSize > 0)
+			async.fileData = { fileData, fileData + fileSize };
+		async.isDelete = isDelete;
 
+		fileCache->m_pendingWrites.fetch_add(1, std::memory_order_relaxed);
 		m_pending.fetch_add(1, std::memory_order_relaxed);
 		m_writeRequests.Push(std::move(async));
 		// the first job since the last Stop starts the thread
@@ -86,7 +105,14 @@ private:
 			m_writeRequests.TakeAll([&](FileCacheAsyncJob&& entry) {
 				any = true;
 				m_pending.fetch_sub(1, std::memory_order_relaxed);
-				entry.fileCache->AddFile({ entry.name1, entry.name2 }, entry.fileData.data(), (sint32)entry.fileData.size());
+				FileCache* cache = entry.fileCache;
+				if (entry.isDelete)
+					cache->_deleteFileInternal(entry.name1, entry.name2);
+				else
+					cache->_addFileInternal(entry.name1, entry.name2, entry.fileData.data(), (sint32)entry.fileData.size(), false);
+				// the last this thread does with the cache
+				cache->m_pendingWrites.fetch_sub(1, std::memory_order_acq_rel);
+				_fileCacheWritten().Notify();
 			});
 			if (!any && !m_isRunning.load(std::memory_order_seq_cst) && m_pending.load(std::memory_order_acquire) == 0)
 				return;
@@ -104,6 +130,13 @@ private:
 void FileCache_StopAsyncWriter()
 {
 	FileCacheAsyncWriter.Stop();
+}
+
+// What the stream buffers, handed to the file, where the readers' mapping
+// sees it
+static void _flushToFile(FileStream* fs)
+{
+	fs->Flush();
 }
 
 #define FILECACHE_MAGIC_V1					0x8371b694 // used prior to Cemu 1.7.4, only supported caches up to 4GB
@@ -147,7 +180,10 @@ FileCache* FileCache::Create(const fs::path& path, uint32 extraVersion)
 	// write file table
 	fs->SetPosition(fileCache->dataOffset+fileCache->fileTableOffset);
 	fs->writeData(fileCache->fileTableEntries, fileCache->fileTableSize);
+	_flushToFile(fs);
+	fileCache->m_path = path;
 	fileCache->_buildLookup();
+	fileCache->_publishInit();
 	// done
 	return fileCache;
 }
@@ -244,7 +280,9 @@ FileCache* FileCache::_OpenExisting(const fs::path& path, bool compareExtraVersi
 		delete fileCache;
 		return nullptr;
 	}
+	fileCache->m_path = path;
 	fileCache->_buildLookup();
+	fileCache->_publishInit();
 	return fileCache;
 }
 
@@ -265,6 +303,23 @@ FileCache* FileCache::Open(const fs::path& path)
 
 FileCache::~FileCache()
 {
+	WaitForWrites();
+	for (auto& chunk : m_slots)
+	{
+		std::atomic<const Record*>* slots = chunk.load(std::memory_order_relaxed);
+		if (!slots)
+			continue;
+		for (size_t i = 0; i < kSlotChunk; i++)
+			delete slots[i].load(std::memory_order_relaxed);
+		delete[] slots;
+	}
+	for (const Record* r : m_retiredRecords)
+		delete r;
+	delete m_lookup.load(std::memory_order_relaxed);
+	for (LookupTable* t : m_retiredLookups)
+		delete t;
+	delete m_mapping.load(std::memory_order_relaxed);
+	m_retiredMappings.TakeAll([](Mapping*&& m) { delete m; });
 	free(this->fileTableEntries);
 	delete fileStream;
 }
@@ -309,6 +364,8 @@ void FileCache::fileCache_updateFiletable(sint32 extraEntriesToAllocate)
 	fileStream->writeU64(this->dataOffset);
 	fileStream->writeU64(this->fileTableOffset);
 	fileStream->writeU32(this->fileTableSize);
+	_flushToFile(fileStream);
+	_publishCount();
 }
 
 uint8* _fileCache_compressFileData(const uint8* fileData, uint32 fileSize, sint32& compressedSize)
@@ -362,10 +419,10 @@ bool _uncompressFileData(const uint8* rawData, size_t rawSize, std::vector<uint8
 	return true;
 }
 
-void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileData, sint32 fileSize, bool noCompression)
+sint32 FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileData, sint32 fileSize, bool noCompression)
 {
 	if (fileSize < 0)
-		return;
+		return -1;
 	if (!enableCompression)
 		noCompression = true;
 	// compress data
@@ -391,7 +448,7 @@ void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileDa
 			rawSize = fileSize;
 		}
 	}
-	std::unique_lock lock(this->mutex);
+	const bool isTable = name1 == FILECACHE_FILETABLE_NAME1 && name2 == FILECACHE_FILETABLE_NAME2;
 	// the entry already under this name, else a free one
 	sint32 entryIndex = _findEntry(name1, name2);
 	const bool replacing = entryIndex >= 0;
@@ -431,48 +488,62 @@ void FileCache::_addFileInternal(uint64 name1, uint64 name2, const uint8* fileDa
 	// write file data
 	fileStream->SetPosition(this->dataOffset + currentStartOffset);
 	fileStream->writeData(rawData, rawSize);
-#ifdef __APPLE__
-    fileStream->Flush();
-#endif
 	// write file table entry
 	fileStream->SetPosition(this->dataOffset + this->fileTableOffset + (uint64)(sizeof(FileTableEntry)*entryIndex));
 	fileStream->writeData(this->fileTableEntries + entryIndex, sizeof(FileTableEntry));
-#ifdef __APPLE__
-    fileStream->Flush();
-#endif
-	_releaseSpace(replacedOffset, replacedSize);
+	// in the file before a reader can find it: the readers read the file
+	_flushToFile(fileStream);
+	if (isTable)
+		_releaseSpace(replacedOffset, replacedSize); // no reader reads the table
+	else
+		_publishEntry(entryIndex, true); // and what it replaces stays as it is (Record)
 	if (isCompressed)
 		free(rawData);
+	return entryIndex;
 }
 
 void FileCache::AddFile(const FileName&& name, const uint8* fileData, sint32 fileSize)
 {
-	this->_addFileInternal(name.name1, name.name2, fileData, fileSize, false);
+	AddFileAsync(name, fileData, fileSize);
+}
+
+void FileCache::AddFileAsync(const FileName& name, const uint8* fileData, sint32 fileSize)
+{
+	if (fileSize < 0)
+		return;
+	FileCacheAsyncWriter.AddJob(this, name, fileData, fileSize);
+}
+
+void FileCache::WaitForWrites()
+{
+	_fileCacheWritten().WaitUntil([this] { return m_pendingWrites.load(std::memory_order_acquire) == 0; });
 }
 
 void FileCache::Flush()
 {
-#ifndef _WIN32
-	// Windows' FileStream writes with WriteFile, which buffers nothing in the
-	// process, and has no Flush
-	std::unique_lock lock(this->mutex);
-	if (fileStream)
-		fileStream->Flush();
-#endif
+	WaitForWrites();
 }
 
 bool FileCache::DeleteFile(const FileName&& name)
 {
 	if( name.name1 == FILECACHE_FILETABLE_NAME1 && name.name2 == FILECACHE_FILETABLE_NAME2 )
 		return false; // prevent filetable from being deleted
-	std::unique_lock lock(this->mutex);
-	sint32 entryIndex = _findEntry(name.name1, name.name2);
-	if (entryIndex < 0)
+	// as of every write asked for before it
+	WaitForWrites();
+	if (!_findPublished(name.name1, name.name2))
 		return false;
+	FileCacheAsyncWriter.AddJob(this, name, nullptr, 0, true);
+	WaitForWrites();
+	return true;
+}
+
+void FileCache::_deleteFileInternal(uint64 name1, uint64 name2)
+{
+	sint32 entryIndex = _findEntry(name1, name2);
+	if (entryIndex < 0)
+		return;
 	FileTableEntry* entry = this->fileTableEntries + entryIndex;
-	const uint64 offset = entry->fileOffset;
-	const uint64 size = entry->fileSize;
-	_indexErase(name.name1, name.name2);
+	_indexErase(name1, name2);
 	entry->name1 = FILECACHE_FILETABLE_FREE_NAME;
 	entry->name2 = FILECACHE_FILETABLE_FREE_NAME;
 	entry->fileOffset = 0;
@@ -480,41 +551,54 @@ bool FileCache::DeleteFile(const FileName&& name)
 	// store updated entry to file cache
 	fileStream->SetPosition(this->dataOffset+this->fileTableOffset+(uint64)(sizeof(FileTableEntry)*entryIndex));
 	fileStream->writeData(this->fileTableEntries+entryIndex, sizeof(FileTableEntry));
-	_releaseSpace(offset, size);
+	_flushToFile(fileStream);
+	// its data stays as it is (Record)
+	_unpublishEntry(entryIndex);
 	m_freeEntryHint = std::min(m_freeEntryHint, entryIndex);
-	return true;
 }
 
-void FileCache::AddFileAsync(const FileName& name, const uint8* fileData, sint32 fileSize)
+bool FileCache::_readRecord(const Record* record, std::vector<uint8>& dataOut)
 {
-	FileCacheAsyncWriter.AddJob(this, name, fileData, fileSize);
-}
-
-bool FileCache::_getFileDataInternal(const FileTableEntry* entry, std::vector<uint8>& dataOut)
-{
-	fileStream->SetPosition(this->dataOffset + entry->fileOffset);
-	if ((entry->flags&FileTableEntry::FLAG_COMPRESSED) == 0)
+#ifdef FILECACHE_TEST_HOOKS
+	if (g_fileCacheReadHook)
+		g_fileCacheReadHook(record->name1, record->name2);
+#endif
+	const uint64 end = this->dataOffset + record->offset + record->size;
+	Mapping* mapping = m_mapping.load(std::memory_order_acquire);
+	// a new mapping for an entry written past the end of this one, or since
+	// a copy taken where the file could not be mapped; the one that loses a
+	// race to publish its own takes the winner's
+	for (int tries = 0; tries < 2; tries++)
 	{
-		// stored as is: read straight into the caller's buffer
-		dataOut.resize(entry->fileSize);
-		if (fileStream->readData(dataOut.data(), entry->fileSize) != entry->fileSize)
+		if (mapping && mapping->file.size() >= end && (mapping->file.mapped() || mapping->seq >= record->seq))
+			break;
+		Mapping* fresh = new Mapping(m_path, m_writeSeq.load(std::memory_order_acquire));
+		Mapping* expected = mapping;
+		if (m_mapping.compare_exchange_strong(expected, fresh, std::memory_order_acq_rel, std::memory_order_acquire))
 		{
-			dataOut.clear();
-			return false;
+			if (mapping)
+				m_retiredMappings.Push(std::move(mapping));
+			mapping = fresh;
 		}
+		else
+		{
+			delete fresh;
+			mapping = expected;
+		}
+	}
+	if (!mapping || mapping->file.size() < end)
+	{
+		dataOut.clear();
+		return false;
+	}
+	// straight from the file's pages into the caller's buffer
+	const uint8* data = mapping->file.data() + this->dataOffset + record->offset;
+	if (!record->compressed)
+	{
+		dataOut.assign(data, data + record->size);
 		return true;
 	}
-	// The compressed bytes go into a buffer this thread keeps (a new one
-	// for every entry was an allocation and a free per read) and inflate
-	// from there into the caller's buffer. One that grew for a very large
-	// entry is not kept.
-	thread_local std::vector<uint8> s_compressed;
-	s_compressed.resize(entry->fileSize);
-	bool ok = fileStream->readData(s_compressed.data(), entry->fileSize) == entry->fileSize &&
-		_uncompressFileData(s_compressed.data(), entry->fileSize, dataOut);
-	if (s_compressed.capacity() > 4 * 1024 * 1024)
-		std::vector<uint8>().swap(s_compressed);
-	if (!ok)
+	if (!_uncompressFileData(data, record->size, dataOut))
 	{
 		dataOut.clear();
 		return false;
@@ -524,44 +608,33 @@ bool FileCache::_getFileDataInternal(const FileTableEntry* entry, std::vector<ui
 
 bool FileCache::GetFile(const FileName&& name, std::vector<uint8>& dataOut)
 {
-	std::unique_lock lock(this->mutex);
-	sint32 entryIndex = _findEntry(name.name1, name.name2);
-	if (entryIndex < 0)
+	const Record* record = _findPublished(name.name1, name.name2);
+	if (!record)
 	{
 		dataOut.clear();
 		return false;
 	}
-	return _getFileDataInternal(this->fileTableEntries + entryIndex, dataOut);
+	return _readRecord(record, dataOut);
 }
 
 bool FileCache::GetFileByIndex(sint32 index, uint64* name1, uint64* name2, std::vector<uint8>& dataOut)
 {
-	// under the lock from the start: a write can grow (and move) the table
-	std::unique_lock lock(this->mutex);
-	if (index < 0 || index >= this->fileTableEntryCount)
+	if (index < 0 || index >= m_publishedCount.load(std::memory_order_acquire))
 		return false;
-	FileTableEntry* entry = this->fileTableEntries + index;
-	if (this->fileTableEntries == nullptr)
-	{
-		cemuLog_log(LogType::Force, "GetFileByIndex() fileTable is NULL");
+	// none for a free entry or the file table's own
+	const Record* record = _slot(index);
+	if (!record)
 		return false;
-	}
-	if (entry->name1 == FILECACHE_FILETABLE_FREE_NAME && entry->name2 == FILECACHE_FILETABLE_FREE_NAME)
-		return false;
-	if (entry->name1 == FILECACHE_FILETABLE_NAME1 && entry->name2 == FILECACHE_FILETABLE_NAME2)
-		return false;
-
 	if(name1)
-		*name1 = entry->name1;
+		*name1 = record->name1;
 	if(name2)
-		*name2 = entry->name2;
-	return _getFileDataInternal(entry, dataOut);
+		*name2 = record->name2;
+	return _readRecord(record, dataOut);
 }
 
 bool FileCache::HasFile(const FileName&& name)
 {
-	std::unique_lock lock(this->mutex);
-	return _findEntry(name.name1, name.name2) >= 0;
+	return _findPublished(name.name1, name.name2) != nullptr;
 }
 
 static inline bool _isFreeEntryName(uint64 name1, uint64 name2)
@@ -759,32 +832,159 @@ void FileCache::_releaseSpace(uint64 offset, uint64 size)
 
 sint32 FileCache::GetMaximumFileIndex()
 {
-	return this->fileTableEntryCount;
+	return m_publishedCount.load(std::memory_order_acquire);
 }
 
 sint32 FileCache::GetFileCount()
 {
-	std::unique_lock lock(this->mutex);
-	sint32 fileCount = 0;
-	FileTableEntry* entry = this->fileTableEntries;
-	FileTableEntry* entryLast = this->fileTableEntries+this->fileTableEntryCount;
-	while( entry < entryLast )
-	{
-		if( entry->name1 == FILECACHE_FILETABLE_FREE_NAME && entry->name2 == FILECACHE_FILETABLE_FREE_NAME )
-		{
-			entry++;
-			continue;
-		}
-		if( entry->name1 == FILECACHE_FILETABLE_NAME1 && entry->name2 == FILECACHE_FILETABLE_NAME2 )
-		{
-			entry++;
-			continue;
-		}
-		fileCount++;
-		entry++;
-	}
+	return m_liveCount.load(std::memory_order_acquire);
+}
 
-	return fileCount;
+static inline bool _isTableName(uint64 name1, uint64 name2)
+{
+	return name1 == FILECACHE_FILETABLE_NAME1 && name2 == FILECACHE_FILETABLE_NAME2;
+}
+
+const FileCache::Record* FileCache::_slot(sint32 entryIndex) const
+{
+	std::atomic<const Record*>* chunk = m_slots[(size_t)entryIndex / kSlotChunk].load(std::memory_order_acquire);
+	return chunk ? chunk[(size_t)entryIndex % kSlotChunk].load(std::memory_order_acquire) : nullptr;
+}
+
+const FileCache::Record* FileCache::_findPublished(uint64 name1, uint64 name2) const
+{
+	if (_isFreeEntryName(name1, name2))
+		return nullptr;
+	const LookupTable* table = m_lookup.load(std::memory_order_acquire);
+	if (!table)
+		return nullptr;
+	for (size_t slot = _entryNameHash(name1, name2) & table->mask;; slot = (slot + 1) & table->mask)
+	{
+		FILECACHE_PROBE();
+		const LookupSlot& s = table->slots[slot];
+		const sint32 index = s.index.load(std::memory_order_acquire);
+		if (index < 0)
+			return nullptr;
+		if (s.name1.load(std::memory_order_relaxed) != name1 || s.name2.load(std::memory_order_relaxed) != name2)
+			continue;
+		// the entry the name was last written to: deleted since, or another
+		// name's now, if its record says otherwise
+		const Record* record = _slot(index);
+		if (record && record->name1 == name1 && record->name2 == name2)
+			return record;
+		return nullptr;
+	}
+}
+
+// The writer's (and the opening thread's): a name's slot in the readers'
+// lookup, made or pointed at the entry
+void FileCache::_lookupSet(uint64 name1, uint64 name2, sint32 entryIndex)
+{
+	LookupTable* table = m_lookup.load(std::memory_order_relaxed);
+	auto find = [](LookupTable* t, uint64 n1, uint64 n2) -> LookupSlot& {
+		for (size_t slot = _entryNameHash(n1, n2) & t->mask;; slot = (slot + 1) & t->mask)
+		{
+			LookupSlot& s = t->slots[slot];
+			if (s.index.load(std::memory_order_relaxed) < 0)
+				return s;
+			if (s.name1.load(std::memory_order_relaxed) == n1 && s.name2.load(std::memory_order_relaxed) == n2)
+				return s;
+		}
+	};
+	if (table)
+	{
+		LookupSlot& s = find(table, name1, name2);
+		if (s.index.load(std::memory_order_relaxed) >= 0)
+		{
+			s.index.store(entryIndex, std::memory_order_release);
+			return;
+		}
+	}
+	if (!table || (table->used + 1) * 2 > table->mask + 1)
+	{
+		// twice the slots, the names put in again, then published
+		const size_t size = table ? (table->mask + 1) * 2 : 64;
+		LookupTable* grown = new LookupTable{ size - 1, 0, std::make_unique<LookupSlot[]>(size) };
+		if (table)
+			for (size_t i = 0; i <= table->mask; i++)
+			{
+				const LookupSlot& old = table->slots[i];
+				const sint32 index = old.index.load(std::memory_order_relaxed);
+				if (index < 0)
+					continue;
+				LookupSlot& s = find(grown, old.name1.load(std::memory_order_relaxed), old.name2.load(std::memory_order_relaxed));
+				s.name1.store(old.name1.load(std::memory_order_relaxed), std::memory_order_relaxed);
+				s.name2.store(old.name2.load(std::memory_order_relaxed), std::memory_order_relaxed);
+				s.index.store(index, std::memory_order_relaxed);
+				grown->used++;
+			}
+		m_lookup.store(grown, std::memory_order_release);
+		if (table)
+			m_retiredLookups.push_back(table);
+		table = grown;
+	}
+	LookupSlot& s = find(table, name1, name2);
+	s.name1.store(name1, std::memory_order_relaxed);
+	s.name2.store(name2, std::memory_order_relaxed);
+	s.index.store(entryIndex, std::memory_order_release);
+	table->used++;
+}
+
+// the table's size, chunks for it made before readers may look that far
+void FileCache::_publishCount()
+{
+	const size_t count = std::min<size_t>((size_t)this->fileTableEntryCount, kSlotChunk * kSlotChunks);
+	for (size_t c = 0; c * kSlotChunk < count; c++)
+		if (!m_slots[c].load(std::memory_order_relaxed))
+			m_slots[c].store(new std::atomic<const Record*>[kSlotChunk](), std::memory_order_release);
+	m_publishedCount.store((sint32)count, std::memory_order_release);
+}
+
+void FileCache::_publishEntry(sint32 entryIndex, bool named)
+{
+	if ((size_t)entryIndex >= kSlotChunk * kSlotChunks)
+		return; // past what a reader can be shown: not found
+	const FileTableEntry& e = this->fileTableEntries[entryIndex];
+	if (_isFreeEntryName(e.name1, e.name2) || _isTableName(e.name1, e.name2))
+		return;
+	_publishCount();
+	Record* record = new Record{ e.name1, e.name2, e.fileOffset, e.fileSize,
+		(e.flags & FileTableEntry::FLAG_COMPRESSED) != 0, m_writeSeq.fetch_add(1, std::memory_order_acq_rel) + 1 };
+	std::atomic<const Record*>& slot = m_slots[(size_t)entryIndex / kSlotChunk].load(std::memory_order_relaxed)[(size_t)entryIndex % kSlotChunk];
+	const Record* old = slot.exchange(record, std::memory_order_acq_rel);
+	if (old)
+		m_retiredRecords.push_back(old);
+	else
+		m_liveCount.fetch_add(1, std::memory_order_release);
+	// the entry its name's lookup finds; of two entries under one name in a
+	// file being opened, the first (named)
+	if (named)
+		_lookupSet(e.name1, e.name2, entryIndex);
+}
+
+void FileCache::_unpublishEntry(sint32 entryIndex)
+{
+	if ((size_t)entryIndex >= kSlotChunk * kSlotChunks)
+		return;
+	std::atomic<const Record*>* chunk = m_slots[(size_t)entryIndex / kSlotChunk].load(std::memory_order_relaxed);
+	if (!chunk)
+		return;
+	const Record* old = chunk[(size_t)entryIndex % kSlotChunk].exchange(nullptr, std::memory_order_acq_rel);
+	if (old)
+	{
+		m_retiredRecords.push_back(old);
+		m_liveCount.fetch_sub(1, std::memory_order_release);
+	}
+}
+
+void FileCache::_publishInit()
+{
+	_publishCount();
+	for (sint32 i = 0; i < this->fileTableEntryCount; i++)
+	{
+		const FileTableEntry& e = this->fileTableEntries[i];
+		_publishEntry(i, _findEntry(e.name1, e.name2) == i);
+	}
 }
 
 void fileCache_test()

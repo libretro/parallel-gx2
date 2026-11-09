@@ -145,9 +145,10 @@ What tends to break on a sync, none of which the conflict resolution shows:
 - **Extension gating.** See Architecture above - upstream adds calls guarded by
   device extension flags, and those flags cannot be trusted on a device the
   frontend created.
-- **File access.** Upstream code that opens files with `FileStream` has to go
-  through `VFSFileStream` here, otherwise the frontend's VFS (and Android SAF)
-  is bypassed.
+- **File access.** `FileStream` here is libretro-common's filestream through
+  `vfs_hybrid` (the frontend's VFS for the paths only it reaches, Android SAF
+  among them). Upstream code that opens files any other way - `std::fstream`,
+  `fopen`, `std::filesystem` - bypasses it, and has to be moved onto it.
 
 Debugging a crash on aarch64: `backtrace()` cannot unwind past the signal frame,
 so the posix handler also records `fault/pc/lr/sp` into `<system>/Cemu/log.txt`.

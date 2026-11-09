@@ -323,7 +323,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/Breadcrumb.cpp \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ExceptionHandler.cpp \
 	$(CORE_DIR)/src/Common/SysAllocator.cpp \
-	$(CORE_DIR)/src/Common/VFSFileStream.cpp \
+	$(CORE_DIR)/src/Common/FileStream.cpp \
 	$(CORE_DIR)/src/Common/cpu_features.cpp \
 	$(CORE_DIR)/src/Common/precompiled.cpp \
 	$(CORE_DIR)/src/audio/IAudioAPI.cpp \
@@ -374,7 +374,6 @@ CORE_SOURCES_CXX += $(GRAPHIC_PACKS_C)
 ifeq ($(OS_WIN),1)
    CORE_SOURCES_CXX += \
 	$(SRC_DIR)/Common/windows/platform.cpp \
-	$(SRC_DIR)/Common/windows/FileStream_win32.cpp \
 	$(SRC_DIR)/Common/ExceptionHandler/ExceptionHandler_win32.cpp \
 	$(SRC_DIR)/util/Fiber/FiberWin.cpp \
 	$(SRC_DIR)/util/MemMapper/MemMapperWin.cpp \
@@ -382,7 +381,6 @@ ifeq ($(OS_WIN),1)
 else
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/unix/platform.cpp \
-	$(CORE_DIR)/src/Common/unix/FileStream_unix.cpp \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ExceptionHandler_posix.cpp \
 	$(CORE_DIR)/src/util/MemMapper/MemMapperUnix.cpp \
 	$(CORE_DIR)/src/util/SystemInfo/SystemInfoUnix.cpp
@@ -594,6 +592,7 @@ LRC_SOURCES_C := \
 	$(LRC_DIR)/string/stdstring.c \
 	$(LRC_DIR)/time/rtime.c \
 	$(LRC_DIR)/utils/md5.c \
+	$(LRC_DIR)/vfs/vfs_hybrid.c \
 	$(LRC_DIR)/vfs/vfs_implementation.c
 # rslc: the shader compiler, SPIR-V alone (RSLC_NO_TEXT), with the samplers
 # and stages the console's shaders use (RSLC_EXTENDED)

@@ -17,11 +17,21 @@
 //    land on nothing still in use (the file table included), and the file
 //    reuses the space rewritten and deleted entries leave; and random
 //    writes, rewrites and deletes read back as written;
+//  - the cache file read without a lock: readers on four threads, while the
+//    writer thread writes, rewrites and deletes entries, grows the file
+//    table and appends past the readers' mapping, find an entry missing or
+//    exactly as one of its writes left it - never half written, never
+//    another entry's bytes - by name and by table index; once the writes
+//    are done, each reads as written last; and a reader held after it found
+//    an entry, while that entry is rewritten and deleted and new ones and
+//    a grown table are written after it, still reads the entry as it found
+//    it (what it found is not freed, nor its bytes written over);
 //  - the Vulkan pipeline cache's file: MappedFile gives a file's bytes (none
 //    for a missing or empty one), and ReplaceFileContents puts new contents
 //    in its place whole, leaving nothing beside it, or leaves it as it was;
 //  - the graphic packs compiled in (tools/pack_graphic_packs.c, built here
 //    as the core's build does) unpack to the files they were made from.
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -537,6 +547,8 @@ static void TestFileCacheLayout()
 	// what each name holds: -1 deleted, else the version written last
 	std::vector<int> version(2 * N + 1, -1);
 	auto verify = [&](FileCache* cache) {
+		// what was written, in the file: the writer thread's
+		cache->WaitForWrites();
 		bool all = true;
 		int live = 0;
 		for (int i = 1; i <= 2 * N; i++)
@@ -650,6 +662,7 @@ static void TestFileCacheLayout()
 		}
 		if (cache && op % 97 == 0)
 		{
+			cache->WaitForWrites();
 			int live = 0;
 			for (int k = 0; k < (int)model.size(); k++)
 			{
@@ -664,6 +677,189 @@ static void TestFileCacheLayout()
 	}
 	CHECK(all);
 	delete cache;
+	std::remove(path);
+}
+
+// what an entry holds: its name and version first, then bytes from both
+static std::vector<uint8_t> VersionedData(uint32_t name, uint32_t version)
+{
+	std::vector<uint8_t> d = Noise(24 + (name * 131 + version * 57) % 3000, name * 1000003u + version);
+	std::memcpy(d.data(), &name, 4);
+	std::memcpy(d.data() + 4, &version, 4);
+	return d;
+}
+
+static bool CheckVersioned(const std::vector<uint8_t>& d, uint32_t name)
+{
+	if (d.size() < 8)
+		return false;
+	uint32_t n, v;
+	std::memcpy(&n, d.data(), 4);
+	std::memcpy(&v, d.data() + 4, 4);
+	return n == name && d == VersionedData(name, v);
+}
+
+static void TestFileCacheConcurrentReads()
+{
+	const char* path = "filecache_readers.bin";
+	std::remove(path);
+	constexpr uint32_t NAMES = 300;
+	for (int compressed = 0; compressed < 2; compressed++)
+	{
+		FileCache* cache = FileCache::Create(path, 4);
+		CHECK(cache);
+		if (!cache)
+			return;
+		cache->UseCompression(compressed != 0);
+		std::atomic<bool> done{false};
+		std::atomic<int> bad{0}, found{0};
+		std::vector<std::thread> readers;
+		for (int t = 0; t < 4; t++)
+			readers.emplace_back([&, t] {
+				std::mt19937 rng(t + 1);
+				std::vector<uint8_t> got;
+				while (!done.load())
+				{
+					const uint32_t name = 1 + rng() % NAMES;
+					if (cache->GetFile({(uint64)name, 9}, got))
+					{
+						found++;
+						if (!CheckVersioned(got, name))
+							bad++;
+					}
+					uint64 n1 = 0, n2 = 0;
+					const sint32 index = (sint32)(rng() % (uint32_t)(cache->GetMaximumFileIndex() + 1));
+					if (cache->GetFileByIndex(index, &n1, &n2, got))
+					{
+						found++;
+						if (n2 != 9 || !CheckVersioned(got, (uint32_t)n1))
+							bad++;
+					}
+				}
+			});
+		// written, rewritten and deleted while they read: the table grows
+		// from its first 32 entries, and every write lands past the mapping
+		// the readers had
+		std::vector<int> latest(NAMES + 1, -1);
+		std::mt19937 rng(77);
+		for (uint32_t round = 0; round < 6; round++)
+		{
+			for (uint32_t name = 1; name <= NAMES; name++)
+			{
+				if (round > 0 && rng() % 3 != 0)
+					continue;
+				std::vector<uint8_t> d = VersionedData(name, round);
+				cache->AddFile({(uint64)name, 9}, d.data(), (sint32)d.size());
+				latest[name] = (int)round;
+			}
+			if (round == 3)
+				for (uint32_t name = 5; name <= NAMES; name += 11)
+				{
+					cache->DeleteFile({(uint64)name, 9});
+					latest[name] = -1;
+				}
+		}
+		cache->WaitForWrites();
+		done = true;
+		for (auto& t : readers)
+			t.join();
+		CHECK(bad == 0);
+		CHECK(found > 0);
+		bool all = true;
+		int live = 0;
+		for (uint32_t name = 1; name <= NAMES; name++)
+		{
+			std::vector<uint8_t> got;
+			const bool has = cache->GetFile({(uint64)name, 9}, got);
+			all &= latest[name] < 0 ? !has : has && got == VersionedData(name, (uint32_t)latest[name]);
+			live += latest[name] >= 0;
+		}
+		CHECK(all);
+		CHECK(cache->GetFileCount() == live);
+		delete cache;
+		// and as written, opened again
+		cache = FileCache::Open(path, false, 4);
+		CHECK(cache);
+		if (!cache)
+			return;
+		all = true;
+		for (uint32_t name = 1; name <= NAMES; name++)
+		{
+			std::vector<uint8_t> got;
+			const bool has = cache->GetFile({(uint64)name, 9}, got);
+			all &= latest[name] < 0 ? !has : has && got == VersionedData(name, (uint32_t)latest[name]);
+		}
+		CHECK(all);
+		delete cache;
+		std::remove(path);
+	}
+}
+
+extern void (*g_fileCacheReadHook)(uint64 name1, uint64 name2);
+static std::atomic<int> s_holdState{0}; // 1 armed, 2 holding a reader, 3 let go
+static std::atomic<uint64> s_holdName{0};
+
+static void HoldReader(uint64 name1, uint64)
+{
+	if (name1 != s_holdName.load())
+		return;
+	int armed = 1;
+	if (!s_holdState.compare_exchange_strong(armed, 2))
+		return;
+	while (s_holdState.load() != 3)
+		std::this_thread::yield();
+}
+
+static void TestFileCacheHeldReader()
+{
+	const char* path = "filecache_held.bin";
+	// the entry held: rewritten and then deleted, or deleted as it is
+	for (int scenario = 0; scenario < 4; scenario++)
+	{
+		const bool compressed = (scenario & 1) != 0;
+		const bool rewrite = (scenario & 2) == 0;
+		std::remove(path);
+		FileCache* cache = FileCache::Create(path, 4);
+		CHECK(cache);
+		if (!cache)
+			return;
+		cache->UseCompression(compressed);
+		for (uint32_t name = 1; name <= 20; name++)
+		{
+			std::vector<uint8_t> d = VersionedData(name, 0);
+			cache->AddFile({(uint64)name, 9}, d.data(), (sint32)d.size());
+		}
+		cache->WaitForWrites();
+		s_holdName = 7;
+		s_holdState = 1;
+		g_fileCacheReadHook = HoldReader;
+		std::vector<uint8_t> got;
+		bool ok = false;
+		std::thread reader([&] { ok = cache->GetFile({7, 9}, got); });
+		while (s_holdState.load() != 2)
+			std::this_thread::yield();
+		// under it: the entry changed, and new entries (more than the table
+		// holds) where its bytes were, if they could go there
+		if (rewrite)
+		{
+			std::vector<uint8_t> d = VersionedData(7, 1);
+			cache->AddFile({7, 9}, d.data(), (sint32)d.size());
+		}
+		cache->DeleteFile({7, 9});
+		for (uint32_t name = 100; name < 200; name++)
+		{
+			std::vector<uint8_t> n = VersionedData(name, 0);
+			cache->AddFile({(uint64)name, 9}, n.data(), (sint32)n.size());
+		}
+		cache->WaitForWrites();
+		s_holdState = 3;
+		reader.join();
+		g_fileCacheReadHook = nullptr;
+		s_holdState = 0;
+		CHECK(ok && got == VersionedData(7, 0));
+		CHECK(!cache->HasFile({7, 9}));
+		delete cache;
+	}
 	std::remove(path);
 }
 
@@ -750,6 +946,8 @@ int main(int argc, char** argv)
 	TestCacheEntries();
 	TestFileCacheWriter();
 	TestFileCacheLayout();
+	TestFileCacheConcurrentReads();
+	TestFileCacheHeldReader();
 	TestMappedFile();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);

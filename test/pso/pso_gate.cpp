@@ -183,6 +183,8 @@ static void MeasureFileCache()
 			}
 			cache->AddFile({ (uint64)i + 1, 7 }, data.data(), (sint32)data.size());
 		}
+		// written by the cache's writer thread
+		cache->WaitForWrites();
 		s_metrics["filecache table entries looked at to write 1000 entries"] = g_fileCacheProbes.load();
 		delete cache;
 	}

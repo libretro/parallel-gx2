@@ -8,8 +8,8 @@ corpus modules 523
 corpus words 3734858
 filecache table entries looked at to find 1000 entries 1321
 filecache table entries looked at to write 1000 entries 6510
-filecache.linux allocations per 1000 entries read 2008
-filecache.linux bytes allocated per 1000 entries read 4607224
+filecache.linux allocations per 1000 entries read 2000
+filecache.linux bytes allocated per 1000 entries read 4592312
 replayed draws: pipelines, + _2 1199
 replayed draws: pipelines, + _3 blend 1314
 replayed draws: pipelines, + topology 119

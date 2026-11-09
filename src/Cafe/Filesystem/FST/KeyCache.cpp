@@ -5,7 +5,7 @@
 #include "WindowSystem.h"
 #include "config/ActiveSettings.h"
 #include "util/crypto/aes128.h"
-#include "Common/VFSFileStream.h"
+#include "Common/FileStream.h"
 #include "util/helpers/StringHelpers.h"
 
 std::mutex mtxKeyCache;
@@ -64,11 +64,11 @@ void KeyCache_Prepare()
 	// load keys
 	auto keysPath = ActiveSettings::GetUserDataPath("keys.txt");
 	cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: keysPath='{}'", keysPath.generic_string());
-	VFSFileStream* fs_keys = VFSFileStream::openFile2(keysPath);
+	FileStream* fs_keys = FileStream::openFile2(keysPath);
 	if( !fs_keys )
 	{
 		cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: openFile2 failed, attempting createFile2");
-		fs_keys = VFSFileStream::createFile2(keysPath);
+		fs_keys = FileStream::createFile2(keysPath);
 		if(fs_keys)
 		{
 			cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: created keys.txt (writing default template)");

@@ -2,7 +2,7 @@
 
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/Filesystem/ZArchiveVFS.h"
-#include "Common/VFSFileStream.h"
+#include "Common/FileStream.h"
 
 #include <algorithm>
 #include <memory>
@@ -19,9 +19,9 @@ namespace TitleConverter
 		{
 			// Through the frontend's file system, not the OS's: a destination
 			// the host application authorised - a SAF tree on Android - is not
-			// a path open() would take. VFSFileStream falls back to the native
+			// a path open() would take. FileStream falls back to the native
 			// file when there is no frontend to ask.
-			VFSFileStream* fs{nullptr};
+			FileStream* fs{nullptr};
 			zar_writer_t* zaWriter{nullptr};
 
 			const std::atomic_bool* cancel{nullptr};
@@ -174,13 +174,13 @@ namespace TitleConverter
 		// bytes across and dropping the temporary file afterwards.
 		bool MoveIntoPlace(const fs::path& from, const fs::path& to)
 		{
-			if (VFSFileStream::Rename(from, to))
+			if (FileStream::Rename(from, to))
 				return true;
 
-			std::unique_ptr<VFSFileStream> src(VFSFileStream::openFile2(from));
+			std::unique_ptr<FileStream> src(FileStream::openFile2(from));
 			if (!src)
 				return false;
-			std::unique_ptr<VFSFileStream> dst(VFSFileStream::createFile2(to));
+			std::unique_ptr<FileStream> dst(FileStream::createFile2(to));
 			if (!dst)
 				return false;
 
@@ -199,7 +199,7 @@ namespace TitleConverter
 			dst.reset();
 			src.reset();
 
-			VFSFileStream::Remove(from);
+			FileStream::Remove(from);
 			return true;
 		}
 	}
@@ -415,14 +415,14 @@ namespace TitleConverter
 			WriterContext ctx;
 			ctx.cancel = &cancel;
 			ctx.onProgress = onProgress;
-			ctx.fs = VFSFileStream::createFile2(outputPathTmp);
+			ctx.fs = FileStream::createFile2(outputPathTmp);
 			// level 6, as the reference writer compresses
 			if (ctx.fs)
 				ctx.zaWriter = zar_writer_new(&WriterContext::WriteOutputData, &ctx, 6);
 			if (!ctx.zaWriter)
 			{
 				error = "could not create the output file";
-				VFSFileStream::Remove(outputPathTmp);
+				FileStream::Remove(outputPathTmp);
 				return false;
 			}
 
@@ -431,7 +431,7 @@ namespace TitleConverter
 				error = cancel.load() ? "cancelled" : "could not copy the title into the archive";
 				delete ctx.fs;
 				ctx.fs = nullptr;
-				VFSFileStream::Remove(outputPathTmp);
+				FileStream::Remove(outputPathTmp);
 				return false;
 			}
 
@@ -441,7 +441,7 @@ namespace TitleConverter
 			if (!ok)
 			{
 				error = "could not write the archive";
-				VFSFileStream::Remove(outputPathTmp);
+				FileStream::Remove(outputPathTmp);
 				return false;
 			}
 		}
@@ -454,23 +454,23 @@ namespace TitleConverter
 		if (!reader)
 		{
 			error = "the archive could not be read back";
-			VFSFileStream::Remove(outputPathTmp);
+			FileStream::Remove(outputPathTmp);
 			return false;
 		}
 		reader.reset();
 
 		// Never over a file that is there: the caller picked a free name, but
 		// one may have turned up while the archive was written.
-		if (VFSFileStream::Exists(outputPath))
+		if (FileStream::Exists(outputPath))
 		{
 			error = "a file of that name appeared in the meantime";
-			VFSFileStream::Remove(outputPathTmp);
+			FileStream::Remove(outputPathTmp);
 			return false;
 		}
 		if (!MoveIntoPlace(outputPathTmp, outputPath))
 		{
 			error = "could not move the archive into place";
-			VFSFileStream::Remove(outputPathTmp);
+			FileStream::Remove(outputPathTmp);
 			return false;
 		}
 		return true;

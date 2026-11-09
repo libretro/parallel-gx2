@@ -337,10 +337,18 @@ Now (as of `495ded87`):
   entries (9035857 and 501500 before; 6510 and 1321 now). The table grows
   by doubling, and its old copy is given up only once the header points
   past it.
-- Still to do: map the cache file once (VFS where the frontend gives one,
-  a native mapping otherwise) and inflate from the mapped span, with no
-  read buffer at all; read without the cache's mutex (positional reads,
-  the table published RCU).
+- Done: no lock, and no read buffer. Every change to the file is made by
+  the one writer thread; a reader finds an entry in what that thread
+  publishes (records that are never changed in place, a lookup whose
+  names are written once) and reads it through the file's mapping
+  (libretro-common's, through FileStream), inflating straight from the
+  mapped bytes into the caller's buffer: one allocation per entry read,
+  the caller's. What a reader may still be reading - a replaced record,
+  the bytes of a replaced or deleted entry - stays until the cache goes,
+  or the file is next opened. `test/compression` holds a reader between
+  finding an entry and reading it while the entry is rewritten or
+  deleted and new entries are written, and reads with four threads while
+  the writer writes.
 - Done: the `VkPipelineCache` file is handed to `vkCreatePipelineCache`
   mapped (`MappedFile`) and unmapped once the driver has its copy. It is
   saved when its contents changed (a CRC, not its size), through a file

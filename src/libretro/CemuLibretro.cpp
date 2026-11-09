@@ -74,7 +74,8 @@
 
 #include "Common/ExceptionHandler/ExceptionHandler.h"
 #include "Common/cpu_features.h"
-#include "Common/VFSFileStream.h"
+#include "Common/FileStream.h"
+#include <vfs/vfs_hybrid.h>
 
 #include "util/crypto/aes128.h"
 #include "util/helpers/helpers.h"
@@ -2037,7 +2038,7 @@ static std::string libretro_path_join(const std::string& dir, const std::string&
 // itself reports perfectly well if it ever happens.
 static bool libretro_directory_is_writable(const std::string& dir)
 {
-	const std::optional<bool> readOnly = VFSFileStream::IsReadOnly(_utf8ToPath(dir));
+	const std::optional<bool> readOnly = FileStream::IsReadOnly(_utf8ToPath(dir));
 	return !readOnly || !*readOnly;
 }
 
@@ -2184,7 +2185,7 @@ static void libretro_collect_wua_destinations(bool force = false)
 			[&candidate](const LibretroWuaDestination& kept) { return kept.path == candidate.path; });
 		if (duplicate)
 			continue;
-		if (!VFSFileStream::IsDirectory(_utf8ToPath(candidate.path)))
+		if (!FileStream::IsDirectory(_utf8ToPath(candidate.path)))
 			continue;
 		if (!libretro_directory_is_writable(candidate.path))
 		{
@@ -3171,52 +3172,14 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 			H264::SetFrontendDecoder(&decode);
 	}
 
-	// Ask for the frontend's file system before anything else looks at a path.
-	// On Android the Play Store build reaches storage through SAF, so the path
-	// handed to retro_load_game is a content:// URI that no open() will take -
-	// only the frontend can turn it into a readable file. Ask for the newest
-	// interface and walk down: v5 reports whether a path is read-only, v3 brings
-	// stat, v2 truncate, and VFSFileStream keeps to whichever version answers.
-	{
-		static const uint32_t vfs_versions[] = { 5, 4, 3, 2, 1 };
-		// No cap. It sat at 3 because a v5 interface appeared to fault in
-		// LatteShaderCache_Load, and that was wrong: the runs it was drawn from
-		// never reached retro_load_game at all, for a reason outside this core.
-		// v1 through v5 have since been walked one after another against a v5
-		// frontend and all five load the same title, so what the frontend
-		// actually has is what to take. CEMU_VFS_MAX_VERSION still pins a
-		// version for debugging.
-		uint32_t maxVersion = 5;
-		if (const char* pin = getenv("CEMU_VFS_MAX_VERSION"))
-		{
-			const int v = atoi(pin);
-			if (v >= 1 && v <= 5)
-				maxVersion = (uint32_t)v;
-		}
-		for (uint32_t wanted : vfs_versions)
-		{
-			if (wanted > maxVersion)
-				continue;
-			struct retro_vfs_interface_info vfs_info{};
-			vfs_info.required_interface_version = wanted;
-			vfs_info.iface = nullptr;
-			if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_info) && vfs_info.iface)
-			{
-				// What we hold is the interface we asked for, not whatever the
-				// frontend reports it is capable of. Taking the larger of the
-				// two was wrong twice over: it recorded a version whose
-				// functions this interface may not have, and it made the log
-				// line say v5 for a v3 negotiation, which hid exactly that
-				// while it was being investigated.
-				const uint32_t version = wanted;
-				VFSFileStream::SetVFSInterface(vfs_info.iface, version);
-				libretro_log(RETRO_LOG_INFO, "using the frontend's VFS interface (v%u)\n", version);
-				break;
-			}
-		}
-		if (!VFSFileStream::UsesVFS() && log_cb)
-			libretro_log(RETRO_LOG_INFO, "no VFS interface offered, reading files directly\n");
-	}
+	// The frontend's file system, before anything else looks at a path, for
+	// the paths only it can reach: on Android the Play Store build reaches
+	// storage through SAF, so the path handed to retro_load_game is a
+	// content:// URI that no open() will take. Every other path is opened by
+	// libretro-common itself, where a file can be mapped and lent rather than
+	// read (vfs_hybrid: local first; the frontend for URIs, and on Android
+	// after a local open fails).
+	vfs_hybrid_init(cb, log_cb);
 
 	// Declare that we need a game file
 	bool no_game = false;
@@ -4580,14 +4543,14 @@ static void libretro_start_wua_conversion(TitleId baseTitleId, const fs::path& g
 	fs::path outputPath = _utf8ToPath(libretro_path_join(outputDir, outputName));
 	{
 		const std::string stem = outputName.substr(0, outputName.size() - 4); // without ".wua"
-		for (int n = 2; VFSFileStream::Exists(outputPath) || VFSFileStream::Exists(fs::path(outputPath).concat(".tmp")); n++)
+		for (int n = 2; FileStream::Exists(outputPath) || FileStream::Exists(fs::path(outputPath).concat(".tmp")); n++)
 			outputPath = _utf8ToPath(libretro_path_join(outputDir, fmt::format("{} ({}).wua", stem, n)));
 	}
 
 	// The preconditions are checked again here rather than trusted from the
 	// menu: that was built when the content loaded, and the folder is somebody
 	// else's to change in the meantime.
-	if (!VFSFileStream::IsDirectory(_utf8ToPath(outputDir)))
+	if (!FileStream::IsDirectory(_utf8ToPath(outputDir)))
 	{
 		libretro_set_convert_status(fmt::format("Not converting: {} is not there any more", outputDir));
 		s_convert_finished = true;

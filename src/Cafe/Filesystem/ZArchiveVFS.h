@@ -1,10 +1,10 @@
 #pragma once
-#include "Common/VFSFileStream.h"
+#include "Common/FileStream.h"
 #include <formats/zar.h>
 
 // A Wii U archive (.wua, and Miiverse's OfflineDB.zar) read with
 // libretro-common's zar, opened the way the rest of Cemu opens a game image:
-// through VFSFileStream, so an archive the host application hands over - an
+// through FileStream, so an archive the host application hands over - an
 // Android content:// URI behind SAF, say - reads like any other file.
 //
 // The archive's index - everything past the compressed blocks: records,
@@ -37,7 +37,7 @@ public:
 	uint64 GetSize() const { return m_size; }
 
 	// What a reader asked for: from the index in memory, or from @stream
-	size_t Supply(const zar_request_t& req, VFSFileStream* stream) const;
+	size_t Supply(const zar_request_t& req, FileStream* stream) const;
 
 private:
 	ZArchive() = default;
@@ -65,5 +65,5 @@ private:
 	const ZArchive& m_archive;
 	ZArchive::Node m_file;
 	zar_t* m_reader{};
-	std::unique_ptr<VFSFileStream> m_stream;
+	std::unique_ptr<FileStream> m_stream;
 };

@@ -16,11 +16,9 @@ CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm \
 	-include $(SRC)/Common/precompiled.h
 # malloc counted alongside operator new
 LIBS := -lpthread -lm -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
-FILESTREAM := $(SRC)/Common/unix/FileStream_unix.cpp
 ifneq (,$(findstring mingw,$(CC)))
    LIBS += -static
    EXE := .exe
-   FILESTREAM := $(SRC)/Common/windows/FileStream_win32.cpp
 else
    # the Vulkan loader the key's setters would call through
    LIBS += -ldl
@@ -30,7 +28,10 @@ LRC_SRCS := $(LRC)/gfx/shaders/rslc_front.c $(LRC)/gfx/shaders/rslc_ir.c $(LRC)/
 	$(LRC)/features/features_cpu.c $(LRC)/compat/compat_strl.c $(LRC)/time/rtime.c \
 	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c
-CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILESTREAM) \
+include ../file_io.mk
+LRC_SRCS += $(FILE_IO_C)
+FLAGS += $(FILE_IO_FLAGS)
+CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILE_IO_CXX) \
 	$(SRC)/util/helpers/Deflate.cpp $(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
 	$(SRC)/util/helpers/Serializer.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.cpp \
