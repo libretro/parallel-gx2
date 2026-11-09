@@ -13,7 +13,7 @@
 #include "boss_service.h"
 #include "boss_common.h"
 
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 #include <curl/curl.h>
 #include "util/crypto/sha.h"
 
@@ -585,14 +585,14 @@ namespace iosu::boss
 
 		std::vector<NbdlQueuedFile> ParseNbdlTasksheet(std::span<uint8> xmlContent)
 		{
-			pugi::xml_document doc;
-			pugi::xml_parse_result result = doc.load_buffer(xmlContent.data(), xmlContent.size());
+			xml::Document doc;
+			bool result = doc.load(xmlContent.data(), xmlContent.size());
 			if (!result)
 				return {};
 			std::vector<NbdlQueuedFile> fileList;
-			for (pugi::xml_node sheet = doc.child("TaskSheet"); sheet; sheet = sheet.next_sibling("TaskSheet"))
+			for (xml::Node sheet = doc.child("TaskSheet"); sheet; sheet = sheet.next_sibling("TaskSheet"))
 			{
-				pugi::xml_node serviceStatus = sheet.child("ServiceStatus");
+				xml::Node serviceStatus = sheet.child("ServiceStatus");
 				if (strcmp(serviceStatus.child_value(), "close") == 0)
 				{
 					// service is closed, skip all files
@@ -604,7 +604,7 @@ namespace iosu::boss
 					cemuLog_log(LogType::Force, "BossNbdl: Unknown ServiceStatus value: {}", serviceStatus.child_value());
 				}
 				// read and verify titleId
-				pugi::xml_node nodeTitleId = sheet.child("TitleId");
+				xml::Node nodeTitleId = sheet.child("TitleId");
 				if (nodeTitleId)
 				{
 					uint64 titleId;
@@ -617,7 +617,7 @@ namespace iosu::boss
 					cemuLog_log(LogType::Force, "BossNbdl: Missing TitleId field in tasksheet");
 				}
 				// read and verify taskId
-				pugi::xml_node nodeTaskId = sheet.child("TaskId");
+				xml::Node nodeTaskId = sheet.child("TaskId");
 				if (nodeTaskId)
 				{
 					if (strcmp(nodeTaskId.child_value(), m_taskId.id.c_str()) != 0)
@@ -629,24 +629,24 @@ namespace iosu::boss
 				}
 
 				// read files list
-				pugi::xml_node files = sheet.child("Files");
+				xml::Node files = sheet.child("Files");
 				if (!files)
 					continue;
-				for (pugi::xml_node file = files.child("File"); file; file = file.next_sibling("File"))
+				for (xml::Node file = files.child("File"); file; file = file.next_sibling("File"))
 				{
-					pugi::xml_node fileName = file.child("Filename");
+					xml::Node fileName = file.child("Filename");
 					if (!fileName)
 						continue;
-					pugi::xml_node dataId = file.child("DataId");
+					xml::Node dataId = file.child("DataId");
 					if (!dataId)
 						continue;
-					pugi::xml_node url = file.child("Url");
+					xml::Node url = file.child("Url");
 					if (!url)
 						continue;
-					pugi::xml_node size = file.child("Size");
+					xml::Node size = file.child("Size");
 					if (!size)
 						continue;
-					pugi::xml_node type = file.child("Type");
+					xml::Node type = file.child("Type");
 					if (!type)
 						continue;
 					uint32 fileType;

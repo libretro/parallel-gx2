@@ -5,9 +5,9 @@
 #include "input/api/ControllerState.h"
 #include "util/helpers/SeqlockValue.h"
 
-namespace pugi
+namespace xml
 {
-	class xml_node;
+	class Node;
 }
 
 enum Buttons2 : uint64
@@ -130,8 +130,8 @@ public:
 
 	virtual std::string get_button_name(uint64 button) const;
 
-	virtual void save(pugi::xml_node& node){}
-	virtual void load(const pugi::xml_node& node){}
+	virtual void save(xml::Node& node){}
+	virtual void load(const xml::Node& node){}
 
 	struct AxisSetting
 	{

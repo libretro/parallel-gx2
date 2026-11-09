@@ -88,8 +88,8 @@ public:
 
 	bool set_default_mapping(const std::shared_ptr<ControllerBase>& controller) override;
 
-	void load(const pugi::xml_node& node) override;
-	void save(pugi::xml_node& node) override;
+	void load(const xml::Node& node) override;
+	void save(xml::Node& node) override;
 
 private:
 	bool m_mic_active = false;

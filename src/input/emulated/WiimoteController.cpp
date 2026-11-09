@@ -67,7 +67,7 @@ glm::vec2 WiimoteController::get_trigger() const
 	return {};
 }
 
-void WiimoteController::load(const pugi::xml_node& node)
+void WiimoteController::load(const xml::Node& node)
 {
 	base_type::load(node);
 
@@ -75,11 +75,11 @@ void WiimoteController::load(const pugi::xml_node& node)
 		m_device_type = ConvertString<WPADDeviceType>(value.child_value());
 }
 
-void WiimoteController::save(pugi::xml_node& node)
+void WiimoteController::save(xml::Node& node)
 {
 	base_type::save(node);
 
-	node.append_child("device_type").append_child(pugi::node_pcdata).set_value(fmt::format("{}", (int)m_device_type).c_str());
+	node.append_child("device_type").text().set(fmt::format("{}", (int)m_device_type).c_str());
 }
 
 uint32 WiimoteController::s_get_emulated_button_flag(uint32 id)

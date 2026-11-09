@@ -2,7 +2,7 @@
 #include "config/ActiveSettings.h"
 #include "input/ControllerFactory.h"
 #include <boost/property_tree/ini_parser.hpp>
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/EventService.h"
 
@@ -83,11 +83,11 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 		if (!xmlData || xmlData->empty())
 			return false;
 	
-		pugi::xml_document doc;
-		if (!doc.load_buffer(xmlData->data(), xmlData->size()))
+		xml::Document doc;
+		if (!doc.load(xmlData->data(), xmlData->size()))
 			return false;
 
-		const pugi::xml_node root = doc.document_element();
+		const xml::Node root = doc.document_element();
 
 		const auto type_node = root.child("type");
 		if (!type_node)
@@ -103,9 +103,9 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 		// custom settings
 		emulated_controller->load(root);
 
-		for (const auto controller_node : root.select_nodes("controller"))
+		for (const auto controller_node : root.children("controller"))
 		{
-			const auto cnode = controller_node.node();
+			const auto cnode = controller_node;
 			const auto api_node = cnode.child("api");
 			if (!api_node)
 				continue;
@@ -164,9 +164,9 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 				// mappings
 				if (const auto mappings_node = cnode.child("mappings"))
 				{
-					for (const auto& entry : mappings_node.select_nodes("entry"))
+					for (const auto& entry : mappings_node.children("entry"))
 					{
-						const auto enode = entry.node();
+						const auto enode = entry;
 
 						const auto mapping_node = enode.child("mapping");
 						if (!mapping_node)
@@ -236,38 +236,35 @@ bool InputManager::migrate_config(const fs::path& file_path)
 		fs::path out_file = file_path;
 		out_file.replace_extension(".xml");
 
-		pugi::xml_document doc;
-		auto declaration_node = doc.append_child(pugi::node_declaration);
-		declaration_node.append_attribute("version") = "1.0";
-		declaration_node.append_attribute("encoding") = "UTF-8";
+		xml::Document doc;
 
 		auto emulated_controller = doc.append_child("emulated_controller");
-		emulated_controller.append_child("type").append_child(pugi::node_pcdata).set_value(emulate_string.c_str());
+		emulated_controller.append_child("type").text().set(emulate_string.c_str());
 
 		bool has_keyboard = api_string == to_string(InputAPI::Keyboard);
 		if (!has_keyboard) // test if only keyboard configured
 		{
 			auto controller = emulated_controller.append_child("controller");
-			controller.append_child("api").append_child(pugi::node_pcdata).set_value(api_string.c_str());
-			controller.append_child("uuid").append_child(pugi::node_pcdata).set_value(uuid.c_str());
+			controller.append_child("api").text().set(api_string.c_str());
+			controller.append_child("uuid").text().set(uuid.c_str());
 			if (display_name.has_value() && !display_name->empty())
-				controller.append_child("display_name").append_child(pugi::node_pcdata).set_value(
+				controller.append_child("display_name").text().set(
 					display_name.value().c_str());
 
 
-			controller.append_child("rumble").append_child(pugi::node_pcdata).set_value(
+			controller.append_child("rumble").text().set(
 				m_data.get<std::string>("Controller.rumble").c_str());
 
 			auto axis_node = controller.append_child("axis");
-			axis_node.append_child("deadzone").append_child(pugi::node_pcdata).set_value(
+			axis_node.append_child("deadzone").text().set(
 				m_data.get<std::string>("Controller.leftDeadzone").c_str());
-			axis_node.append_child("range").append_child(pugi::node_pcdata).set_value(
+			axis_node.append_child("range").text().set(
 				m_data.get<std::string>("Controller.leftRange").c_str());
 
 			auto rotation_node = controller.append_child("rotation");
-			rotation_node.append_child("deadzone").append_child(pugi::node_pcdata).set_value(
+			rotation_node.append_child("deadzone").text().set(
 				m_data.get<std::string>("Controller.rightDeadzone").c_str());
-			rotation_node.append_child("range").append_child(pugi::node_pcdata).set_value(
+			rotation_node.append_child("range").text().set(
 				m_data.get<std::string>("Controller.rightRange").c_str());
 
 			auto mappings_node = controller.append_child("mappings");
@@ -365,9 +362,9 @@ bool InputManager::migrate_config(const fs::path& file_path)
 
 
 				auto entry_node = mappings_node.append_child("entry");
-				entry_node.append_child("mapping").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("mapping").text().set(
 					fmt::format("{}", i).c_str());
-				entry_node.append_child("button").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("button").text().set(
 					fmt::format("{}", flag_bit).c_str());
 			}
 		}
@@ -375,8 +372,8 @@ bool InputManager::migrate_config(const fs::path& file_path)
 		if (has_keyboard)
 		{
 			auto controller = emulated_controller.append_child("controller");
-			controller.append_child("api").append_child(pugi::node_pcdata).set_value("Keyboard");
-			controller.append_child("uuid").append_child(pugi::node_pcdata).set_value("Keyboard");
+			controller.append_child("api").text().set("Keyboard");
+			controller.append_child("uuid").text().set("Keyboard");
 
 			auto mappings_node = controller.append_child("mappings");
 			for (int i = 1; i < 28; ++i) // test all possible mappings (max is 27 for vpad controller)
@@ -391,9 +388,9 @@ bool InputManager::migrate_config(const fs::path& file_path)
 				const auto button = ConvertString<uint64>(mapping.value().substr(4));
 
 				auto entry_node = mappings_node.append_child("entry");
-				entry_node.append_child("mapping").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("mapping").text().set(
 					fmt::format("{}", i).c_str());
-				entry_node.append_child("button").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("button").text().set(
 					fmt::format("{}", button).c_str());
 			}
 		}
@@ -401,7 +398,7 @@ bool InputManager::migrate_config(const fs::path& file_path)
 		std::ofstream write_file(out_file, std::ios::out | std::ios::trunc);
 		if (write_file.is_open())
 		{
-			doc.save(write_file);
+			write_file << doc.save();
 			return true;
 		}
 	}
@@ -449,13 +446,10 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 
 	file_path.replace_extension(".xml"); // force .xml extension
 
-	pugi::xml_document doc;
-	auto declaration_node = doc.append_child(pugi::node_declaration);
-	declaration_node.append_attribute("version") = "1.0";
-	declaration_node.append_attribute("encoding") = "UTF-8";
+	xml::Document doc;
 
 	auto emulated_controller_node = doc.append_child("emulated_controller");
-	emulated_controller_node.append_child("type").append_child(pugi::node_pcdata).set_value(std::string{
+	emulated_controller_node.append_child("type").text().set(std::string{
 		emulated_controller->type_string()
 	}.c_str());
 
@@ -463,7 +457,7 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 		emulated_controller->m_profile_name = std::string{filename};
 
 	if (emulated_controller->has_profile_name())
-		emulated_controller_node.append_child("profile").append_child(pugi::node_pcdata).set_value(
+		emulated_controller_node.append_child("profile").text().set(
 			emulated_controller->get_profile_name().c_str());
 
 	// custom settings
@@ -474,40 +468,40 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 		auto controller_node = emulated_controller_node.append_child("controller");
 
 		// general
-		controller_node.append_child("api").append_child(pugi::node_pcdata).set_value(std::string{
+		controller_node.append_child("api").text().set(std::string{
 			controller->api_name()
 		}.c_str());
-		controller_node.append_child("uuid").append_child(pugi::node_pcdata).set_value(controller->uuid().c_str());
-		controller_node.append_child("display_name").append_child(pugi::node_pcdata).set_value(
+		controller_node.append_child("uuid").text().set(controller->uuid().c_str());
+		controller_node.append_child("display_name").text().set(
 			controller->display_name().c_str());
 
 		// settings
 		const auto& settings = controller->get_settings();
 
 		if (controller->has_motion())
-			controller_node.append_child("motion").append_child(pugi::node_pcdata).set_value(
+			controller_node.append_child("motion").text().set(
 				fmt::format("{}", settings.motion).c_str());
 
 		if (controller->has_rumble())
-			controller_node.append_child("rumble").append_child(pugi::node_pcdata).set_value(
+			controller_node.append_child("rumble").text().set(
 				fmt::format("{}", settings.rumble).c_str());
 
 		auto axis_node = controller_node.append_child("axis");
-		axis_node.append_child("deadzone").append_child(pugi::node_pcdata).set_value(
+		axis_node.append_child("deadzone").text().set(
 			fmt::format("{}", settings.axis.deadzone).c_str());
-		axis_node.append_child("range").append_child(pugi::node_pcdata).set_value(
+		axis_node.append_child("range").text().set(
 			fmt::format("{}", settings.axis.range).c_str());
 
 		auto rotation_node = controller_node.append_child("rotation");
-		rotation_node.append_child("deadzone").append_child(pugi::node_pcdata).set_value(
+		rotation_node.append_child("deadzone").text().set(
 			fmt::format("{}", settings.rotation.deadzone).c_str());
-		rotation_node.append_child("range").append_child(pugi::node_pcdata).set_value(
+		rotation_node.append_child("range").text().set(
 			fmt::format("{}", settings.rotation.range).c_str());
 
 		auto trigger_node = controller_node.append_child("trigger");
-		trigger_node.append_child("deadzone").append_child(pugi::node_pcdata).set_value(
+		trigger_node.append_child("deadzone").text().set(
 			fmt::format("{}", settings.trigger.deadzone).c_str());
-		trigger_node.append_child("range").append_child(pugi::node_pcdata).set_value(
+		trigger_node.append_child("range").text().set(
 			fmt::format("{}", settings.trigger.range).c_str());
 
 		// custom settings
@@ -520,9 +514,9 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 			if (!mapping.second.controller.expired() && *controller == *mapping.second.controller.lock())
 			{
 				auto entry_node = mappings_node.append_child("entry");
-				entry_node.append_child("mapping").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("mapping").text().set(
 					fmt::format("{}", mapping.first).c_str());
-				entry_node.append_child("button").append_child(pugi::node_pcdata).set_value(
+				entry_node.append_child("button").text().set(
 					fmt::format("{}", mapping.second.button).c_str());
 			}
 		}
@@ -530,9 +524,7 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 	FileStream* fs = FileStream::createFile2(file_path);
 	if (!fs)
 		return false;
-	std::stringstream xmlData;
-	doc.save(xmlData);
-	std::string xmlStr = xmlData.str();
+	std::string xmlStr = doc.save();
 	fs->writeData(xmlStr.data(), xmlStr.size());
 	delete fs;
 	return true;

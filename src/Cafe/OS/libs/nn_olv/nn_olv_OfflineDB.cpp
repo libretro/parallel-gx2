@@ -5,7 +5,7 @@
 #include "util/helpers/helpers.h"
 #include "config/ActiveSettings.h"
 #include "Cafe/CafeSystem.h"
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 #include "util/helpers/Deflate.h"
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 
@@ -130,13 +130,13 @@ namespace nn
 			std::vector<uint8> xmlData;
 			if (!LoadOfflineDBFile(postXmlFilename, xmlData))
 				return OLV_RESULT_SUCCESS;
-			pugi::xml_document doc;
-			pugi::xml_parse_result result = doc.load_buffer(xmlData.data(), xmlData.size());
+			xml::Document doc;
+			bool result = doc.load(xmlData.data(), xmlData.size());
 			if (!result)
 				return OLV_RESULT_SUCCESS;
 			// collect list of all post xml nodes
-			std::vector<pugi::xml_node> postXmlNodes;
-			for (pugi::xml_node postNode = doc.child("posts").child("post"); postNode; postNode = postNode.next_sibling("post"))
+			std::vector<xml::Node> postXmlNodes;
+			for (xml::Node postNode = doc.child("posts").child("post"); postNode; postNode = postNode.next_sibling("post"))
 				postXmlNodes.push_back(postNode);
 
 			// randomly select up to maxCount posts
@@ -145,7 +145,7 @@ namespace nn
 			while(!postXmlNodes.empty() && postCount < maxCount)
 			{
 				uint32 index = rand() % postXmlNodes.size();
-				pugi::xml_node& postNode = postXmlNodes[index];
+				xml::Node& postNode = postXmlNodes[index];
 
 				auto& addedPost = downloadedPostData[postCount];
 				memset(&addedPost, 0, sizeof(DownloadedPostData));

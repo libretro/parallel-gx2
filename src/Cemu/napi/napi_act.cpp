@@ -31,19 +31,19 @@ namespace NAPI
 		std::string refreshToken;
 	};
 
-	bool _parseActResponse(CurlRequestHelper& requestHelper, _NAPI_CommonResultACT& result, pugi::xml_document& doc)
+	bool _parseActResponse(CurlRequestHelper& requestHelper, _NAPI_CommonResultACT& result, xml::Document& doc)
 	{
-		if (!doc.load_buffer(requestHelper.getReceivedData().data(), requestHelper.getReceivedData().size()))
+		if (!doc.load(requestHelper.getReceivedData().data(), requestHelper.getReceivedData().size()))
 		{
 			cemuLog_log(LogType::Force, fmt::format("Invalid XML in account service response"));
 			result.apiError = NAPI_RESULT::XML_ERROR;
 			return false;
 		}
 		// check for error codes
-		pugi::xml_node errors = doc.child("errors");
+		xml::Node errors = doc.child("errors");
 		if (errors)
 		{
-			pugi::xml_node error = errors.child("error");
+			xml::Node error = errors.child("error");
 			if (error)
 			{
 				std::string_view errorCodeStr = error.child_value("code");
@@ -200,10 +200,10 @@ namespace NAPI
 		*/
 
 		// parse result
-		pugi::xml_document doc;
+		xml::Document doc;
 		if (!_parseActResponse(req, result, doc))
 			return result;
-		pugi::xml_node node = doc.child("OAuth20");
+		xml::Node node = doc.child("OAuth20");
 		if (!node)
 		{
 			cemuLog_log(LogType::Force, fmt::format("Response does not contain OAuth20 node"));
@@ -354,10 +354,10 @@ namespace NAPI
 		// code 0124 -> Version lower than useable registered
 
 		// parse result
-		pugi::xml_document doc;
+		xml::Document doc;
 		if (!_parseActResponse(req, result, doc))
 			return result;
-		pugi::xml_node tokenNode = doc.child("nex_token");
+		xml::Node tokenNode = doc.child("nex_token");
 		if (!tokenNode)
 		{
 			cemuLog_log(LogType::Force, "Response does not contain NexToken node");
@@ -491,10 +491,10 @@ namespace NAPI
 		*/
 
 		// parse result
-		pugi::xml_document doc;
+		xml::Document doc;
 		if (!_parseActResponse(req, result, doc))
 			return result;
-		pugi::xml_node tokenNode = doc.child("service_token");
+		xml::Node tokenNode = doc.child("service_token");
 		if (!tokenNode)
 		{
 			cemuLog_log(LogType::Force, "Response does not contain service_token node");
@@ -565,10 +565,10 @@ namespace NAPI
 		*/
 
 		// parse result
-		pugi::xml_document doc;
+		xml::Document doc;
 		if (!_parseActResponse(req, result, doc))
 			return result;
-		pugi::xml_node tokenNode = doc.child("mapped_ids");
+		xml::Node tokenNode = doc.child("mapped_ids");
 		if (!tokenNode)
 		{
 			cemuLog_log(LogType::Force, "Response does not contain mapped_ids node");

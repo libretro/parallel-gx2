@@ -10,7 +10,7 @@
 #include "config/LaunchSettings.h"
 #include "config/ActiveSettings.h"
 #include "config/NetworkSettings.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 #include <charconv>
 
 namespace NAPI
@@ -148,8 +148,8 @@ namespace NAPI
 		}
 
 		// parse result
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "GetSystemCommonETicketResponse", responseNode, result, doc, responseNode))
 			return result;
 
@@ -162,7 +162,7 @@ namespace NAPI
 			return result;
 		}
 
-		for (pugi::xml_node certNode : responseNode.children("Certs"))
+		for (xml::Node certNode : responseNode.children("Certs"))
 		{
 			const char* certStringValue = certNode.child_value();
 			auto certData = NCrypto::base64Decode(certStringValue);
@@ -198,8 +198,8 @@ namespace NAPI
 		}
 
 		/* parse result */
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "GetChallengeResponse", responseNode, result, doc, responseNode))
 			return result;
 		result.challenge = responseNode.child_value("Challenge");
@@ -253,8 +253,8 @@ namespace NAPI
 		}
 
 		// parse result
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "GetRegistrationInfoResponse", responseNode, result, doc, responseNode))
 			return result;
 
@@ -328,8 +328,8 @@ namespace NAPI
 			return result;
 		}
 
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "GetAccountStatusResponse", responseNode, result, doc, responseNode))
 			return result;
 
@@ -349,7 +349,7 @@ namespace NAPI
 			}
 		}
 		// extract service URLs
-		for (pugi::xml_node serviceURLNode : responseNode.children("ServiceURLs"))
+		for (xml::Node serviceURLNode : responseNode.children("ServiceURLs"))
 		{
 			std::string_view serviceType = serviceURLNode.child_value("Name");
 			std::string_view url = serviceURLNode.child_value("URI");
@@ -414,13 +414,13 @@ namespace NAPI
 			return result;
 		}
 
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "AccountListETicketIdsResponse", responseNode, result, doc, responseNode))
 			return result;
 
 		// extract ticket IVs
-		for (pugi::xml_node tivNode : responseNode.children("TIV"))
+		for (xml::Node tivNode : responseNode.children("TIV"))
 		{
 			// TIV is encoded as <ticketId>.<ticketVersion>
 			// ticketVersion starts at 0 and increments every time the ticket is updated (e.g. for AOC content, when purchasing additional DLC packages)
@@ -478,8 +478,8 @@ namespace NAPI
 		}
 
 		// parse result
-		pugi::xml_document doc;
-		pugi::xml_node responseNode;
+		xml::Document doc;
+		xml::Node responseNode;
 		if (!_parseResponseInit(soapHelper, "AccountGetETicketsResponse", responseNode, result, doc, responseNode))
 			return result;
 
@@ -492,7 +492,7 @@ namespace NAPI
 			return result;
 		}
 
-		for (pugi::xml_node certNode : responseNode.children("Certs"))
+		for (xml::Node certNode : responseNode.children("Certs"))
 		{
 			const char* certStringValue = certNode.child_value();
 			auto certData = NCrypto::base64Decode(certStringValue);

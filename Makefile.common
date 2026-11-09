@@ -367,7 +367,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/helpers/Serializer.cpp \
 	$(CORE_DIR)/src/util/helpers/helpers.cpp \
 	$(CORE_DIR)/src/util/highresolutiontimer/HighResolutionTimer.cpp \
-	$(CORE_DIR)/src/util/tinyxml2/tinyxml2.cpp
+	$(CORE_DIR)/src/util/xml/Xml.cpp
 
 CORE_SOURCES_CXX += $(GRAPHIC_PACKS_C)
 
@@ -487,7 +487,6 @@ CORE_FLAGS := -DENABLE_LIBRETRO -DRETRO_CORE -DVK_NO_PROTOTYPES \
 	-I$(SRC_DIR)/gui -I$(SRC_DIR)/gui/interface -I$(SRC_DIR)/libretro -I$(SRC_DIR)/resource \
 	-I$(DEP_DIR)/Vulkan-Headers/include \
 	-I$(DEP_DIR)/glm -I$(DEP_DIR)/fmt/include \
-	-I$(DEP_DIR)/pugixml/src \
 	-I$(DEP_DIR)/boost-compat \
 	-I$(DEP_DIR)/curl-compat/include -I$(DEP_DIR)/libusb-config \
 	-I$(LRC_DIR)/include
@@ -569,6 +568,7 @@ LRC_SOURCES_C := \
 	$(LRC_DIR)/formats/h264/rh264.c \
 	$(LRC_DIR)/formats/zar/zar.c \
 	$(LRC_DIR)/formats/zar/zar_write.c \
+	$(LRC_DIR)/formats/xml/rxml.c \
 	$(LRC_DIR)/gfx/shaders/rslc_dxbc.c \
 	$(LRC_DIR)/gfx/shaders/rslc_front.c \
 	$(LRC_DIR)/gfx/shaders/rslc_ir.c \
@@ -620,9 +620,6 @@ else
    FMT_FLAGS += -DFMT_HEADER_ONLY
 endif
 
-PUGIXML_SOURCES_CXX := $(DEP_DIR)/pugixml/src/pugixml.cpp
-PUGIXML_FLAGS := -w
-
 LIBUSB_DIR := $(DEP_DIR)/libusb/libusb
 LIBUSB_SOURCES_C := $(addprefix $(LIBUSB_DIR)/,core.c descriptor.c hotplug.c io.c strerror.c sync.c)
 ifneq (,$(filter 1,$(OS_LINUX) $(OS_ANDROID)))
@@ -643,7 +640,7 @@ LIBUSB_FLAGS := -I$(DEP_DIR)/libusb-config -I$(LIBUSB_DIR) -w
 XBYAK_SOURCES_CXX := $(DEP_DIR)/xbyak_aarch64/src/xbyak_aarch64_impl.cpp $(DEP_DIR)/xbyak_aarch64/src/util_impl.cpp
 XBYAK_FLAGS := -I$(DEP_DIR)/xbyak_aarch64 -I$(DEP_DIR)/xbyak_aarch64/xbyak_aarch64 -w
 
-LIB_GROUPS := CORE CURLCOMPAT LRC FMT PUGIXML
+LIB_GROUPS := CORE CURLCOMPAT LRC FMT
 ifeq ($(HAVE_LIBUSB),1)
    LIB_GROUPS += LIBUSB
 endif

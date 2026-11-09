@@ -206,8 +206,8 @@ namespace nn
 					return OLV_RESULT_FAILED_REQUEST;
 			}
 
-			pugi::xml_document doc;
-			if (!doc.load_buffer(req.getReceivedData().data(), req.getReceivedData().size()))
+			xml::Document doc;
+			if (!doc.load(req.getReceivedData().data(), req.getReceivedData().size()))
 			{
 				cemuLog_log(LogType::Force, fmt::format("Invalid XML in community upload response"));
 				return OLV_RESULT_INVALID_XML;
@@ -223,12 +223,12 @@ namespace nn
 			if (pOutData)
 			{
 
-				std::string_view app_data = doc.select_node("//app_data").node().child_value();
-				std::string_view community_id = doc.select_node("//community_id").node().child_value();
-				std::string_view name = doc.select_node("//name").node().child_value();
-				std::string_view description = doc.select_node("//description").node().child_value();
-				std::string_view pid = doc.select_node("//pid").node().child_value();
-				std::string_view icon = doc.select_node("//icon").node().child_value();
+				std::string_view app_data = doc.find_descendant("app_data").child_value();
+				std::string_view community_id = doc.find_descendant("community_id").child_value();
+				std::string_view name = doc.find_descendant("name").child_value();
+				std::string_view description = doc.find_descendant("description").child_value();
+				std::string_view pid = doc.find_descendant("pid").child_value();
+				std::string_view icon = doc.find_descendant("icon").child_value();
 
 				if (app_data.size() != 0)
 				{
@@ -303,4 +303,4 @@ namespace nn
 			return OLV_RESULT_SUCCESS;
 		}
 	}
-}
+}

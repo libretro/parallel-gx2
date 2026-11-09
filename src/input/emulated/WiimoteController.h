@@ -56,8 +56,8 @@ public:
 	glm::vec2 get_rotation() const override;
 	glm::vec2 get_trigger() const override;
 
-	void load(const pugi::xml_node& node) override;
-	void save(pugi::xml_node& node) override;
+	void load(const xml::Node& node) override;
+	void save(xml::Node& node) override;
 	
 	static uint32 s_get_emulated_button_flag(uint32 id);
 

@@ -3,7 +3,7 @@
 #include "napi_helper.h"
 
 #include "curl/curl.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 
 #include "Cemu/ncrypto/ncrypto.h"

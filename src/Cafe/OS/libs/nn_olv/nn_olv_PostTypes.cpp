@@ -3,18 +3,18 @@
 #include "nn_olv_OfflineDB.h"
 #include "Cemu/ncrypto/ncrypto.h" // for base64 decoder
 #include "util/helpers/helpers.h"
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 
 namespace nn
 {
 	namespace olv
 	{
-		bool ParseXml_DownloadedDataBase(DownloadedDataBase& obj, pugi::xml_node& xmlNode)
+		bool ParseXml_DownloadedDataBase(DownloadedDataBase& obj, xml::Node& xmlNode)
 		{
 			// todo:
 			// painting with url?
 
-			pugi::xml_node tokenNode;
+			xml::Node tokenNode;
 			if(tokenNode = xmlNode.child("body"); tokenNode)
 			{
 				obj.bodyTextLength = SetStringUC2(obj.bodyText, tokenNode.child_value(), true);
@@ -105,7 +105,7 @@ namespace nn
 			}
 			if(tokenNode = xmlNode.child("painting"); tokenNode)
 			{
-				if(pugi::xml_node subNode = tokenNode.child("content"); subNode)
+				if(xml::Node subNode = tokenNode.child("content"); subNode)
 				{
 					std::vector<uint8> paintingData = NCrypto::base64Decode(subNode.child_value());
 					if (paintingData.size() > 0xA000)
@@ -116,7 +116,7 @@ namespace nn
 					memcpy(obj.compressedMemoBody, paintingData.data(), paintingData.size());
 					obj.SetFlag(DownloadedDataBase::FLAGS::HAS_BODY_MEMO);
 				}
-				if(pugi::xml_node subNode = tokenNode.child("size"); subNode)
+				if(xml::Node subNode = tokenNode.child("size"); subNode)
 				{
 					obj.compressedMemoBodySize = ConvertString<uint32>(subNode.child_value());
 				}
@@ -136,9 +136,9 @@ namespace nn
 			return true;
 		}
 
-		bool ParseXML_DownloadedPostData(DownloadedPostData& obj, pugi::xml_node& xmlNode)
+		bool ParseXML_DownloadedPostData(DownloadedPostData& obj, xml::Node& xmlNode)
 		{
-			pugi::xml_node tokenNode;
+			xml::Node tokenNode;
 			if(tokenNode = xmlNode.child("community_id"); tokenNode)
 				obj.communityId = ConvertString<uint32>(tokenNode.child_value());
 			if(tokenNode = xmlNode.child("empathy_count"); tokenNode)
@@ -148,27 +148,27 @@ namespace nn
 			return ParseXml_DownloadedDataBase(obj.downloadedDataBase, xmlNode);
 		}
 
-		bool ParseXML_DownloadedSystemPostData(hidden::DownloadedSystemPostData& obj, pugi::xml_node& xmlNode)
+		bool ParseXML_DownloadedSystemPostData(hidden::DownloadedSystemPostData& obj, xml::Node& xmlNode)
 		{
-			pugi::xml_node tokenNode;
+			xml::Node tokenNode;
 			if(tokenNode = xmlNode.child("title_id"); tokenNode)
 				obj.titleId = ConvertString<uint64>(tokenNode.child_value());
 			return ParseXML_DownloadedPostData(obj.downloadedPostData, xmlNode);
 		}
 
-		bool ParseXML_DownloadedTopicData(DownloadedTopicData& obj, pugi::xml_node& xmlNode)
+		bool ParseXML_DownloadedTopicData(DownloadedTopicData& obj, xml::Node& xmlNode)
 		{
-			pugi::xml_node tokenNode;
+			xml::Node tokenNode;
 			if(tokenNode = xmlNode.child("community_id"); tokenNode)
 				obj.communityId = ConvertString<uint32>(tokenNode.child_value());
 			return true;
 		}
 
-		bool Parse_DownloadedSystemTopicData(hidden::DownloadedSystemTopicData& obj, pugi::xml_node& xmlNode)
+		bool Parse_DownloadedSystemTopicData(hidden::DownloadedSystemTopicData& obj, xml::Node& xmlNode)
 		{
 			if(!ParseXML_DownloadedTopicData(obj.downloadedTopicData, xmlNode))
 				return false;
-			pugi::xml_node tokenNode;
+			xml::Node tokenNode;
 			if(tokenNode = xmlNode.child("name"); tokenNode)
 			{
 				SetStringUC2(obj.titleText, tokenNode.child_value(), true);
@@ -209,19 +209,19 @@ namespace nn
 			std::vector<uint8> buffer;
 			buffer.resize(xmlDataSize);
 			memcpy(buffer.data(), xmlData, xmlDataSize);
-			pugi::xml_document doc;
-			if (!doc.load_buffer_inplace(buffer.data(), xmlDataSize, pugi::parse_default, pugi::xml_encoding::encoding_utf8))
+			xml::Document doc;
+			if (!doc.load(buffer.data(), xmlDataSize))
 				return -1;
 
 			memset(downloadedSystemTopicDataList, 0, sizeof(hidden::DownloadedSystemTopicDataList));
 			downloadedSystemTopicDataList->topicDataNum = 0;
 		
-			cemu_assert_debug(doc.child("result").child("topics"));
+			cemu_assert_debug(!doc.child("result").child("topics").empty());
 
 			size_t postCount = 0;
 
 			// parse topics
-			for (pugi::xml_node topicsChildNode : doc.child("result").child("topics").children())
+			for (xml::Node topicsChildNode : doc.child("result").child("topics").children())
 			{
 				const char* name = topicsChildNode.name();
 				cemuLog_logDebug(LogType::Force, "topicsChildNode.name() = {}", name);
@@ -240,9 +240,9 @@ namespace nn
 
 				topicEntry.postDataNum = 0;
 				// parse all posts within the current topic
-				for (pugi::xml_node personNode : topicsChildNode.child("people").children("person"))
+				for (xml::Node personNode : topicsChildNode.child("people").children("person"))
 				{
-					for (pugi::xml_node postNode : personNode.child("posts").children("post"))
+					for (xml::Node postNode : personNode.child("posts").children("post"))
 					{
 						if(postCount >= postCountMax)
 						{
@@ -375,8 +375,8 @@ namespace nn
 				if (!(httpCode >= 400))
 					return OLV_RESULT_FAILED_REQUEST;
 			}
-			pugi::xml_document doc;
-			if (!doc.load_buffer(req.getReceivedData().data(), req.getReceivedData().size()))
+			xml::Document doc;
+			if (!doc.load(req.getReceivedData().data(), req.getReceivedData().size()))
 			{
 				cemuLog_log(LogType::Force, fmt::format("Invalid XML in community download response"));
 				return OLV_RESULT_INVALID_XML;

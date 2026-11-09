@@ -1,5 +1,5 @@
 #pragma once
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 
 class ControllerBase;
 
@@ -21,8 +21,8 @@ public:
 	EmulatedController(size_t player_index);
 	virtual ~EmulatedController() = default;
 
-	virtual void load(const pugi::xml_node& node){};
-	virtual void save(pugi::xml_node& node){};
+	virtual void load(const xml::Node& node){};
+	virtual void save(xml::Node& node){};
 
 	enum Type
 	{

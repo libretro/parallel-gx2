@@ -10,7 +10,7 @@
 #include "config/ActiveSettings.h"
 #include "config/NetworkSettings.h"
 #include "config/LaunchSettings.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 #include <charconv>
 
 CURLcode _sslctx_function_NUS(CURL* curl, void* sslctx, void* param)
@@ -418,9 +418,9 @@ bool CurlSOAPHelper::submitRequest()
 
 namespace NAPI
 {
-	bool _findXmlNode(pugi::xml_node& doc, pugi::xml_node& nodeOut, const char* name)
+	bool _findXmlNode(xml::Node& doc, xml::Node& nodeOut, const char* name)
 	{
-		for (auto& itr : doc.children())
+		for (auto itr : doc.children())
 		{
 			if (boost::iequals(itr.name(), name))
 			{
@@ -433,10 +433,10 @@ namespace NAPI
 		return false;
 	}
 
-	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, pugi::xml_node& node, _NAPI_CommonResultSOAP& result, pugi::xml_document& doc, pugi::xml_node& responseNode)
+	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode)
 	{
 		// parse XML response
-		if (!doc.load_buffer(soapHelper.getReceivedData().data(), soapHelper.getReceivedData().size()))
+		if (!doc.load(soapHelper.getReceivedData().data(), soapHelper.getReceivedData().size()))
 		{
 			cemuLog_log(LogType::Force, "Failed to parse GetRegistrationInfo() response");
 			result.apiError = NAPI_RESULT::XML_ERROR;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 #include "config/CemuConfig.h"
 #include "Cafe/TitleList/TitleId.h"
 
@@ -70,10 +70,9 @@ struct ParsedMetaXml
 		};
 		if (xmlSize == 0)
 			return fail("it is empty");
-		pugi::xml_document meta_doc;
-		const pugi::xml_parse_result parsed = meta_doc.load_buffer_inplace(xmlData, xmlSize);
-		if (!parsed)
-			return fail(fmt::format("it is {} bytes that do not parse as XML: {} at offset {}", xmlSize, parsed.description(), (sint64)parsed.offset));
+		xml::Document meta_doc;
+		if (!meta_doc.load(xmlData, xmlSize))
+			return fail(fmt::format("it is {} bytes that do not parse as XML: not well-formed at offset {}", xmlSize, (sint64)meta_doc.error_offset()));
 
 		const auto root = meta_doc.child("menu");
 		if (!root)

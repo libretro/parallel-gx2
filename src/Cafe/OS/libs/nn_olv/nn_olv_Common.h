@@ -4,7 +4,7 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cemu/napi/napi_helper.h"
 #include "util/helpers/StringHelpers.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 
 // https://github.com/kinnay/NintendoClients/wiki/Wii-U-Error-Codes#act-error-codes
 #define OLV_ACT_RESULT_STATUS(code) (BUILD_NN_RESULT(NN_RESULT_LEVEL_STATUS, NN_RESULT_MODULE_NN_OLV, ((code) << 7)))
@@ -90,7 +90,7 @@ namespace nn
 				snprintf(url + urlLength, queryLength + 2, "?%s", query);
 		}
 
-		static sint32 CheckOliveResponse(pugi::xml_document& doc)
+		static sint32 CheckOliveResponse(xml::Document& doc)
 		{
 
 			/*
@@ -103,7 +103,7 @@ namespace nn
 				</result>
 			*/
 
-			pugi::xml_node resultNode = doc.child("result");
+			xml::Node resultNode = doc.child("result");
 			if (!resultNode)
 			{
 				cemuLog_log(LogType::Force, "Discovery response doesn't contain <result>...</result>");

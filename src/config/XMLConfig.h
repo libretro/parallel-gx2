@@ -1,6 +1,6 @@
 #pragma once
 
-#include "util/tinyxml2/tinyxml2.h"
+#include "util/xml/Xml.h"
 #include "Common/FileStream.h"
 #include "config/ConfigValue.h"
 
@@ -10,15 +10,65 @@
 template <typename T>
 concept HasConstCharConstructor = requires { T(std::declval<const char*>()); };
 
+// Values are read and written as tinyxml2, which this used to be built on,
+// read and wrote them, so the settings files stay as they were.
+namespace XMLConfigText
+{
+	inline bool ToInt(const char* s, sint32& v) { int i; if (!s || sscanf(s, "%d", &i) != 1) return false; v = i; return true; }
+	inline bool ToUnsigned(const char* s, uint32& v) { unsigned u; if (!s || sscanf(s, "%u", &u) != 1) return false; v = u; return true; }
+	inline bool ToInt64(const char* s, sint64& v) { long long i; if (!s || sscanf(s, "%lld", &i) != 1) return false; v = (sint64)i; return true; }
+	inline bool ToFloat(const char* s, float& v) { return s && sscanf(s, "%f", &v) == 1; }
+	inline bool ToDouble(const char* s, double& v) { return s && sscanf(s, "%lf", &v) == 1; }
+	inline bool ToBool(const char* s, bool& v)
+	{
+		sint32 i;
+		if (ToInt(s, i)) { v = i != 0; return true; }
+		if (s && !strcmp(s, "true")) { v = true; return true; }
+		if (s && !strcmp(s, "false")) { v = false; return true; }
+		return false;
+	}
+	template<typename T>
+	T Parse(const char* s, T def)
+	{
+		if constexpr (std::is_same_v<T, bool>) { bool v; return ToBool(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, float>) { float v; return ToFloat(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, double>) { double v; return ToDouble(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, sint32>) { sint32 v; return ToInt(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, uint32>) { uint32 v; return ToUnsigned(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, sint64>) { sint64 v; return ToInt64(s, v) ? v : def; }
+		else if constexpr (std::is_same_v<T, uint64>) { sint64 v; return ToInt64(s, v) ? (uint64)v : def; } // doesnt support real uint64...
+		else return def;
+	}
+	inline std::string ToStr(const char* v) { return v ? v : ""; }
+	inline std::string ToStr(const std::string& v) { return v; }
+	inline std::string ToStr(bool v) { return v ? "true" : "false"; }
+	inline std::string ToStr(float v) { char b[32]; snprintf(b, sizeof(b), "%.8g", v); return b; }
+	inline std::string ToStr(double v) { char b[40]; snprintf(b, sizeof(b), "%.17g", v); return b; }
+	inline std::string ToStr(sint32 v) { return fmt::format("{}", v); }
+	inline std::string ToStr(uint32 v) { return fmt::format("{}", v); }
+	inline std::string ToStr(sint64 v) { return fmt::format("{}", v); }
+	inline std::string ToStr(uint64 v) { return fmt::format("{}", (sint64)v); }
+}
+
 class XMLConfigParser
 {
 public:
-	XMLConfigParser(tinyxml2::XMLDocument* document)
+	XMLConfigParser(xml::Document* document)
 		: m_document(document), m_current_element(nullptr), m_is_root(true) {}
 
 private:
-	XMLConfigParser(tinyxml2::XMLDocument* document, tinyxml2::XMLElement* element)
+	XMLConfigParser(xml::Document* document, xml::Element* element)
 		: m_document(document), m_current_element(element), m_is_root(false) {}
+
+	// the element this parser stands for: the document itself at the root
+	xml::Node Base() const { return m_current_element ? xml::Node(m_current_element) : xml::Node(*m_document); }
+	// an element's text, nullptr if it has none (tinyxml2's GetText)
+	static const char* TextOf(xml::Node n) { return n && n.text() ? n.text().get() : nullptr; }
+	const char* AttributeOf(const char* name) const
+	{
+		xml::Attribute a = xml::Node(m_current_element).attribute(name);
+		return a ? a.value() : nullptr;
+	}
 
 public:
 	template <typename T>
@@ -27,32 +77,19 @@ public:
 		if constexpr(std::is_enum_v<T>)
 			return static_cast<T>(get(name, static_cast<std::underlying_type_t<T>>(default_value)));
 
-		const auto* element = m_current_element
-			? m_current_element->FirstChildElement(name)
-			: m_document->FirstChildElement(name);
-		
-		if (element == nullptr)
+		const xml::Node element = Base().child(name);
+		if (!element)
 			return default_value;
 
-		if constexpr (std::is_same_v<T, bool>)
-			return element->BoolText(default_value);
-		else if constexpr (std::is_same_v<T, float>)
-			return element->FloatText(default_value);
-		else if constexpr (std::is_same_v<T, sint32>)
-			return element->IntText(default_value);
-		else if constexpr (std::is_same_v<T, uint32>)
-			return element->UnsignedText(default_value);
-		else if constexpr (std::is_same_v<T, sint64>)
-			return element->Int64Text(default_value);
-		else if constexpr (std::is_same_v<T, uint64>) // doesnt support real uint64...
-			return (uint64)element->Int64Text((sint64)default_value);
+		if constexpr (std::is_arithmetic_v<T>)
+			return XMLConfigText::Parse<T>(TextOf(element), default_value);
 		else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, std::string> || HasConstCharConstructor<T>)
 		{
-			const char* text = element->GetText();
+			const char* text = TextOf(element);
 			return text ? text : default_value;
 		}
-		
-		return default_value;
+		else
+			return default_value;
 	}
 	
 	template <typename T>
@@ -76,25 +113,15 @@ public:
 		if (m_current_element == nullptr)
 			return default_value;
 
-		if constexpr (std::is_same_v<T, bool>)
-			return m_current_element->BoolAttribute(name, default_value);
-		else if constexpr (std::is_same_v<T, float>)
-			return m_current_element->FloatAttribute(name, default_value);
-		else if constexpr (std::is_same_v<T, sint32>)
-			return m_current_element->IntAttribute(name, default_value);
-		else if constexpr (std::is_same_v<T, uint32>)
-			return m_current_element->UnsignedAttribute(name, default_value);
-		else if constexpr (std::is_same_v<T, sint64>)
-			return m_current_element->Int64Attribute(name, default_value);
-		else if constexpr (std::is_same_v<T, uint64>) // doesnt support real uint64...
-			return (uint64)m_current_element->Int64Attribute(name, (sint64)default_value);
+		if constexpr (std::is_arithmetic_v<T>)
+			return XMLConfigText::Parse<T>(AttributeOf(name), default_value);
 		else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, std::string>)
 		{
-			const char* text = m_current_element->Attribute(name);
+			const char* text = AttributeOf(name);
 			return text ? text : default_value;
 		}
-
-		return default_value;
+		else
+			return default_value;
 	}
 
 	template <typename T>
@@ -124,13 +151,11 @@ public:
 	std::array<TType, TSize>& get(const char* name, std::array<TType, TSize>& arr)
 	{
 		arr = {};
-		const auto element = m_current_element
-			                     ? m_current_element->FirstChildElement(name)
-			                     : m_document->FirstChildElement(name);
-		if (element == nullptr)
+		const xml::Node element = Base().child(name);
+		if (!element)
 			return arr;
 
-		const char* text = element->GetText();
+		const char* text = TextOf(element);
 		if(text)
 		{
 			assert(strlen(text) == (arr.size() * 2));
@@ -151,85 +176,41 @@ public:
 		return default_value;
 	}
 
-	bool value(bool default_value)
-	{
-		return m_current_element ? m_current_element->BoolText(default_value) : default_value;
-	}
-
-	float value(float default_value)
-	{
-		return m_current_element ? m_current_element->FloatText(default_value) : default_value;
-	}
-
-	double value(double default_value)
-	{
-		return m_current_element ? m_current_element->DoubleText(default_value) : default_value;
-	}
-
-	uint32 value(uint32 default_value)
-	{
-		return m_current_element ? m_current_element->UnsignedText(default_value) : default_value;
-	}
-
-	sint32 value(sint32 default_value)
-	{
-		return m_current_element ? m_current_element->IntText(default_value) : default_value;
-	}
-
-	uint64 value(uint64 default_value)
-	{
-		return m_current_element ? (uint64)m_current_element->Int64Text(default_value) : default_value;
-	}
-
-	sint64 value(sint64 default_value)
-	{
-		return m_current_element ? m_current_element->Int64Text(default_value) : default_value;
-	}
+	bool value(bool default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	float value(float default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	double value(double default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	uint32 value(uint32 default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	sint32 value(sint32 default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	uint64 value(uint64 default_value) { return XMLConfigText::Parse(Text(), default_value); }
+	sint64 value(sint64 default_value) { return XMLConfigText::Parse(Text(), default_value); }
 
 	const char* value(const char* default_value)
 	{
-		if (m_current_element)
-		{
-			if (m_current_element->GetText())
-				return m_current_element->GetText();
-		}
-
-		return default_value;
+		const char* text = Text();
+		return text ? text : default_value;
 	}
 
 	template <typename TType, size_t TSize>
 	void set(const char* name, const std::array<TType, TSize>& value)
 	{
-		auto element = m_document->NewElement(name);
-
 		std::stringstream str;
 		for(const auto& v : value)
 		{
 			str << fmt::format("{:02x}", v);
 		}
 
-		element->SetText(str.str().c_str());
-
-		if (m_current_element)
-			m_current_element->InsertEndChild(element);
-		else
-			m_document->InsertEndChild(element);
+		Base().append_child(name).text().set(str.str());
 	}
 
 	template <typename T>
 	void set(const char* name, T value)
 	{
-		auto* element = m_document->NewElement(name);
+		xml::Node element = Base().append_child(name);
 
 		if constexpr (std::is_enum_v<T>)
-			element->SetText(fmt::format("{}", static_cast<typename std::underlying_type<T>::type>(value)).c_str());
+			element.text().set(fmt::format("{}", static_cast<typename std::underlying_type<T>::type>(value)));
 		else
-			element->SetText(fmt::format("{}", value).c_str());
-
-		if (m_current_element)
-			m_current_element->InsertEndChild(element);
-		else
-			m_document->InsertEndChild(element);
+			element.text().set(fmt::format("{}", value));
 	}
 
 	template <typename T>
@@ -249,33 +230,22 @@ public:
 		set(name, (sint64)value);
 	}
 
-	tinyxml2::XMLElement* GetCurrentElement() const { return m_current_element; }
+	xml::Element* GetCurrentElement() const { return m_current_element; }
 
 	XMLConfigParser get(const char* name) const
 	{
-		const auto element = m_current_element
-			                     ? m_current_element->FirstChildElement(name)
-			                     : m_document->FirstChildElement(name);
-		return {m_document, element};
+		return {m_document, Base().child(name).element()};
 	}
 
 	XMLConfigParser get(const char* name, const XMLConfigParser& parser)
 	{
-		const auto element = parser.m_current_element
-			? parser.m_current_element->NextSiblingElement(name)
-			: parser.m_document->NextSiblingElement(name);
-		return { m_document, element };
+		// the document itself has no siblings
+		return { m_document, xml::Node(parser.m_current_element).next_sibling(name).element() };
 	}
 
 	XMLConfigParser set(const char* name) const
 	{
-		const auto element = m_document->NewElement(name);
-		if (m_current_element)
-			m_current_element->InsertEndChild(element);
-		else
-			m_document->InsertEndChild(element);
-
-		return {m_document, element};
+		return {m_document, Base().append_child(name).element()};
 	}
 
 	template <typename T>
@@ -283,8 +253,16 @@ public:
 	{
 		cemu_assert_debug(m_current_element != nullptr);
 		if (m_current_element)
-			m_current_element->SetAttribute(name, value);
-		
+		{
+			xml::Node node(m_current_element);
+			xml::Attribute a = node.attribute(name);
+			if (!a)
+				a = node.append_attribute(name);
+			if constexpr (std::is_enum_v<T>)
+				a.set_value(XMLConfigText::ToStr(static_cast<std::underlying_type_t<T>>(value)));
+			else
+				a.set_value(XMLConfigText::ToStr(value));
+		}
 		return *this;
 	}
 
@@ -315,8 +293,10 @@ public:
 	}
 
 private:
-	tinyxml2::XMLDocument* m_document;
-	tinyxml2::XMLElement* m_current_element;
+	const char* Text() const { return m_current_element ? TextOf(xml::Node(m_current_element)) : nullptr; }
+
+	xml::Document* m_document;
+	xml::Element* m_current_element;
 	bool m_is_root;
 };
 
@@ -366,16 +346,10 @@ public:
 		fs->readData(xmlData.data(), xmlData.size());
 		delete fs;
 
-		tinyxml2::XMLDocument doc;		
-		const tinyxml2::XMLError error = doc.Parse((const char*)xmlData.data(), xmlData.size());
-		const bool success = error == tinyxml2::XML_SUCCESS;
-		if (error != 0)
+		xml::Document doc;
+		if (!doc.load(xmlData.data(), xmlData.size()))
 		{
-			cemuLog_logDebug(LogType::Force, "XMLConfig::Load > LoadFile {}", error);
-		}
-
-		if (!success)
-		{
+			cemuLog_logDebug(LogType::Force, "XMLConfig::Load > not well-formed at offset {}", doc.error_offset());
 			return false;
 		}
 
@@ -419,9 +393,7 @@ public:
             return false;
         }
 
-		tinyxml2::XMLDocument doc;
-		const auto declaration = doc.NewDeclaration();
-		doc.InsertFirstChild(declaration);
+		xml::Document doc;
 
 		auto parser = XMLConfigParser(&doc);
 		auto parentParser = m_instance.Save(parser);
@@ -429,10 +401,10 @@ public:
 		for (auto [save, load] : m_childConfigParsers)
 			save(parentParser);
 
-		const tinyxml2::XMLError error = doc.SaveFile(file);
-		const bool success = error == tinyxml2::XML_SUCCESS;
-		if(error != 0)
-			cemuLog_logDebug(LogType::Force, "XMLConfig::Save > SaveFile {}", error);
+		const std::string out = doc.save("    ");
+		const bool success = !out.empty() && fwrite(out.data(), 1, out.size(), file) == out.size();
+		if(!success)
+			cemuLog_logDebug(LogType::Force, "XMLConfig::Save > writing \"{}\" failed", boost::nowide::narrow(tmp_name));
 
 		fflush(file);
 		fclose(file);

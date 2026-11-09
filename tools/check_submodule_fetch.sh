@@ -16,8 +16,7 @@ fi
 make -C "$tmp/core" -n OBJ_DIR="$tmp/obj" >/dev/null 2>"$tmp/err"
 status=0
 for f in dependencies/glm/glm/glm.hpp dependencies/fmt/include/fmt/core.h \
-	dependencies/Vulkan-Headers/include/vulkan/vulkan.h \
-	dependencies/pugixml/src/pugixml.hpp; do
+	dependencies/Vulkan-Headers/include/vulkan/vulkan.h; do
 	if [ ! -e "$tmp/core/$f" ]; then
 		echo "not fetched: $f"
 		status=1

@@ -3,7 +3,7 @@
 #include "napi_helper.h"
 
 #include "curl/curl.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
 #include <charconv>
@@ -41,8 +41,8 @@ namespace NAPI
 		}
 		auto& receivedData = req.getReceivedData();
 
-		pugi::xml_document doc;
-		if (!doc.load_buffer(receivedData.data(), receivedData.size()))
+		xml::Document doc;
+		if (!doc.load(receivedData.data(), receivedData.size()))
 		{
 			cemuLog_log(LogType::Force, "Failed to parse title list XML");
 			return result;
@@ -71,8 +71,8 @@ namespace NAPI
 		}
 		auto& receivedData = req.getReceivedData();
 
-		pugi::xml_document doc;
-		if (!doc.load_buffer(receivedData.data(), receivedData.size()))
+		xml::Document doc;
+		if (!doc.load(receivedData.data(), receivedData.size()))
 		{
 			cemuLog_log(LogType::Force, "Failed to parse update list XML");
 			return result;
@@ -85,7 +85,7 @@ namespace NAPI
 		//    <title><id>0005000E10101B00</id><version>16</version></title>
 		// ...
 
-		for (pugi::xml_node title : doc.child("version_list").child("titles").children("title"))
+		for (xml::Node title : doc.child("version_list").child("titles").children("title"))
 		{
 			uint64 titleId = 0;
 			uint32 titleVersion = 0;

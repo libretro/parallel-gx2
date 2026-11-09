@@ -5,7 +5,7 @@
 #include "Cafe/CafeSystem.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "config/LaunchSettings.h"
-#include <pugixml.hpp>
+#include "util/xml/Xml.h"
 
 namespace coreinit
 {
@@ -772,8 +772,8 @@ namespace coreinit
 		fsc_readFile(fscfile, tmpData.data(), size);
 		fsc_close(fscfile);
 		// parse app.xml to get the titleId
-		pugi::xml_document app_doc;
-		if (!app_doc.load_buffer_inplace(tmpData.data(), tmpData.size()))
+		xml::Document app_doc;
+		if (!app_doc.load(tmpData.data(), tmpData.size()))
 			return false;
 		uint64 titleId = std::stoull(app_doc.child("app").child("title_id").child_value(), nullptr, 16);
 		if(titleId == 0)

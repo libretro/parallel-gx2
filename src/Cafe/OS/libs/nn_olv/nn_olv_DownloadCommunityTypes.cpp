@@ -73,8 +73,8 @@ namespace nn
 					return OLV_RESULT_FAILED_REQUEST;
 			}
 
-			pugi::xml_document doc;
-			if (!doc.load_buffer(req.getReceivedData().data(), req.getReceivedData().size()))
+			xml::Document doc;
+			if (!doc.load(req.getReceivedData().data(), req.getReceivedData().size()))
 			{
 				cemuLog_log(LogType::Force, fmt::format("Invalid XML in community download response"));
 				return OLV_RESULT_INVALID_XML;
@@ -87,7 +87,7 @@ namespace nn
 			if (httpCode != 200)
 				return OLV_RESULT_STATUS(httpCode + 4000);
 
-			std::string request_name = doc.select_node("//request_name").node().child_value();
+			std::string request_name = doc.find_descendant("request_name").child_value();
 			if (request_name.size() == 0)
 			{
 				cemuLog_log(LogType::Force, "Community download response doesn't contain <request_name>");
@@ -100,7 +100,7 @@ namespace nn
 				return OLV_RESULT_INVALID_XML;
 			}
 
-			pugi::xml_node communities = doc.select_node("//communities").node();
+			xml::Node communities = doc.find_descendant("communities");
 			if (!communities)
 			{
 				cemuLog_log(LogType::Force, "Community download response doesn't contain <communities>");
@@ -108,7 +108,7 @@ namespace nn
 			}
 
 			int idx = 0;
-			for (pugi::xml_node communityNode : communities.children("community"))
+			for (xml::Node communityNode : communities.children("community"))
 			{
 				if (idx >= numMaxList)
 					break;

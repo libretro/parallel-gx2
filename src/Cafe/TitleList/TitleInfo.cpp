@@ -2,7 +2,7 @@
 #include "Cafe/Filesystem/fscDeviceHostFS.h"
 #include "Cafe/Filesystem/WUHB/WUHBReader.h"
 #include "Cafe/Filesystem/FST/FST.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 #include "Common/FileStream.h"
 #include "Common/VFSFileStream.h"
 #include "Cafe/Filesystem/ZArchiveVFS.h"
@@ -690,8 +690,8 @@ ParsedMetaXml* TitleInfo::ParseAromaIni(std::span<unsigned char> content)
 
 bool TitleInfo::ParseAppXml(std::vector<uint8>& appXmlData)
 {
-	pugi::xml_document app_doc;
-	if (!app_doc.load_buffer_inplace(appXmlData.data(), appXmlData.size()))
+	xml::Document app_doc;
+	if (!app_doc.load(appXmlData.data(), appXmlData.size()))
 		return false;
 
 	const auto root = app_doc.child("app");
@@ -869,8 +869,8 @@ std::string TitleInfo::GetInstallPath() const
 
 ParsedCosXml* ParsedCosXml::Parse(uint8* xmlData, size_t xmlLen)
 {
-	pugi::xml_document app_doc;
-	if (!app_doc.load_buffer_inplace(xmlData, xmlLen))
+	xml::Document app_doc;
+	if (!app_doc.load(xmlData, xmlLen))
 		return nullptr;
 
 	const auto root = app_doc.child("app");

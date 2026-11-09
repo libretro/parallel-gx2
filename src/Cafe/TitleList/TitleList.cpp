@@ -58,11 +58,9 @@ void CafeTitleList::LoadCacheFile()
 	auto xmlData = FileStream::LoadIntoMemory(sTLCacheFilePath);
 	if (!xmlData)
 		return;
-	pugi::xml_document doc;
-	if (!doc.load_buffer_inplace(xmlData->data(), xmlData->size(), pugi::parse_default, pugi::xml_encoding::encoding_utf8))
+	xml::Document doc;
+	if (!doc.load(xmlData->data(), xmlData->size()))
 		return;
-	auto titleListNode = doc.child("title_list");
-	pugi::xml_node itNode = titleListNode.first_child();
 	for (const auto& titleInfoNode : doc.child("title_list"))
 	{
 		TitleId titleId;
@@ -109,10 +107,7 @@ void CafeTitleList::StoreCacheFile()
 		return;
 	std::unique_lock _lock(sTLMutex);
 
-	pugi::xml_document doc;
-	auto declarationNode = doc.append_child(pugi::node_declaration);
-	declarationNode.append_attribute("version") = "1.0";
-	declarationNode.append_attribute("encoding") = "UTF-8";
+	xml::Document doc;
 	auto title_list_node = doc.append_child("title_list");
 
 	for (auto& tiIt : sTLList)
@@ -124,12 +119,12 @@ void CafeTitleList::StoreCacheFile()
 		titleInfoNode.append_attribute("sdk_version").set_value(fmt::format("{:}", info.sdkVersion).c_str());
 		titleInfoNode.append_attribute("group_id").set_value(fmt::format("{:08x}", info.group_id).c_str());
 		titleInfoNode.append_attribute("app_type").set_value(fmt::format("{:08x}", info.app_type).c_str());
-		titleInfoNode.append_child("region").append_child(pugi::node_pcdata).set_value(fmt::format("{}", (uint32)info.region).c_str());
-		titleInfoNode.append_child("name").append_child(pugi::node_pcdata).set_value(info.titleName.c_str());
-		titleInfoNode.append_child("format").append_child(pugi::node_pcdata).set_value(fmt::format("{}", (uint32)info.titleDataFormat).c_str());
-		titleInfoNode.append_child("path").append_child(pugi::node_pcdata).set_value(_pathToUtf8(info.path).c_str());
+		titleInfoNode.append_child("region").text().set(fmt::format("{}", (uint32)info.region).c_str());
+		titleInfoNode.append_child("name").text().set(info.titleName.c_str());
+		titleInfoNode.append_child("format").text().set(fmt::format("{}", (uint32)info.titleDataFormat).c_str());
+		titleInfoNode.append_child("path").text().set(_pathToUtf8(info.path).c_str());
 		if(!info.subPath.empty())
-			titleInfoNode.append_child("sub_path").append_child(pugi::node_pcdata).set_value(_pathToUtf8(info.subPath).c_str());
+			titleInfoNode.append_child("sub_path").text().set(_pathToUtf8(info.subPath).c_str());
 	}
 
 	fs::path tmpPath = fs::path(sTLCacheFilePath.parent_path()).append(fmt::format("{}__tmp", _pathToUtf8(sTLCacheFilePath.filename())));
@@ -139,7 +134,7 @@ void CafeTitleList::StoreCacheFile()
 		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(tmpPath));
 		return;
 	}
-	doc.save(fileOut, " ", 1, pugi::xml_encoding::encoding_utf8);
+	fileOut << doc.save(" ");
 	fileOut.flush();
 	fileOut.close();
 

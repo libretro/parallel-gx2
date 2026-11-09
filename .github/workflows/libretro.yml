@@ -152,6 +152,16 @@ jobs:
           make -C test/audio_mix clean
           SANITIZER=address,undefined ./test/audio_mix/run_tests.sh
 
+      - name: "XML"
+        # the core's XML layer over libretro-common's rxml and the settings
+        # files on it: plain, then under ASan + UBSan. The core's precompiled
+        # header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/xml/run_tests.sh
+          make -C test/xml clean
+          SANITIZER=address,undefined ./test/xml/run_tests.sh
+
       - name: "Error viewer"
         # erreula's dialog as the frontend's message and its answer from the
         # game's controllers: plain, then under ASan + UBSan
@@ -176,10 +186,9 @@ jobs:
       - name: "Wii U archives"
         # the core's .wua reader over libretro-common's zar, against archives
         # zar's writer makes: plain, under ThreadSanitizer, under ASan + UBSan.
-        # The core's precompiled header wants fmt and glm, the meta.xml
-        # parser pugixml.
+        # The core's precompiled header wants fmt and glm.
         run: |
-          git submodule update --init --depth 1 dependencies/fmt dependencies/glm dependencies/pugixml
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
           ./test/zarchive/run_tests.sh
           make -C test/zarchive clean
           SANITIZER=thread ./test/zarchive/run_tests.sh

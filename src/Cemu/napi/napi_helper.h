@@ -1,7 +1,7 @@
 #pragma once
 #include "napi.h"
 #include "curl/curl.h"
-#include "pugixml.hpp"
+#include "util/xml/Xml.h"
 
 typedef void CURL;
 
@@ -158,7 +158,7 @@ private:
 
 namespace NAPI
 {
-	bool _findXmlNode(pugi::xml_node& doc, pugi::xml_node& nodeOut, const char* name);
-	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, pugi::xml_node& node, _NAPI_CommonResultSOAP& result, pugi::xml_document& doc, pugi::xml_node& responseNode);
+	bool _findXmlNode(xml::Node& doc, xml::Node& nodeOut, const char* name);
+	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode);
 
 };

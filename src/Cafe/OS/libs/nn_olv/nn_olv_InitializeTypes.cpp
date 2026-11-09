@@ -112,8 +112,8 @@ namespace nn
 					return OLV_RESULT_FAILED_REQUEST;
 			}
 
-			pugi::xml_document doc;
-			if (!doc.load_buffer(req.getReceivedData().data(), req.getReceivedData().size()))
+			xml::Document doc;
+			if (!doc.load(req.getReceivedData().data(), req.getReceivedData().size()))
 			{
 				cemuLog_log(LogType::Force, fmt::format("Invalid XML in discovery service response"));
 				return OLV_RESULT_INVALID_XML;
@@ -140,14 +140,14 @@ namespace nn
 				</result>
 			*/
 
-			pugi::xml_node resultNode = doc.child("result");
+			xml::Node resultNode = doc.child("result");
 			if (!resultNode)
 			{
 				cemuLog_log(LogType::Force, "Discovery response doesn't contain <result>");
 				return OLV_RESULT_INVALID_XML;
 			}
 
-			pugi::xml_node endpointNode = resultNode.child("endpoint");
+			xml::Node endpointNode = resultNode.child("endpoint");
 			if (!endpointNode)
 			{
 				cemuLog_log(LogType::Force, "Discovery response doesn't contain <result><endpoint>");
@@ -316,4 +316,4 @@ namespace nn
 			return g_IsInitialized;
 		}
 	}
-}
+}

@@ -617,7 +617,7 @@ namespace nn
 		static_assert(sizeof(DownloadPostDataListParam) == 0x1000);
 
 		// parsing functions
-		bool ParseXML_DownloadedPostData(DownloadedPostData& obj, pugi::xml_node& xmlNode);
+		bool ParseXML_DownloadedPostData(DownloadedPostData& obj, xml::Node& xmlNode);
 
 		void loadOlivePostAndTopicTypes();
 	}
