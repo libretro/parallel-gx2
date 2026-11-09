@@ -20,6 +20,10 @@
 
 // Defined at global scope by the libretro glue (src/libretro/CemuLibretro.cpp).
 void libretro_frame_window_wait();
+// The GPU with nothing to do (LatteCommandProcessor.cpp), and the emulated
+// vsync, signalled when the guest's time reaches it (LatteTiming.cpp)
+bool LatteCP_IsIdle();
+uint64 LatteTiming_GuestVSync(uint64 now);
 
 #ifdef __arm64__
 #if defined(__clang__)
@@ -1089,9 +1093,14 @@ namespace coreinit
 		__OSUnlockScheduler();
 	}
 
+	// A host core running a guest thread, rather than in its idle loop: the
+	// guest's time only jumps ahead when none is (__OSIdleTimeSkip)
+	static std::atomic<bool> sCoreRunsThread[3]{};
+
 	void __OSSwitchToThreadFiber(OSThread_t* thread, uint32 coreIndex)
 	{
 		cemu_assert_debug(__OSHasSchedulerLock());
+		sCoreRunsThread[t_assignedCoreIndex].store(true, std::memory_order_relaxed);
 		cemu_assert_debug(s_threadToFiber.find(thread) != s_threadToFiber.end());
 
 		OSHostThread* hostThread = s_threadToFiber.find(thread)->second;
@@ -1311,6 +1320,35 @@ namespace coreinit
 
 	Fiber* g_idleLoopFiber[3]{};
 
+	// The guest's time, from the main core's idle loop, which every core's
+	// timed events go through: the vsync when the time reaches it, and - with
+	// no core running a thread, none waiting to, and the GPU idle - the time
+	// moved on to the next thing due, as far as the frame the frontend asked
+	// for goes (PPCTimerClock.h). Nothing would happen before then anyway: a
+	// frame takes as long as its work, not as long as the wall clock.
+	static void __OSIdleTimeSkip()
+	{
+		const uint64 now = PPCTimer_getFromRDTSC();
+		const uint64 nextVSync = LatteTiming_GuestVSync(now);
+		if (PPCTimer_getCap() == ~0ull)
+			return; // the frontend's clock is not running: the title is starting, or stopping
+		for (uint32 i = 0; i < 3; i++)
+		{
+			if (sCoreRunsThread[i].load(std::memory_order_relaxed) || !g_coreRunQueueThreadCount[i].isZero())
+				return;
+		}
+		if (!LatteCP_IsIdle())
+			return;
+		uint64 next = nextVSync;
+		// in the guest's ticks, which are the clock's over 20, from 2000
+		const uint64 alarm = alarm_soonest();
+		if (alarm != ~0ull && alarm > ppcCyclesSince2000TimerClock)
+			next = std::min(next, (alarm - ppcCyclesSince2000TimerClock) * 20);
+		next = std::min(next, snd_core::AXOut_NextTick());
+		if (next > now)
+			PPCTimer_skipTo(next);
+	}
+
 	// idle fiber per core if no thread is runnable
 	// this is necessary since we can't block in __OSThreadSwitchToNext() (__OSStoreThread + thread switch must happen inside same scheduler lock)
 	void __OSThreadCoreIdle(void* unusedParam)
@@ -1324,6 +1362,7 @@ namespace coreinit
 			// only point in this loop where no scheduler lock is held and no
 			// guest fiber is on the stack - so it is where a core waits out a
 			// frame the frontend has not asked for.
+			sCoreRunsThread[t_assignedCoreIndex].store(false, std::memory_order_relaxed);
 			::libretro_frame_window_wait();
 			sSchedulerIdleLoopCount[t_assignedCoreIndex].fetch_add(1, std::memory_order_relaxed);
 			sSchedulerHeartbeat[t_assignedCoreIndex].fetch_add(1, std::memory_order_relaxed);
@@ -1353,6 +1392,7 @@ namespace coreinit
 				{
 					Fiber::Switch(*t_schedulerFiber); // switch back to original thread to exit
 				}
+				__OSIdleTimeSkip();
 				__OSCheckSystemEvents();
 				if(g_isMulticoreMode == false)
 					coreIndex = (coreIndex + 1) % 3;

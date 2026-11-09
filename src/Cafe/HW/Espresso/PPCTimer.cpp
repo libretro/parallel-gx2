@@ -165,3 +165,29 @@ uint64 PPCTimer_getFromRDTSC()
 	const uint64 tsc = __rdtsc();
 	return sGuestClock.Read(tsc, _rdtscFrequency.load(std::memory_order_acquire), ActiveSettings::GetTimerShiftFactor());
 }
+
+// The frontend's clock (PPCTimerClock.h): where the guest's time stops, the
+// end of the frame the frontend has asked for, and a jump onward with
+// everything idle. In the console's clock, the unit PPCTimer_getFromRDTSC
+// counts in.
+void PPCTimer_setCap(uint64 cap)
+{
+	sGuestClock.SetCap(cap);
+}
+
+uint64 PPCTimer_getCap()
+{
+	return sGuestClock.Cap();
+}
+
+void PPCTimer_skipTo(uint64 target)
+{
+	sGuestClock.SkipTo(target);
+}
+
+// The time stands at the cap: the frame the frontend asked for is done with
+bool PPCTimer_isAtCap()
+{
+	const uint64 cap = sGuestClock.Cap();
+	return cap != PPCTimerClock::kNoCap && PPCTimer_getFromRDTSC() >= cap;
+}

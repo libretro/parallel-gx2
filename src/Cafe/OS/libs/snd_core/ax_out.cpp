@@ -1,6 +1,8 @@
 #include "Cafe/OS/libs/snd_core/ax.h"
 #include "Cafe/OS/libs/snd_core/ax_internal.h"
 #include "Cafe/HW/MMU/MMU.h"
+#include "Cafe/HW/Espresso/Const.h"
+#include "Cafe/HW/Espresso/PPCState.h"
 #include "audio/IAudioAPI.h"
 #include "libretro/LibretroAudioAPI.h"
 #include "audio/AudioMix.h"
@@ -504,156 +506,54 @@ namespace snd_core
 	std::atomic<uint64_t> g_ax_update_calls{0};
 	std::atomic<uint64_t> g_ax_update_passed{0};
 
-	// Samples the frontend has asked for and AX has not made yet. In a libretro
-	// core the audio has to follow the frames the frontend asks for, not the
-	// wall clock: RetroArch blocks in the audio callback until what it was
-	// given has played, so audio made by the clock turns a slow frame into a
-	// longer wait in the next one, and a longer wait into more audio - NNshi's
-	// 60 fps settled at 15, this machine's at 10, each retro_run spending
-	// ~100 ms handing over the ring's worth of audio. Paced by frames, the
-	// audio callback is what paces retro_run, at the frame rate the core
-	// reports. Capped at 250 ms, so a title that stalls does not come back
-	// with a long burst to catch up, while a slow device's retro_run, 100 ms
-	// or more apart, still fits a grant on top of what is left of the last.
-	static std::atomic<int32_t> s_libretro_ax_budget{0};
-	// The last grant: what one retro_run hands over, 33 ms of audio at 30 fps
-	static std::atomic<int32_t> s_libretro_ax_last_grant{0};
+	// AX's frames by the guest's time - one every 3 ms of it - which the
+	// frontend's frames set the pace of (PPCTimerClock.h): a frame of video
+	// is a frame of audio, whatever the frontend's speed, as in the cores
+	// that count cycles. Each waits for the title to have taken the one
+	// before (its AX thread renders it), as the console's DSP would. A title
+	// that fell behind catches up at most at 1.7 ms of its time apart, so its
+	// own threads get time between the frames - a streaming voice its next
+	// buffer, or it loops what it has (sco8487's Deus Ex, "stand stand
+	// stand").
+	static constexpr uint64 kAXFrame = Espresso::CORE_CLOCK * 3 / 1000;
+	static constexpr uint64 kAXCatchUpSpacing = Espresso::CORE_CLOCK * 17 / 10000;
+	static std::atomic<uint64> s_axNext{0};
 
-	void AXOut_LibretroGrantSamples(int32_t samples)
+	// When the next frame is due, in the guest's time; ~0 while the title has
+	// not taken the last one, which is work of the title's still to do
+	uint64 AXOut_NextTick()
 	{
-		constexpr int32_t kCap = 15 * 800; // 250 ms
-		s_libretro_ax_last_grant.store(samples, std::memory_order_relaxed);
-		int32_t cur = s_libretro_ax_budget.load(std::memory_order_relaxed);
-		while (!s_libretro_ax_budget.compare_exchange_weak(cur, std::min(cur + samples, kCap), std::memory_order_relaxed))
-			;
+		if (!snd_core::isInitialized() || numQueuedFramesSndGeneric != snd_core::getNumProcessedFrames())
+			return ~0ull;
+		const uint64 next = s_axNext.load(std::memory_order_relaxed);
+		return next ? next : ~0ull;
 	}
 
 	void AXOut_update()
 	{
 		g_ax_update_calls.fetch_add(1, std::memory_order_relaxed);
-		// With Audio Thread on, RetroArch pulls the audio on its own thread
-		// and AX runs by the wall clock below, as standalone does: the grants
-		// from retro_run, which a late retro_run held back, do not apply.
-		if (!LibretroAudioAPI::IsThreadMode())
-		{
-			if (s_libretro_ax_budget.load(std::memory_order_relaxed) < AX_SAMPLES_PER_3MS_48KHZ)
-				return;
-
-			// The budget says how much audio to make, not how fast. A slow device's
-			// retro_run grants 100 ms or more at once, and spent as soon as it
-			// arrived that is thirty-odd 3 ms frames back to back - with no time
-			// between them for the title's own threads, which is when a streaming
-			// voice gets its next buffer. Starved of that, the voice loops what it
-			// already has: sco8487's Deus Ex repeating a line ("stand stand
-			// stand") while the NPCs wait for it to end. The wall-clock path below
-			// keeps frames at least 1.7 ms apart for the same reason, so this one
-			// does too - fast enough to catch up on a backlog at nearly twice real
-			// time, slow enough to leave the title room between frames.
-			constexpr static auto kLibretroMinSpacing = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(1700));
-			// But only when there is a backlog to catch up on. A grant of no more
-			// than one retro_run's worth is spent a frame per 3 ms, the console's
-			// own rate: at 1.7 ms a 30 fps title's 33 ms grant was made in 19 ms
-			// and then nothing for 14, so its streaming voices were asked for
-			// data in bursts with gaps between, as standalone never asks - pops
-			// and crackles in Wind Waker HD that standalone does not have (NNshi).
-			constexpr static auto kLibretroFrameSpacing = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(3000));
-			// steady_clock, on every platform: it is monotonic everywhere the core
-			// is built - QueryPerformanceCounter on Windows with MSVC and MinGW
-			// alike, CLOCK_MONOTONIC with libstdc++, the monotonic clocks with
-			// libc++. now_cached() is not: with libstdc++ (Linux, webOS, BSD) it is
-			// CLOCK_REALTIME, and a system clock stepped back would have held AX
-			// until it caught up with where it had been.
-			const auto libretroNow = std::chrono::steady_clock::now();
-			static auto s_libretro_last_frame = libretroNow - kLibretroMinSpacing;
-			const bool backlog = s_libretro_ax_budget.load(std::memory_order_relaxed) > s_libretro_ax_last_grant.load(std::memory_order_relaxed);
-			if ((libretroNow - s_libretro_last_frame) < (backlog ? kLibretroMinSpacing : kLibretroFrameSpacing))
-				return;
-
-			g_ax_update_passed.fetch_add(1, std::memory_order_relaxed);
-			if (snd_core::isInitialized() && numQueuedFramesSndGeneric == snd_core::getNumProcessedFrames())
-			{
-				AXOut_updateDevicePlayState(true);
-				snd_core::AXIst_QueueFrame();
-				numQueuedFramesSndGeneric++;
-				s_libretro_ax_budget.fetch_sub(AX_SAMPLES_PER_3MS_48KHZ, std::memory_order_relaxed);
-				s_libretro_last_frame = libretroNow;
-			}
+		if (!snd_core::isInitialized())
 			return;
-		}
-
-		constexpr static auto kTimeout = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(((IAudioAPI::kBlockCount * 3) / 4) * (AX_FRAMES_PER_GROUP * 3)));
-		constexpr static auto kWaitDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(3));
-		constexpr static auto kWaitDurationFast = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(2900));
-		constexpr static auto kWaitDurationMinimum = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(1700));
-
-		// if we haven't buffered any blocks, we will wait less time than usual
-		bool additional_blocks_required = false;
-		{
-			const AudioDevicesUse devices;
-			if (devices)
-				additional_blocks_required = (g_tvAudio && g_tvAudio->NeedAdditionalBlocks()) || (g_padAudio && g_padAudio->NeedAdditionalBlocks());
-		}
-
-		const auto wait_duration = additional_blocks_required ? kWaitDurationFast : kWaitDuration;
-
-		// s_ax_interval_timer increases by the wait period
-		// it can lag behind by multiple periods (up to kTimeout) if there is minor stutter in the CPU thread
-		// s_last_check is always set to the timestamp at the time of firing
-		// it's used to enforce the minimum wait delay (we want to avoid calling AX update in quick succession because other threads may need to do work first) 
-
-		// Windows needs a different clock here, and only Windows. On a MinGW
-		// build now_cached falls back to std::chrono::high_resolution_clock,
-		// which is libstdc++'s system_clock and ticks with the ~15.6 ms system
-		// timer rather than with QPC - a clock that coarse never opens this 3 ms
-		// gate on time, so AX queues one 3 ms frame per tick instead of five,
-		// which is audio at a fifth of real time. Upstream never meets it: its
-		// Windows build is MSVC, where now_cached is QPC by hand.
-		//
-		// Everywhere else the two are not interchangeable. On Linux - Android
-		// included - tick_cached reads CLOCK_MONOTONIC_RAW, which is neither
-		// slewed to follow real time nor guaranteed to be in the vDSO, while
-		// now_cached is CLOCK_REALTIME. Pacing audio against an unslewed clock
-		// drifts against the device's own, which is what this gate exists to
-		// avoid, so those platforms keep the clock they had.
-#if BOOST_OS_WINDOWS
-		static auto s_ax_interval_timer = tick_cached() - kWaitDuration;
-		static auto s_last_check = tick_cached();
-
-		const auto now = tick_cached();
-#else
-		static auto s_ax_interval_timer = now_cached() - kWaitDuration;
-		static auto s_last_check = now_cached();
-
-		const auto now = now_cached();
-#endif
-		const auto diff = (now - s_ax_interval_timer);
-
-		if (diff < wait_duration)
+		const uint64 now = PPCTimer_getFromRDTSC();
+		uint64 next = s_axNext.load(std::memory_order_relaxed);
+		if (next == 0 || next > now + 2 * kAXFrame)
+			next = now; // the first, or the time was reset (a new title)
+		if (now < next)
 			return;
-
 		g_ax_update_passed.fetch_add(1, std::memory_order_relaxed);
-
-		// handle minimum wait time (1.7MS)
-		if ((now - s_last_check) < kWaitDurationMinimum)
+		if (numQueuedFramesSndGeneric != snd_core::getNumProcessedFrames())
 			return;
-		s_last_check = now;
-
-		// if we're too far behind, skip forward
-		if (diff >= kTimeout)
-			s_ax_interval_timer = (now - wait_duration);
-		else
-			s_ax_interval_timer += wait_duration;
-
-
-		if (snd_core::isInitialized())
-		{
-			if (numQueuedFramesSndGeneric == snd_core::getNumProcessedFrames())
-			{
-				AXOut_updateDevicePlayState(true);
-				snd_core::AXIst_QueueFrame();
-				numQueuedFramesSndGeneric++;
-			}
-		}
+		AXOut_updateDevicePlayState(true);
+		snd_core::AXIst_QueueFrame();
+		numQueuedFramesSndGeneric++;
+		// 3 ms after the last one was due; behind, no sooner than the catch-up
+		// spacing; far behind (a title that stalled), from now
+		next += kAXFrame;
+		if (next < now + kAXCatchUpSpacing)
+			next = now + kAXCatchUpSpacing;
+		if (now > next + 8 * kAXFrame)
+			next = now + kAXFrame;
+		s_axNext.store(next, std::memory_order_relaxed);
 	}
 
 }

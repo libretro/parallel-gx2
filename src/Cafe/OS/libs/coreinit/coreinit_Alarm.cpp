@@ -111,6 +111,11 @@ namespace coreinit
 			return m_nextFire;
 		}
 
+		static uint64 SoonestFire()
+		{
+			return g_soonestAlarm.load(std::memory_order_relaxed);
+		}
+
 		static bool quickCheckForAlarm(uint64 currentTick)
 		{
 			// fast way to check if any alarm was triggered without requiring scheduler lock
@@ -161,6 +166,11 @@ namespace coreinit
 	void OSHostAlarmDestroy(OSHostAlarm* hostAlarm)
 	{
 		delete hostAlarm;
+	}
+
+	uint64 alarm_soonest()
+	{
+		return OSHostAlarm::SoonestFire();
 	}
 
 	void alarm_update()

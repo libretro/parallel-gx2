@@ -62,6 +62,8 @@ namespace coreinit
 	void OSAlarm_Shutdown();
 
 	void alarm_update();
+	// When the soonest alarm is due, in OSGetTime's ticks; ~0 for none
+	uint64 alarm_soonest();
 
 	void MapAlarmExports();
 	void InitializeAlarm();

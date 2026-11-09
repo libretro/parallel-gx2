@@ -394,8 +394,8 @@ namespace snd_core
 	void AXOut_init();
 	void AXOut_reset();
 	void AXOut_update();
-	// One retro_run's worth of audio: how many samples AX may make next.
-	void AXOut_LibretroGrantSamples(int32_t samples);
+	// When AX's next frame is due, in the guest's time; ~0 for not yet known
+	uint64 AXOut_NextTick();
 
 	COSModule* GetModuleSndCore1();
 	COSModule* GetModuleSndCore2();

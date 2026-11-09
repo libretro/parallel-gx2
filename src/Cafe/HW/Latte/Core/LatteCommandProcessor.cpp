@@ -190,6 +190,15 @@ void LatteCP_signalEnterWait()
 	LatteIndices_invalidateAll();
 }
 
+// The GPU has run out of commands: with the emulated cores idle too, the
+// guest's time may jump ahead (coreinit_Thread.cpp, __OSIdleTimeSkip)
+static std::atomic<bool> s_cpIdle{false};
+
+bool LatteCP_IsIdle()
+{
+	return s_cpIdle.load(std::memory_order_acquire);
+}
+
 /*
 * Read a U32 from the command buffer
 * If no data is available then wait in a busy loop
@@ -201,7 +210,12 @@ uint32 LatteCP_readU32Deprc()
 	{
 		uint32 cmdWord;
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
+		{
+			if (s_cpIdle.load(std::memory_order_relaxed))
+				s_cpIdle.store(false, std::memory_order_release);
 			return cmdWord;
+		}
+		s_cpIdle.store(true, std::memory_order_release);
 
 		g_renderer->NotifyLatteCommandProcessorIdle(); // let the renderer know in case it wants to flush any commands
 		performanceMonitor.gpuTime_idleTime.beginMeasuring();
@@ -213,7 +227,10 @@ uint32 LatteCP_readU32Deprc()
 		LatteThread_HandleOSScreen(); // check if new frame was presented via OSScreen API
 
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
+		{
+			s_cpIdle.store(false, std::memory_order_release);
 			return cmdWord;
+		}
 		if (Latte_GetStopSignal())
 			LatteThread_Exit();
 		// A thread waiting here for a command that is not coming is the shape
@@ -1546,8 +1563,6 @@ void LatteCP_processCommandBuffer(DrawPassContext& drawPassCtx)
 
 #include <atomic>
 
-// Defined at global scope by the libretro glue (src/libretro/CemuLibretro.cpp).
-void libretro_frame_window_wait();
 
 void LatteCP_ProcessRingbuffer()
 {
@@ -1556,9 +1571,10 @@ void LatteCP_ProcessRingbuffer()
 	while (true)
 	{
 		// command boundary: safe place to stand still while the frontend
-		// rebuilds its graphics context, and equally while it is not asking
-		// for frames - otherwise this loop spins on a ring that the parked
-		// emulated cores are not filling.
+		// rebuilds its graphics context. Not while it is not asking for
+		// frames: the guest's time stops then, the cores with it, and an
+		// empty ring is slept on (LatteCP_waitForWork) - while the frame
+		// already asked for is drawn to the end.
 		Latte_GpuPauseGate();
 		// Coming out of the gate is the one place this thread can find the
 		// world changed under it: it parks while the frontend takes its
@@ -1567,7 +1583,6 @@ void LatteCP_ProcessRingbuffer()
 		// reading a command, not after.
 		if (Latte_GetStopSignal())
 			LatteThread_Exit();
-		::libretro_frame_window_wait();
 		uint32 itHeader = LatteCP_readU32Deprc();
 		uint32 itHeaderType = (itHeader >> 30) & 3;
 		if (itHeaderType == 3)

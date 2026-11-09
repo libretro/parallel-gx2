@@ -213,6 +213,13 @@ uint64 PPCTimer_getRawTsc();
 
 void PPCTimer_start();
 
+// The frontend's clock: the guest's time stops at the cap (~0ull: nowhere)
+// and jumps onward with everything idle (PPCTimerClock.h)
+void PPCTimer_setCap(uint64 cap);
+uint64 PPCTimer_getCap();
+void PPCTimer_skipTo(uint64 target);
+bool PPCTimer_isAtCap();
+
 // core info and control
 extern uint32 ppcThreadQuantum;
 

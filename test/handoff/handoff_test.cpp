@@ -36,7 +36,11 @@
 //  - PPCTimerClock (the guest's time base): never goes backwards on any core
 //    or across them, runs at the console's clock over the TSC's rate times
 //    the shift, and moves no time already counted when the rate is refined
-//    or the shift changes under readers;
+//    or the shift changes under readers; the frontend's clock on top of it -
+//    the time stops at the cap and goes on from there, not from where the
+//    wall clock got to, when it is raised; a skip jumps no further than the
+//    cap and is spent once; and readers on several threads never see the
+//    time go back while the cap rises and skips come in;
 //  - AtomicPtrBag (the pipelines a shader or framebuffer is used by): compile
 //    threads registering and dropping pipelines on shared shaders at once
 //    lose none and keep none they dropped, and an owner's destruction hands
@@ -751,6 +755,16 @@ static void TestAudioDevicesGate()
 		}
 	}
 	portal.join();
+	// a player that never got the processor yet has played nothing: not a
+	// failure of the gate, so with a device there wait for its first block
+	// before stopping it
+	{
+		AudioDevicesChange change;
+		if (!device)
+			device = new FakeAudioDevice();
+	}
+	while (fed.load() == 0)
+		std::this_thread::yield();
 	stop.store(true);
 	for (auto& t : players)
 		t.join();
@@ -892,6 +906,82 @@ static void TestPPCTimerClock()
 	for (auto& t : readers)
 		t.join();
 	CHECK(!bad.load());
+}
+
+// The frontend's clock: the cap and the skip
+static void TestPPCTimerClockCap()
+{
+	const uint64_t F = PPCTimerClock::kConsoleClock; // a TSC tick is a guest tick
+	PPCTimerClock c;
+	c.Restart(1000);
+	CHECK(c.Read(1000, F, 3) == 0);
+	CHECK(c.Read(1500, F, 3) == 500);   // no cap: as before
+	c.SetCap(800);
+	CHECK(c.Read(1700, F, 3) == 700);
+	CHECK(c.Read(2000, F, 3) == 800);   // stops at the cap
+	CHECK(c.Read(9000, F, 3) == 800);   // however long the frontend takes
+	c.SetCap(1000);
+	CHECK(c.Read(9000, F, 3) == 800);   // goes on from there, no jump
+	CHECK(c.Read(9100, F, 3) == 900);
+	CHECK(c.Read(9500, F, 3) == 1000);
+	c.SetCap(2000);
+	c.SkipTo(1500);                     // everything idle: on to what is due
+	CHECK(c.Read(9500, F, 3) == 1500);
+	CHECK(c.Read(9600, F, 3) == 1600);
+	c.SkipTo(5000);                     // no further than the cap
+	CHECK(c.Read(9600, F, 3) == 2000);
+	c.SetCap(3000);                     // and spent: not again once raised
+	CHECK(c.Read(9600, F, 3) == 2000);
+	CHECK(c.Read(9700, F, 3) == 2100);
+	c.SkipTo(1000);                     // into the past: nothing
+	CHECK(c.Read(9700, F, 3) == 2100);
+	c.SetCap(PPCTimerClock::kNoCap);
+	CHECK(c.Read(10700, F, 3) == 3000); // stopped at the old cap until the lift is read
+	CHECK(c.Read(11700, F, 3) == 4000); // and free from there
+	// a cap set long after the last read: the time stops at it, not at
+	// wherever the epoch before it would have run to
+	c.SetCap(4500);
+	CHECK(c.Read(20000, F, 3) == 4500);
+
+	// readers on four threads while the cap rises and skips come in: no read
+	// behind one before it, none past the cap
+	PPCTimerClock m;
+	m.Restart(0);
+	m.Read(0, F, 3);
+	std::atomic<uint64_t> tsc{0}, cap{0};
+	std::atomic_bool stop{false}, bad{false};
+	std::vector<std::thread> readers;
+	for (int r = 0; r < 4; r++)
+		readers.emplace_back([&] {
+			uint64_t mine = 0;
+			while (!stop.load(std::memory_order_relaxed))
+			{
+				const uint64_t v = m.Read(tsc.load(std::memory_order_relaxed), F, 3);
+				// the clock's cap is raised before the copy here: one step
+				const uint64_t limit = cap.load(std::memory_order_acquire);
+				if (v < mine || (limit && v > limit + 300))
+					bad.store(true);
+				mine = v;
+			}
+		});
+	uint64_t c2 = 0;
+	for (int i = 0; i < 200000; i++)
+	{
+		tsc.fetch_add(7, std::memory_order_relaxed);
+		if (i % 50 == 0)
+		{
+			c2 += 300;
+			m.SetCap(c2);
+			cap.store(c2, std::memory_order_release);
+		}
+		if (i % 37 == 0)
+			m.SkipTo(c2 - 100);
+	}
+	stop.store(true);
+	for (auto& t : readers)
+		t.join();
+	CHECK(!bad.load());
+	CHECK(m.Read(tsc.load(), F, 3) <= c2);
 }
 
 // --- pipeline dependency bags ---------------------------------------------
@@ -1271,6 +1361,10 @@ static void TestRcuCell()
 	writer2.join();
 	for (uint64_t i = 1; i <= 5000; i++)
 		cell.Write([i] { return RcuTestValue(i); });
+	// readers that never got the processor yet have read nothing: wait for
+	// a read before stopping them
+	while (reads.load() == 0)
+		std::this_thread::yield();
 	stop.store(true);
 	for (auto& t : readers)
 		t.join();
@@ -1693,6 +1787,7 @@ int main()
 	TestAudioDevicesGate();
 	TestAtomicPageSet();
 	TestPPCTimerClock();
+	TestPPCTimerClockCap();
 	TestAtomicPtrBag();
 	TestMpscQueue();
 	TestMpmcQueue();

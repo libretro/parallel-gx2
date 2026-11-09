@@ -25,33 +25,71 @@
 //
 // It replaces an accumulator every read added to under a spinlock - every
 // guest time read on every core.
+//
+// Two things make it the frontend's clock rather than the wall's. A cap: the
+// time stops there - the end of the frame the frontend has asked for - and
+// only moves on when the cap is raised, from where it stopped. And a skip:
+// with every core and the GPU idle, the time jumps to the next thing due (an
+// alarm, AX's next frame, the vsync), no further than the cap, rather than
+// waiting it out. So a frame takes as long as its work, and the frontend's
+// calls set the speed - fast-forward, slow motion, frame advance - as in the
+// cores that count cycles. Both take effect at the next read that sees them,
+// with a new epoch made by the one read that wins m_rebasing, as a rate
+// change does.
 class PPCTimerClock
 {
 public:
 	static constexpr uint64_t kConsoleClock = 1243125000ull; // Espresso::CORE_CLOCK
 
-	// Guest time 0 at this TSC; nobody may be reading (the title starts)
+	static constexpr uint64_t kNoCap = ~0ull;
+
+	// Guest time 0 at this TSC, no cap; nobody may be reading (the title starts)
 	void Restart(uint64_t tsc)
 	{
-		m_epoch.Store(Epoch{tsc, 0, 0, 0});
+		m_epoch.Store(Epoch{tsc, 0, 0, 0, kNoCap});
+		m_cap.store(kNoCap, std::memory_order_relaxed);
+		m_skip.store(0, std::memory_order_relaxed);
 		m_last.store(0, std::memory_order_relaxed);
+	}
+
+	// Where the time stops; kNoCap for nowhere. Only ever raised.
+	void SetCap(uint64_t cap) { m_cap.store(cap, std::memory_order_release); }
+	uint64_t Cap() const { return m_cap.load(std::memory_order_acquire); }
+
+	// Jump to @target, or as far toward it as the cap lets
+	void SkipTo(uint64_t target)
+	{
+		uint64_t cur = m_skip.load(std::memory_order_relaxed);
+		while (target > cur && !m_skip.compare_exchange_weak(cur, target, std::memory_order_release, std::memory_order_relaxed))
+			;
 	}
 
 	uint64_t Read(uint64_t tsc, uint64_t freq, uint8_t shift)
 	{
 		Epoch e = m_epoch.Load();
-		if (freq != 0 && (freq != e.freq || shift != e.shift) && !m_rebasing.exchange(true, std::memory_order_acquire))
+		const uint64_t cap = m_cap.load(std::memory_order_acquire);
+		uint64_t skip = m_skip.load(std::memory_order_acquire);
+		const bool rate = freq != 0 && (freq != e.freq || shift != e.shift);
+		if ((rate || cap != e.cap || skip != 0) && !m_rebasing.exchange(true, std::memory_order_acquire))
 		{
 			e = m_epoch.Load(); // as it is now, with the flag held
-			if (freq != e.freq || shift != e.shift)
-			{
-				uint64_t at = At(e, tsc);
-				const uint64_t last = m_last.load(std::memory_order_relaxed);
-				if (at < last)
-					at = last;
-				e = Epoch{tsc, at, freq, shift};
-				m_epoch.Store(e);
-			}
+			uint64_t at = At(e, tsc);
+			const uint64_t last = m_last.load(std::memory_order_relaxed);
+			// Not past the cap: the time that passed since the last read was
+			// the old epoch's, and a cap set in it - always ahead of the time
+			// then - is where it should have stopped. Unless a read already
+			// gave more (the cap was set behind it): never backwards.
+			if (at > cap)
+				at = cap;
+			if (at < last)
+				at = last;
+			// a skip is for the moment it was asked: taken now, as far as the
+			// cap lets, and not again once the cap is raised
+			skip = m_skip.exchange(0, std::memory_order_acq_rel);
+			if (skip > at)
+				at = skip < cap ? skip : (cap > at ? cap : at);
+			e = Epoch{tsc, at, freq != 0 ? freq : e.freq, freq != 0 ? shift : e.shift, cap};
+			m_epoch.Store(e);
 			m_rebasing.store(false, std::memory_order_release);
 		}
 		const uint64_t t = At(e, tsc);
@@ -71,14 +109,16 @@ private:
 		uint64_t guest;
 		uint64_t freq; // 0: no rate yet, the time stands still
 		uint64_t shift;
+		uint64_t cap;  // the cap the epoch was made with: the time stops there
 	};
 
 	static uint64_t At(const Epoch& e, uint64_t tsc)
 	{
-		if (e.freq == 0 || tsc <= e.tsc)
+		if (e.freq == 0 || tsc <= e.tsc || e.guest >= e.cap)
 			return e.guest;
 		const uint64_t elapsed = MulDiv(tsc - e.tsc, kConsoleClock, e.freq);
-		return e.guest + ((elapsed << 3) >> e.shift);
+		const uint64_t t = e.guest + ((elapsed << 3) >> e.shift);
+		return t < e.cap ? t : e.cap;
 	}
 
 	// a * b / d with a 128-bit product; the quotient fits for centuries
@@ -95,6 +135,8 @@ private:
 	}
 
 	SeqlockValue<Epoch> m_epoch;
+	std::atomic<uint64_t> m_cap{kNoCap};
+	std::atomic<uint64_t> m_skip{0};
 	std::atomic<uint64_t> m_last{0};
 	std::atomic_bool m_rebasing{false};
 };

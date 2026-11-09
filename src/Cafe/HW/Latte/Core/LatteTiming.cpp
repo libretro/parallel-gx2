@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/HW/Espresso/Const.h"
 #include "Cafe/OS/libs/gx2/GX2_Event.h"
 #ifdef ENABLE_VULKAN
 #include "Cafe/HW/Latte/Renderer/Vulkan/VsyncDriver.h"
@@ -55,7 +56,10 @@ bool LatteTiming_getCustomVsyncFrequency(sint32& customFrequency)
 
 bool s_usingHostDrivenVSync = false;
 
-static bool s_usingLibretroVSync = false;
+// The vsync comes from the guest's time (LatteTiming_GuestVSync), not from
+// the timer in LatteTiming_HandleTimedVsync: the frontend's frames set that
+// time's pace
+static bool s_usingLibretroVSync = true;
 
 void LatteTiming_EnableLibretroVSync()
 {
@@ -170,6 +174,41 @@ void LatteTiming_NotifyHostVSync()
 		s_lastHostVsync += vsyncPeriod;
 
 	LatteTiming_signalVsync();
+}
+
+// The emulated vsync by the guest's time, at the rate the timer in
+// LatteTiming_HandleTimedVsync keeps on the wall clock
+uint64 LatteTiming_GuestVSyncPeriod()
+{
+	sint32 custom;
+	return LatteTiming_getCustomVsyncFrequency(custom)
+		? Espresso::CORE_CLOCK / (uint64)custom
+		: Espresso::CORE_CLOCK * 1000ull / 1002ull / 60ull;
+}
+
+static std::atomic<uint64> s_nextGuestVSync{0};
+
+// When the next vsync is due, in the guest's time; 0 before the first
+uint64 LatteTiming_NextGuestVSync()
+{
+	return s_nextGuestVSync.load(std::memory_order_acquire);
+}
+
+// From the main core's idle loop: the vsync signalled as the guest's time
+// reaches it. Returns when the next is due.
+uint64 LatteTiming_GuestVSync(uint64 now)
+{
+	const uint64 period = LatteTiming_GuestVSyncPeriod();
+	uint64 next = s_nextGuestVSync.load(std::memory_order_relaxed);
+	if (next == 0 || now + period < next || now >= next + period * 10)
+		next = now + period; // the first, or the time was reset (a new title)
+	else if (now >= next)
+	{
+		LatteTiming_signalVsync();
+		next += period;
+	}
+	s_nextGuestVSync.store(next, std::memory_order_release);
+	return next;
 }
 
 // handle timed vsync event

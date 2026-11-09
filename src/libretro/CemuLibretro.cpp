@@ -45,6 +45,8 @@
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/OS/libs/h264_avc/h264dec.h"
+#include "Cafe/HW/Espresso/Const.h"
+#include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "Cafe/HW/Latte/Core/LatteTiming.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
@@ -412,27 +414,12 @@ extern retro_eventcount_t s_frame_wake;
 static std::atomic<unsigned> s_gate_tokens{1};    // one, so the first frame does not wait
 static std::atomic_bool s_gate_released{false};  // shutting down: nothing waits any more
 
-// True between "the frontend asked for a frame" and "the frame was handed
-// over": the window in which the emulator is allowed to advance. The GPU
-// thread's own token is what paces the frame; this is what the emulated CPU
-// cores look at, since they must not consume tokens - they run many times per
-// frame - but they must not run outside the window either.
-static std::atomic_bool s_frame_permit{false};
-
-// When retro_run last handed out a frame. The window above closes at every
-// swap, and holding the emulated cores to it starves everything the title
-// paces by the wall clock rather than by frames: AX asks for a 3 ms audio
-// frame, the title's AX thread on another core renders it, and only then is
-// the next one asked for. With the cores parked from the swap to the next
-// retro_run, that round trip fits once per video frame - 60 audio frames a
-// second where 333 are wanted, audio at under a fifth of real time. So the
-// cores keep running between frames for as long as the frontend is still
-// calling, and stand still only once it has stopped (#12): pausing is
-// retro_run not coming for well over a frame. The frames themselves stay paced
-// by the GPU thread's token, which this does not touch.
-// Nanoseconds on steady_clock, so the window can be read without the mutex.
-static std::atomic<int64_t> s_last_grant_ns{0};
-static constexpr auto kFrontendStoppedAfter = std::chrono::milliseconds(100);
+// The emulated cores run while the guest's time has not reached the end of
+// the frame the frontend asked for (PPCTimerClock.h): retro_run raises it a
+// frame at a time, so they stand still once the frontend stops calling -
+// pausing is retro_run not coming - and the time and they move together,
+// fast-forwarded, slowed down or a frame at a time, as the frontend calls.
+// The GPU thread's own token paces the frames it hands over.
 
 // The eventcounts the gate and the frame handoff park on, brought up once for
 // the life of the process: the threads that wait on them come and go with each
@@ -477,11 +464,6 @@ static std::atomic<unsigned> s_gate_hold_open{0};
 // waiting for the GPU thread, and the GPU thread swaps while it gets there -
 // so a gate that holds it then is holding it against a retro_run that cannot
 // be called yet, and the load never finishes. Boot swaps go straight through.
-namespace snd_core
-{
-	// ax_out.cpp: one retro_run's worth of audio for AX to make.
-	void AXOut_LibretroGrantSamples(int32_t samples);
-}
 
 // Where a frame's time goes (cemu_log_audio): the GPU thread's wait for a
 // token at the swap, and retro_run's own phases, reported once a second.
@@ -502,11 +484,7 @@ void libretro_frame_gate_wait()
 				std::chrono::steady_clock::now() - start).count(), std::memory_order_relaxed);
 		}
 	} addWait{waitStart};
-	// The frame is delivered, so the window closes here rather than when the
-	// next one opens. The emulated cores keep going until the frontend has
-	// stopped asking altogether (s_last_grant_ns); this thread waits for the next
-	// token.
-	s_frame_permit = false;
+	// The frame is delivered; this thread waits for the next token.
 	libretro_wait_until(&s_gate_wake, [] {
 		return s_gate_tokens.load(std::memory_order_acquire) > 0 ||
 			s_gate_released.load(std::memory_order_acquire) ||
@@ -539,17 +517,15 @@ void libretro_frame_window_wait()
 	// time and the GPU thread queued behind it at every command: 60 fps fell to
 	// 15. Open, it costs a few atomic loads and a clock read.
 	auto open = [] {
-		const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
-		return s_frame_permit.load(std::memory_order_acquire) ||
+		return !PPCTimer_isAtCap() ||
 			s_gate_released.load(std::memory_order_acquire) ||
-			s_gate_hold_open.load(std::memory_order_acquire) != 0 ||
-			now - s_last_grant_ns.load(std::memory_order_acquire) <
-				std::chrono::duration_cast<std::chrono::steady_clock::duration>(kFrontendStoppedAfter).count();
+			s_gate_hold_open.load(std::memory_order_acquire) != 0;
 	};
 	if (open())
 		return;
-	// Time only ever turns this from true to false; the way back is a grant,
-	// a hold or a release, each of which notifies after it changes the state.
+	// The time only ever turns this from true to false; the way back is a
+	// grant, a hold or a release, each of which notifies after it changes the
+	// state.
 	libretro_wait_until(&s_gate_wake, open);
 }
 
@@ -561,7 +537,12 @@ void libretro_frame_window_wait()
 void libretro_frame_gate_hold_open(bool hold)
 {
 	if (hold)
+	{
 		s_gate_hold_open.fetch_add(1, std::memory_order_acq_rel);
+		// and the guest's time with it: a handshake may wait on a thread that
+		// waits on an alarm. The next grant gives it a frame's end again.
+		PPCTimer_setCap(~0ull);
+	}
 	else
 	{
 		unsigned held = s_gate_hold_open.load(std::memory_order_acquire);
@@ -571,13 +552,39 @@ void libretro_frame_gate_hold_open(bool hold)
 	retro_eventcount_notify(&s_gate_wake);
 }
 
+// The rate retro_run is reported to come at: each retro_run lets the game
+// render one frame and carries one frame's worth of audio.
+static double s_output_fps = 60.0;
+
+uint64 LatteTiming_GuestVSyncPeriod();
+uint64 LatteTiming_NextGuestVSync();
+
 // retro_run. Capped at one: a frontend that ran ahead must not build up credit
 // it can spend later, or the emulator would sprint after every menu visit.
+// And a frame more of the guest's time: the cap a frame period on from where
+// the last one ended, no more than two ahead of the time itself - a title
+// slower than the frontend's calls does not bank time to spend in a burst
+// once it catches up.
 static void libretro_frame_gate_grant()
 {
 	s_gate_tokens.store(1, std::memory_order_release);
-	s_frame_permit.store(true, std::memory_order_release);
-	s_last_grant_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+	if (s_game_loaded && !s_gate_released.load(std::memory_order_acquire) &&
+		s_gate_hold_open.load(std::memory_order_acquire) == 0)
+	{
+		// whole vsyncs, as many as the title's rate takes (two at 30 fps), the
+		// window ending just past one so its flip falls inside the frame
+		const uint64 vsync = LatteTiming_GuestVSyncPeriod();
+		const double perFrame = (double)Espresso::CORE_CLOCK / (double)vsync / s_output_fps;
+		const uint64 period = vsync * (uint64)std::max<long>(1, std::lround(perFrame));
+		const uint64 now = PPCTimer_getFromRDTSC();
+		const uint64 cap = PPCTimer_getCap();
+		const uint64 nextVSync = LatteTiming_NextGuestVSync();
+		const uint64 first = (nextVSync > now ? nextVSync : now + period) + 1;
+		if (cap == ~0ull)
+			PPCTimer_setCap(first);
+		else if (cap + period <= now + 2 * period)
+			PPCTimer_setCap(cap + period); // a title still short of its cap keeps it
+	}
 	retro_eventcount_notify(&s_gate_wake);
 }
 
@@ -586,7 +593,7 @@ static void libretro_frame_gate_grant()
 void libretro_frame_gate_release()
 {
 	s_gate_released.store(true, std::memory_order_release);
-	s_frame_permit.store(true, std::memory_order_release);
+	PPCTimer_setCap(~0ull);
 	retro_eventcount_notify(&s_gate_wake);
 }
 
@@ -606,9 +613,6 @@ std::atomic_bool s_frame_ready{false};
 static std::atomic<uint32_t> s_game_frames{0};
 static bool s_show_game_fps = false;
 
-// The rate retro_run is reported to come at: each retro_run lets the game
-// render one frame and carries one frame's worth of audio.
-static double s_output_fps = 60.0;
 
 static const char* libretro_get_option_value(const char* key);
 
@@ -5498,7 +5502,6 @@ static void libretro_frame_gate_rearm()
 {
 	s_gate_released.store(false, std::memory_order_release);
 	s_gate_tokens.store(1, std::memory_order_release);
-	s_frame_permit.store(true, std::memory_order_release);
 	s_gate_hold_open.store(0, std::memory_order_release);
 	retro_eventcount_notify(&s_gate_wake);
 }
@@ -6514,7 +6517,6 @@ RETRO_API void retro_unload_game()
 	s_frame_ready = false;
 	s_gate_released.store(false, std::memory_order_release);
 	s_gate_tokens.store(1, std::memory_order_release);
-	s_frame_permit.store(true, std::memory_order_release);
 	s_gate_hold_open.store(0, std::memory_order_release);
 	s_ppc_process_exited = false;
 	// An install loaded as content has nothing else to wait for it
@@ -7780,59 +7782,10 @@ RETRO_API void retro_run()
 	// Rendering ahead, it was asked at the end of the last retro_run instead.
 	if (!s_render_ahead)
 		libretro_frame_gate_grant();
-	// And for the audio of the time since the last retro_run, at 48000 Hz,
-	// less what of it went on waiting in the frontend's audio callback.
-	//
-	// Not a fixed 800 samples (48000 / 60): a device that manages retro_run
-	// only 20 times a second - sco8487's phone in Deus Ex - got a third of
-	// the audio it needed, and titles that follow their audio slowed down
-	// with it; where the phone's GPU holds each frame up for 100 ms, the
-	// audio of those 100 ms is still due.
-	//
-	// Not the plain time either. RetroArch waits in the audio callback until
-	// what it was given fits, so granting that wait too feeds it back: more
-	// audio, a longer wait, a larger grant - how the wall-clock audio before
-	// 296e8e01 drifted down to 10 fps. Leaving the wait out makes it undo
-	// itself instead: a long wait means a smaller grant next time, the
-	// frontend's buffer has room again, and the wait goes away. Capped at
-	// 250 ms against a stall.
-	//
-	// But never less than one frame's worth. With audio sync on, waiting in
-	// the audio callback is how RetroArch holds retro_run to 60 a second, so
-	// a device that keeps up spends much of every frame there - and leaving
-	// all of it out granted a fraction of the 800 samples a 60 Hz frame
-	// needs. sco8487's phone sat in its menu at 60 fps with the frontend's
-	// buffer underrunning 70-90% of the time. 800 a frame is what any core
-	// hands over; only the time beyond it is what a slow frame adds.
-	//
-	// And never more than has played. The floor on its own gave 800 to every
-	// retro_run however soon it came after the last, so a frontend that runs
-	// them unevenly - 10 ms, then 23 ms - was granted more audio than the time
-	// that passed, and one running faster than 60 Hz more still. NNshi saw it
-	// as RetroArch blocking 20-50 % of the time on audio it had too much of.
-	// Wall time fills a bucket, capped at the same 250 ms, and a grant takes
-	// no more than the bucket holds: at 60 Hz that is 800 either way, and over
-	// any stretch of time the grants add up to at most the time itself.
-	{
-		static std::chrono::steady_clock::time_point s_last_audio_grant{};
-		static int64_t s_audio_bucket = 0; // in thousandths of a sample, so no fraction is lost
-		const auto now = std::chrono::steady_clock::now();
-		// One frame's worth at the reported rate: 800 at 60 Hz, 400 at 120
-		const int32_t frameSamples = (int32_t)(48000.0 / s_output_fps);
-		int32_t samples = frameSamples;
-		if (s_last_audio_grant.time_since_epoch().count() != 0)
-		{
-			const int64_t elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - s_last_audio_grant).count();
-			s_audio_bucket = std::min<int64_t>(s_audio_bucket + elapsed_us * 48, 12000 * 1000);
-			const int64_t us = elapsed_us - s_last_audio_wait_us;
-			samples = (int32_t)std::min<int64_t>(std::clamp<int64_t>(us * 48 / 1000, frameSamples, 12000), s_audio_bucket / 1000);
-			s_audio_bucket -= int64_t(samples) * 1000;
-		}
-		s_last_audio_grant = now;
-		// With Audio Thread on, AX runs by the clock and needs no grant
-		if (!LibretroAudioAPI::IsThreadMode())
-			snd_core::AXOut_LibretroGrantSamples(samples);
-	}
+	// The grant is also the frame's audio: AX makes a frame every 3 ms of the
+	// guest's time (ax_out.cpp), which the grant moves a frame on - 800
+	// samples at 60 Hz, as any core hands over, at whatever speed the
+	// frontend calls.
 
 	// Wait for the frame from the GPU thread, at most one frame time at the
 	// rate reported - which follows the title's swap interval, so a 30 fps

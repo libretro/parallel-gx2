@@ -22,11 +22,9 @@ class LibretroAudioRingBuffer
 {
 public:
 	// ~341 ms at 48 kHz 5.1 (a second in stereo). It has to hold everything AX may make between
-	// two retro_runs, and a retro_run grants up to 250 ms (see
-	// AXOut_LibretroGrantSamples). At 128 ms a slow device's frames - 8 or 9
-	// a second in sco8487's heavier Deus Ex scenes - got grants the ring could
-	// not take, and the rest was dropped. Drained every retro_run, so the
-	// size adds no latency.
+	// two retro_runs: a frame of the guest's time, two at most (the cap runs
+	// at most two frames ahead, PPCTimerClock.h), with room to spare. Drained
+	// every retro_run, so the size adds no latency.
 	static constexpr size_t kBufferFrames = 16384;
 	// Up to 5.1; the ring holds whole frames of the output's channels, 2 or
 	// 6, both of which divide its size
