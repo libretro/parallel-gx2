@@ -21,3 +21,4 @@ extern bool g_libretroVkHasDepthClipEnable;
 extern bool g_libretroVkHasExtendedDynamicState;
 extern bool g_libretroVkHasExtendedDynamicState3Blend;
 extern bool g_libretroVkHasExtendedDynamicState2;
+extern bool g_libretroVkHasVertexInputDynamicState;

@@ -3,6 +3,7 @@
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureViewVk.h"
@@ -272,6 +273,8 @@ public:
 
 	// pipeline state hash
 	static uint64 draw_calculateMinimalGraphicsPipelineHash(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr);
+	// what the pipelines leave to the draw (VULKAN_PIPELINE_KEY_DYNAMIC_*)
+	static uint32 draw_pipelineKeyDynamicFlags();
 	static uint64 draw_calculateGraphicsPipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, const VKRObjectRenderPass* renderPassObj, const LatteContextRegister& lcr);
 
 	// rendertarget
@@ -404,6 +407,10 @@ private:
 		VKRObjectRenderPass* prevBlendRenderPass{};
 		// depth bias enable and rasterizer discard (extended dynamic state 2)
 		uint32 prevRasterizerEnables{ 0xFFFFFFFF };
+		// the vertex input (vertex input dynamic state); the one being built
+		// and the one set
+		std::unique_ptr<VulkanVertexInput> vertexInput, prevVertexInput;
+		bool prevVertexInputValid{ false };
 
 		void resetCommandBufferState()
 		{
@@ -414,6 +421,7 @@ private:
 			prevPrimitiveTypeU32 = 0xFFFFFFFF;
 			prevBlendRenderPass = nullptr;
 			prevRasterizerEnables = 0xFFFFFFFF;
+			prevVertexInputValid = false;
 			prevPolygonFrontOffsetU32 = 0xFFFFFFFF;
 			prevPolygonFrontScaleU32 = 0xFFFFFFFF;
 			prevPolygonFrontClampU32 = 0xFFFFFFFF;
@@ -474,6 +482,7 @@ private:
 			bool extended_dynamic_state = false; // VK_EXT_extended_dynamic_state
 			bool extended_dynamic_state3_blend = false; // VK_EXT_extended_dynamic_state3: color blend enable, equation and write mask
 			bool extended_dynamic_state2 = false; // VK_EXT_extended_dynamic_state2: depth bias enable, rasterizer discard
+			bool vertex_input_dynamic_state = false; // VK_EXT_vertex_input_dynamic_state: vertex buffer strides, attribute offsets
 			bool pipeline_robustness = false; // VK_EXT_pipeline_robustness
 			bool attachment_feedback_loop_layout = false; // VK_EXT_attachment_feedback_loop_layout
 			bool attachment_feedback_loop_dynamic_state = false; // VK_EXT_attachment_feedback_loop_dynamic_state (this is forced to false if VK_EXT_attachment_feedback_loop_layout is not supported)
@@ -540,6 +549,7 @@ private:
 	void draw_updateDepthStencilCull(bool forceUpdate);
 	void draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* renderPass);
 	void draw_updateRasterizer(bool forceUpdate);
+	void draw_updateVertexInput(bool forceUpdate, const PipelineInfo* pipelineInfo);
 
 	void draw_setRenderPass();
 	void draw_endRenderPass();

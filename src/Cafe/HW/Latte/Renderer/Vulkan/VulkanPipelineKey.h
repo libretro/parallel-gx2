@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
 #include <vulkan/vulkan.h>
 
 // What a pipeline bakes in of the register state - rasterizer, clipping,
@@ -18,8 +19,30 @@ enum
 	// VK_EXT_extended_dynamic_state2: depth bias (polygon offset) enable and
 	// rasterizer discard (VulkanRenderer::draw_updateRasterizer)
 	VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER = 1 << 2,
+	// VK_EXT_vertex_input_dynamic_state: vertex buffer strides and attribute
+	// offsets (VulkanRenderer::draw_updateVertexInput)
+	VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT = 1 << 3,
 };
 uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dynamic);
+// The part of the key that can change between draws that keep their
+// shaders (VulkanRenderer::draw_execute_continued compares it): the vertex
+// layout, primitive type, streamout and rasterizer discard
+uint64 VulkanPipelineKey_Minimal(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr, uint32 dynamic);
+
+// The vertex buffer bindings and attributes of a fetch shader with the
+// strides of a register state, read at the locations the vertex shader
+// maps its semantics to: what the pipeline bakes in or the draw sets
+struct VulkanVertexInput
+{
+	uint32 bindingCount;
+	uint32 attributeCount;
+	VkVertexInputBindingDescription2EXT bindings[Latte::GPU_LIMITS::NUM_VERTEX_BUFFERS];
+	VkVertexInputAttributeDescription2EXT attributes[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS];
+};
+void VulkanPipelineKey_VertexInput(const LatteFetchShader& fetchShader, const sint8* attributeMapping,
+	const LatteContextRegister& lcr, VulkanVertexInput& out);
+bool VulkanPipelineKey_SameVertexInput(const VulkanVertexInput& a, const VulkanVertexInput& b);
+VkFormat VulkanPipelineKey_VertexFormat(Latte::E_HWFMT format);
 
 // The cull mode, front face and depth and stencil tests of a register state,
 // as the pipeline bakes them in or the draw sets them. The stencil
@@ -66,3 +89,5 @@ void VulkanPipelineKey_SetDepthStencilCull(VkCommandBuffer cb, const VulkanDepth
 void VulkanPipelineKey_SetBlend(VkCommandBuffer cb, const VkPipelineColorBlendAttachmentState* att, uint32 count);
 // and _2's (VulkanRenderer::draw_updateRasterizer)
 void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerEnables& s);
+// and the vertex input's (VulkanRenderer::draw_updateVertexInput)
+void VulkanPipelineKey_SetVertexInput(VkCommandBuffer cb, const VulkanVertexInput& s);

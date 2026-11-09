@@ -10,8 +10,13 @@
 //    and stencil tests make no new key either, with _3 the blend enables,
 //    equations and write masks, with _2 the polygon offset enable and
 //    rasterizer discard, and what the draw sets for them is what a
-//    pipeline baked in before.
+//    pipeline baked in before;
+//  - the part of the key draws that keep their shaders compare: with
+//    VK_EXT_vertex_input_dynamic_state the vertex buffer strides and
+//    attribute offsets make no new key, with _2 rasterizer discard none
+//    either, and the vertex input the draw sets is what a pipeline baked in.
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <cstdio>
 #include <memory>
@@ -273,6 +278,120 @@ int main()
 		auto a = std::make_unique<LatteContextRegister>(*base);
 		SetReg(*a, REGADDR::PA_SU_SC_MODE_CNTL, 1u << 11);
 		CHECK(VulkanPipelineKey_RenderState(*a, 0) != key0);
+	}
+	// the part of the key the draws that keep their shaders compare
+	{
+		LatteParsedFetchShaderAttribute attrs[3]{};
+		attrs[0] = {3, 5, Latte::E_HWFMT::HWFMT_32_32_32_FLOAT, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 4};
+		attrs[1] = {3, 9, Latte::E_HWFMT::HWFMT_8_8_8_8, LatteConst::VERTEX_DATA, 0, 0, {}, {}, 1, 16};
+		attrs[2] = {7, 2, Latte::E_HWFMT::HWFMT_16_16_FLOAT, LatteConst::INSTANCE_DATA, 0, 0, {}, {}, 1, 0};
+		LatteFetchShader fs;
+		LatteParsedFetchShaderBufferGroup g0{}, g1{};
+		g0.attributeBufferIndex = 3;
+		g0.attribCount = 2;
+		g0.attrib = attrs;
+		g1.attributeBufferIndex = 7;
+		g1.attribCount = 1;
+		g1.attrib = attrs + 2;
+		fs.bufferGroups = {g0, g1};
+		fs.vkPipelineHashFragment = 0x1234;
+		auto stride = [](LatteContextRegister& r, uint32 buffer, uint32 v) {
+			SetReg(r, mmSQ_VTX_ATTRIBUTE_BLOCK_START + buffer * 7 + 2, v << 11);
+		};
+		auto s0 = std::make_unique<LatteContextRegister>(*base);
+		stride(*s0, 3, 20);
+		stride(*s0, 7, 4);
+		SetReg(*s0, mmVGT_PRIMITIVE_TYPE, 4);
+		const uint32 vi = VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT;
+		const uint32 rz = VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER;
+		const uint64 m0 = VulkanPipelineKey_Minimal(&fs, *s0, 0);
+		const uint64 v0 = VulkanPipelineKey_Minimal(&fs, *s0, vi);
+		// strides: keyed, unless the draw sets them
+		auto s1 = std::make_unique<LatteContextRegister>(*s0);
+		stride(*s1, 3, 24);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s1, 0) != m0);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s1, vi) == v0);
+		stride(*s1, 7, 8);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s1, vi) == v0);
+		// a fetch shader with other attribute offsets: the same
+		LatteFetchShader fs2;
+		fs2.bufferGroups = fs.bufferGroups;
+		fs2.vkPipelineHashFragment = 0x5678;
+		CHECK(VulkanPipelineKey_Minimal(&fs2, *s0, 0) != m0);
+		CHECK(VulkanPipelineKey_Minimal(&fs2, *s0, vi) == v0);
+		// the primitive type and streamout: keyed
+		auto s2 = std::make_unique<LatteContextRegister>(*s0);
+		SetReg(*s2, mmVGT_PRIMITIVE_TYPE, 5);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s2, vi | rz) != VulkanPipelineKey_Minimal(&fs, *s0, vi | rz));
+		s2 = std::make_unique<LatteContextRegister>(*s0);
+		SetReg(*s2, mmVGT_STRMOUT_EN, 1);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s2, vi | rz) != VulkanPipelineKey_Minimal(&fs, *s0, vi | rz));
+		// rasterizer discard: keyed here too, unless the draw sets it
+		s2 = std::make_unique<LatteContextRegister>(*s0);
+		SetReg(*s2, REGADDR::PA_CL_CLIP_CNTL, 1u << 22);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s2, 0) != m0);
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s2, rz) == VulkanPipelineKey_Minimal(&fs, *s0, rz));
+		CHECK(VulkanPipelineKey_Minimal(&fs, *s2, vi | rz) == VulkanPipelineKey_Minimal(&fs, *s0, vi | rz));
+		// 256 vertex layouts, one key
+		std::set<uint64> layouts;
+		for (uint32 i = 0; i < 256; i++)
+		{
+			stride(*s1, 3, 12 + (i & 15) * 4);
+			stride(*s1, 7, (i >> 4) * 2);
+			LatteFetchShader f;
+			f.bufferGroups = fs.bufferGroups;
+			f.vkPipelineHashFragment = i * 0x9E3779B97F4A7C15ull;
+			layouts.insert(VulkanPipelineKey_Minimal(&f, *s1, vi));
+		}
+		std::printf("pipeline keys for 256 vertex layouts with vertex input dynamic state: %zu\n", layouts.size());
+		CHECK(layouts.size() == 1);
+
+		// the vertex input: the attributes the vertex shader maps, at its
+		// locations, with the register's strides
+		sint8 mapping[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS];
+		std::fill(std::begin(mapping), std::end(mapping), (sint8)-1);
+		mapping[5] = 0;
+		mapping[2] = 1; // semantic 9 not read by the shader
+		auto in = std::make_unique<VulkanVertexInput>();
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in);
+		CHECK(in->bindingCount == 2 && in->attributeCount == 2);
+		if (in->bindingCount == 2 && in->attributeCount == 2)
+		{
+			CHECK(in->bindings[0].binding == 3 && in->bindings[0].stride == 20 && in->bindings[0].inputRate == VK_VERTEX_INPUT_RATE_VERTEX);
+			CHECK(in->bindings[1].binding == 7 && in->bindings[1].stride == 4 && in->bindings[1].inputRate == VK_VERTEX_INPUT_RATE_INSTANCE);
+			CHECK(in->bindings[0].divisor == 1 && in->bindings[1].divisor == 1);
+			CHECK(in->attributes[0].location == 0 && in->attributes[0].binding == 3 && in->attributes[0].offset == 4 &&
+				in->attributes[0].format == VK_FORMAT_R32G32B32_UINT);
+			CHECK(in->attributes[1].location == 1 && in->attributes[1].binding == 7 && in->attributes[1].offset == 0 &&
+				in->attributes[1].format == VK_FORMAT_R16G16_UINT);
+			CHECK(in->bindings[0].sType == VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT);
+			CHECK(in->attributes[0].sType == VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT);
+		}
+		// what the draw compares to set it again
+		auto in2 = std::make_unique<VulkanVertexInput>();
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in2);
+		CHECK(VulkanPipelineKey_SameVertexInput(*in, *in2));
+		VulkanPipelineKey_VertexInput(fs, mapping, *s1, *in2);
+		CHECK(!VulkanPipelineKey_SameVertexInput(*in, *in2));
+		attrs[0].offset = 8;
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in2);
+		CHECK(!VulkanPipelineKey_SameVertexInput(*in, *in2));
+		attrs[0].offset = 4;
+		mapping[9] = 2;
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in2);
+		CHECK(!VulkanPipelineKey_SameVertexInput(*in, *in2));
+		CHECK(in2->attributeCount == 3);
+		mapping[9] = -1;
+		attrs[2].format = Latte::E_HWFMT::HWFMT_32_FLOAT;
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in2);
+		CHECK(!VulkanPipelineKey_SameVertexInput(*in, *in2));
+		attrs[2].format = Latte::E_HWFMT::HWFMT_16_16_FLOAT;
+		attrs[2].fetchType = LatteConst::VERTEX_DATA;
+		VulkanPipelineKey_VertexInput(fs, mapping, *s0, *in2);
+		CHECK(!VulkanPipelineKey_SameVertexInput(*in, *in2));
+		attrs[2].fetchType = LatteConst::INSTANCE_DATA;
+		fs.bufferGroups.clear();
+		fs2.bufferGroups.clear();
 	}
 	// the blend state the draw sets and the pipeline bakes in
 	{

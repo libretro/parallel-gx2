@@ -148,14 +148,28 @@ depth bias values are dynamic in every such pipeline, and both enables are
 out of the key; `test/pipeline_key` replays the 64 combinations (one key)
 and 1024 states with all three extensions' state varied (one key). Its
 primitive restart is not used: restart follows the topology, which the
-pipeline keys anyway.
+pipeline keys anyway. The discard bit also sat in the part of the key the
+fast draws compare (`VulkanPipelineKey_Minimal`), which split the
+pipelines anyway; it is out of that part too since vertex input went in.
+
+Done with `VK_EXT_vertex_input_dynamic_state`: the vertex buffer strides
+and attribute offsets are set by the draw (`draw_updateVertexInput`, from
+`VulkanPipelineKey_VertexInput`, which the pipeline compiler uses too) and
+are out of the key. The attribute formats and locations stay the vertex
+shader's, which is compiled for the fetch shader's layout; fetch shaders
+that differ only in offsets, the case the note in
+`draw_calculateGraphicsPipelineHash` describes, now share pipelines.
+`test/pipeline_key` replays 256 vertex layouts (one key).
 
 `test/dynstate` draws 400 register states from a seed on lavapipe, each
-with a pipeline that bakes the depth, stencil, cull, blend, polygon offset
-and discard state in and one that takes it from the draw (through the same
-setters the renderer uses, `VulkanPipelineKey_SetDepthStencilCull`,
-`_SetBlend` and `_SetRasterizer`), and requires the same picture to the
-byte. Next: dynamic vertex input, and replaying a title's draws.
+with a pipeline that bakes the depth, stencil, cull, blend, polygon offset,
+discard state and vertex input in and one that takes it from the draw
+(through the same setters the renderer uses,
+`VulkanPipelineKey_SetDepthStencilCull`, `_SetBlend`, `_SetRasterizer` and
+`_SetVertexInput`), the triangles read from a vertex buffer in a layout
+from the seed (buffer slots, semantics, stride, offset, a per-instance
+attribute), and requires the same picture to the byte. Next: replaying a
+title's draws, then graphics pipeline libraries (M2).
 
 
 - Make the state that only multiplies pipelines dynamic where the device

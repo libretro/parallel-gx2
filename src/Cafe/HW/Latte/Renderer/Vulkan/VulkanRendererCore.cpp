@@ -16,32 +16,19 @@
 
 extern bool hasValidFramebufferAttached;
 
+uint32 VulkanRenderer::draw_pipelineKeyDynamicFlags()
+{
+	const auto& ext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions;
+	return (ext.extended_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL : 0) |
+		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0) |
+		(ext.extended_dynamic_state2 ? VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER : 0) |
+		(ext.vertex_input_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT : 0);
+}
+
 // includes only states that may change during minimal drawcalls
 uint64 VulkanRenderer::draw_calculateMinimalGraphicsPipelineHash(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr)
 {
-	uint64 stateHash = 0;
-
-	// fetch shader
-	for (auto& group : fetchShader->bufferGroups)
-	{
-		uint32 bufferStride = group.getCurrentBufferStride(lcr.GetRawView());
-		stateHash = std::rotl<uint64>(stateHash, 7);
-		stateHash += bufferStride * 3;
-	}
-
-	stateHash += fetchShader->getVkPipelineHashFragment();
-	stateHash = std::rotl<uint64>(stateHash, 7);
-
-	stateHash += lcr.GetRawView()[mmVGT_PRIMITIVE_TYPE];
-	stateHash = std::rotl<uint64>(stateHash, 7);
-
-	stateHash += lcr.GetRawView()[mmVGT_STRMOUT_EN];
-	stateHash = std::rotl<uint64>(stateHash, 7);
-
-	if(lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL())
-		stateHash += 0x333333;
-
-	return stateHash;
+	return VulkanPipelineKey_Minimal(fetchShader, lcr, draw_pipelineKeyDynamicFlags());
 }
 
 uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, const VKRObjectRenderPass* renderPassObj, const LatteContextRegister& lcr)
@@ -77,11 +64,7 @@ uint64 VulkanRenderer::draw_calculateGraphicsPipelineHash(const LatteFetchShader
 
 	stateHash = std::rotl<uint64>(stateHash, 13);
 
-	const auto& ext = VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions;
-	stateHash += VulkanPipelineKey_RenderState(lcr,
-		(ext.extended_dynamic_state ? VULKAN_PIPELINE_KEY_DYNAMIC_DEPTH_STENCIL_CULL : 0) |
-		(ext.extended_dynamic_state3_blend ? VULKAN_PIPELINE_KEY_DYNAMIC_BLEND : 0) |
-		(ext.extended_dynamic_state2 ? VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER : 0));
+	stateHash += VulkanPipelineKey_RenderState(lcr, draw_pipelineKeyDynamicFlags());
 	stateHash = std::rotl<uint64>(stateHash, 17);
 	stateHash += renderPassObj->m_hashForPipeline;
 
@@ -1204,6 +1187,33 @@ void VulkanRenderer::draw_updateBlend(bool forceUpdate, VKRObjectRenderPass* ren
 	VulkanPipelineKey_SetBlend(m_state.currentCommandBuffer, att, 8);
 }
 
+// The vertex input, dynamic in every pipeline with
+// VK_EXT_vertex_input_dynamic_state: the active fetch shader's attributes at
+// the locations the pipeline's vertex shader reads them, with the strides
+// of the registers. Set when it changes, and with every pipeline bound.
+void VulkanRenderer::draw_updateVertexInput(bool forceUpdate, const PipelineInfo* pipelineInfo)
+{
+	if (!m_featureControl.deviceExtensions.vertex_input_dynamic_state)
+		return;
+	if (!m_state.vertexInput)
+	{
+		m_state.vertexInput = std::make_unique<VulkanVertexInput>();
+		m_state.prevVertexInput = std::make_unique<VulkanVertexInput>();
+	}
+	VulkanVertexInput& input = *m_state.vertexInput;
+	const LatteFetchShader* fetchShader = LatteSHRC_GetActiveFetchShader();
+	if (fetchShader)
+		VulkanPipelineKey_VertexInput(*fetchShader, pipelineInfo->vertexShader->resourceMapping.attributeMapping,
+			LatteGPUState.contextNew, input);
+	else
+		input.bindingCount = input.attributeCount = 0;
+	if (!forceUpdate && m_state.prevVertexInputValid && VulkanPipelineKey_SameVertexInput(input, *m_state.prevVertexInput))
+		return;
+	std::swap(m_state.vertexInput, m_state.prevVertexInput);
+	m_state.prevVertexInputValid = true;
+	VulkanPipelineKey_SetVertexInput(m_state.currentCommandBuffer, *m_state.prevVertexInput);
+}
+
 // Depth bias enable and rasterizer discard, dynamic in every pipeline with
 // VK_EXT_extended_dynamic_state2: set when they change, and with every
 // pipeline bound. The depth bias values are dynamic in every such pipeline
@@ -1526,6 +1536,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateDepthStencilCull(true);
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(true);
+		draw_updateVertexInput(true, pipeline_info);
 	}
 	else
 	{
@@ -1535,6 +1546,7 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		draw_updateDepthStencilCull(false);
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(false);
+		draw_updateVertexInput(false, pipeline_info);
 	}
 	// update blend constants
 	if (pipeline_info->usesBlendConstants)
@@ -1729,6 +1741,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateDepthStencilCull(true);
 		draw_updateBlend(true, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(true);
+		draw_updateVertexInput(true, pipeline_info);
 	}
 	else
 	{
@@ -1738,6 +1751,7 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		draw_updateDepthStencilCull(false);
 		draw_updateBlend(false, m_state.activeFBO->GetRenderPassObj());
 		draw_updateRasterizer(false);
+		draw_updateVertexInput(false, pipeline_info);
 	}
 
 	// update blend constants

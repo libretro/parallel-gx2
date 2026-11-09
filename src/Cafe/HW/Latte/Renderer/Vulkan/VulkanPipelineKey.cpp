@@ -1,7 +1,154 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
 
 #include <bit>
+
+static uint32 VertexBufferStride(const LatteContextRegister& lcr, uint32 bufferIndex)
+{
+	return (lcr.GetRawView()[mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7 + 2] >> 11) & 0xFFFF;
+}
+
+uint64 VulkanPipelineKey_Minimal(const LatteFetchShader* fetchShader, const LatteContextRegister& lcr, uint32 dynamic)
+{
+	const bool dynamicVertexInput = (dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_VERTEX_INPUT) != 0;
+	uint64 stateHash = 0;
+
+	// fetch shader: strides and attribute offsets, set by the draw with the
+	// extension; the formats and locations are the vertex shader's
+	if (!dynamicVertexInput)
+	{
+		for (auto& group : fetchShader->bufferGroups)
+		{
+			uint32 bufferStride = VertexBufferStride(lcr, group.attributeBufferIndex);
+			stateHash = std::rotl<uint64>(stateHash, 7);
+			stateHash += bufferStride * 3;
+		}
+
+		stateHash += fetchShader->getVkPipelineHashFragment();
+	}
+	stateHash = std::rotl<uint64>(stateHash, 7);
+
+	stateHash += lcr.GetRawView()[mmVGT_PRIMITIVE_TYPE];
+	stateHash = std::rotl<uint64>(stateHash, 7);
+
+	stateHash += lcr.GetRawView()[mmVGT_STRMOUT_EN];
+	stateHash = std::rotl<uint64>(stateHash, 7);
+
+	// rasterizer discard: set by the draw with _2
+	if (!(dynamic & VULKAN_PIPELINE_KEY_DYNAMIC_RASTERIZER) && lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL())
+		stateHash += 0x333333;
+
+	return stateHash;
+}
+
+VkFormat VulkanPipelineKey_VertexFormat(Latte::E_HWFMT format)
+{
+	// the shader decodes the attributes (endianness, normalization), so it
+	// reads them as integers of the format's component sizes
+	switch (format)
+	{
+	case Latte::E_HWFMT::HWFMT_32_32_32_32_FLOAT:
+	case Latte::E_HWFMT::HWFMT_32_32_32_32:
+		return VK_FORMAT_R32G32B32A32_UINT;
+	case Latte::E_HWFMT::HWFMT_32_32_32_FLOAT:
+	case Latte::E_HWFMT::HWFMT_32_32_32:
+		return VK_FORMAT_R32G32B32_UINT;
+	case Latte::E_HWFMT::HWFMT_32_32_FLOAT:
+	case Latte::E_HWFMT::HWFMT_32_32:
+		return VK_FORMAT_R32G32_UINT;
+	case Latte::E_HWFMT::HWFMT_32_FLOAT:
+	case Latte::E_HWFMT::HWFMT_32:
+	case Latte::E_HWFMT::HWFMT_2_10_10_10: // verified to match OpenGL
+		return VK_FORMAT_R32_UINT;
+	case Latte::E_HWFMT::HWFMT_8_8_8_8:
+		return VK_FORMAT_R8G8B8A8_UINT;
+	case Latte::E_HWFMT::HWFMT_8_8_8:
+		return VK_FORMAT_R8G8B8_UINT;
+	case Latte::E_HWFMT::HWFMT_8_8:
+		return VK_FORMAT_R8G8_UINT;
+	case Latte::E_HWFMT::HWFMT_8:
+		return VK_FORMAT_R8_UINT;
+	case Latte::E_HWFMT::HWFMT_16_16_16_16: // verified to match OpenGL
+	case Latte::E_HWFMT::HWFMT_16_16_16_16_FLOAT:
+		return VK_FORMAT_R16G16B16A16_UINT;
+	case Latte::E_HWFMT::HWFMT_16_16_16:
+	case Latte::E_HWFMT::HWFMT_16_16_16_FLOAT:
+		return VK_FORMAT_R16G16B16_UINT;
+	case Latte::E_HWFMT::HWFMT_16_16:
+	case Latte::E_HWFMT::HWFMT_16_16_FLOAT:
+		return VK_FORMAT_R16G16_UINT;
+	case Latte::E_HWFMT::HWFMT_16:
+	case Latte::E_HWFMT::HWFMT_16_FLOAT:
+		return VK_FORMAT_R16_UINT;
+	default:
+		return VK_FORMAT_UNDEFINED;
+	}
+}
+
+void VulkanPipelineKey_VertexInput(const LatteFetchShader& fetchShader, const sint8* attributeMapping,
+	const LatteContextRegister& lcr, VulkanVertexInput& out)
+{
+	out.bindingCount = 0;
+	out.attributeCount = 0;
+	for (auto& bufferGroup : fetchShader.bufferGroups)
+	{
+		if (out.bindingCount >= std::size(out.bindings))
+			break;
+		bool instanceData = false;
+		for (sint32 j = 0; j < bufferGroup.attribCount; ++j)
+		{
+			const auto& attr = bufferGroup.attrib[j];
+			const sint8 location = attributeMapping[attr.semanticId];
+			if (location < 0 || out.attributeCount >= std::size(out.attributes))
+				continue; // not read by the vertex shader
+			VkVertexInputAttributeDescription2EXT& a = out.attributes[out.attributeCount++];
+			a = {VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT};
+			a.location = (uint32)location;
+			a.binding = attr.attributeBufferIndex;
+			a.format = VulkanPipelineKey_VertexFormat(attr.format);
+			a.offset = attr.offset;
+			// one fetch type per buffer; instance divisors other than 1 are
+			// not supported
+			instanceData = attr.fetchType == LatteConst::INSTANCE_DATA;
+		}
+
+		const uint32 bufferIndex = bufferGroup.attributeBufferIndex;
+		uint32 bufferStride = VertexBufferStride(lcr, bufferIndex);
+#if BOOST_OS_MACOS
+		// rounded up as the buffers are (buffer_genStrideWorkaroundVertexBuffer)
+		if (bufferStride % 4 != 0)
+			bufferStride = bufferStride + (4 - (bufferStride % 4));
+#endif
+		VkVertexInputBindingDescription2EXT& b = out.bindings[out.bindingCount++];
+		b = {VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT};
+		b.binding = bufferIndex;
+		b.stride = bufferStride;
+		b.inputRate = instanceData ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+		b.divisor = 1;
+	}
+}
+
+bool VulkanPipelineKey_SameVertexInput(const VulkanVertexInput& a, const VulkanVertexInput& b)
+{
+	if (a.bindingCount != b.bindingCount || a.attributeCount != b.attributeCount)
+		return false;
+	for (uint32 i = 0; i < a.bindingCount; i++)
+	{
+		const auto& x = a.bindings[i];
+		const auto& y = b.bindings[i];
+		if (x.binding != y.binding || x.stride != y.stride || x.inputRate != y.inputRate || x.divisor != y.divisor)
+			return false;
+	}
+	for (uint32 i = 0; i < a.attributeCount; i++)
+	{
+		const auto& x = a.attributes[i];
+		const auto& y = b.attributes[i];
+		if (x.location != y.location || x.binding != y.binding || x.format != y.format || x.offset != y.offset)
+			return false;
+	}
+	return true;
+}
 
 uint64 VulkanPipelineKey_RenderState(const LatteContextRegister& lcr, uint32 dynamic)
 {
@@ -323,4 +470,9 @@ void VulkanPipelineKey_SetRasterizer(VkCommandBuffer cb, const VulkanRasterizerE
 {
 	vkCmdSetDepthBiasEnableEXT(cb, s.depthBiasEnable);
 	vkCmdSetRasterizerDiscardEnableEXT(cb, s.rasterizerDiscardEnable);
+}
+
+void VulkanPipelineKey_SetVertexInput(VkCommandBuffer cb, const VulkanVertexInput& s)
+{
+	vkCmdSetVertexInputEXT(cb, s.bindingCount, s.bindings, s.attributeCount, s.attributes);
 }

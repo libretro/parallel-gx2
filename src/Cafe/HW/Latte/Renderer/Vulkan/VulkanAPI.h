@@ -176,6 +176,7 @@ VKFUNC_DEVICE(vkCmdSetColorBlendEquationEXT);
 VKFUNC_DEVICE(vkCmdSetColorWriteMaskEXT);
 VKFUNC_DEVICE(vkCmdSetDepthBiasEnableEXT);
 VKFUNC_DEVICE(vkCmdSetRasterizerDiscardEnableEXT);
+VKFUNC_DEVICE(vkCmdSetVertexInputEXT);
 
 // synchronization2
 

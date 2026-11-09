@@ -184,6 +184,23 @@ static void TestDevices()
 		else
 			CHECK(!g_libretroVkHasExtendedDynamicState2);
 		std::printf("dynamic depth bias and discard: %s\n", gpuEds2 ? (g_libretroVkHasExtendedDynamicState2 ? "on" : "NOT ON") : "the GPU has none");
+		// the vertex input as dynamic state where the GPU has the feature
+		bool gpuVi = false;
+		for (auto& e : exts)
+			gpuVi = gpuVi || !strcmp(e.extensionName, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+		if (gpuVi)
+		{
+			VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT fvi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
+			VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			f2.pNext = &fvi;
+			vkGetPhysicalDeviceFeatures2(gpu, &f2);
+			gpuVi = fvi.vertexInputDynamicState == VK_TRUE;
+		}
+		if (gpuVi)
+			CHECK(g_libretroVkHasVertexInputDynamicState && Has(w.asked, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME));
+		else
+			CHECK(!g_libretroVkHasVertexInputDynamicState);
+		std::printf("dynamic vertex input: %s\n", gpuVi ? (g_libretroVkHasVertexInputDynamicState ? "on" : "NOT ON") : "the GPU has none");
 		const char* own = nullptr;
 		for (auto& e : exts)
 			if (!Has(w.asked, e.extensionName))

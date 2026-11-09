@@ -124,59 +124,6 @@ PipelineCompiler::~PipelineCompiler()
 		m_renderPassObj->decRef();
 };
 
-VkFormat PipelineCompiler::GetVertexFormat(Latte::E_HWFMT format)
-{
-	switch (format)
-	{
-	case Latte::E_HWFMT::HWFMT_32_32_32_32_FLOAT:
-		return VK_FORMAT_R32G32B32A32_UINT;
-	case Latte::E_HWFMT::HWFMT_32_32_32_FLOAT:
-		return VK_FORMAT_R32G32B32_UINT;
-	case Latte::E_HWFMT::HWFMT_32_32_FLOAT:
-		return VK_FORMAT_R32G32_UINT;
-	case Latte::E_HWFMT::HWFMT_32_FLOAT:
-		return VK_FORMAT_R32_UINT;
-	case Latte::E_HWFMT::HWFMT_8_8_8_8:
-		return VK_FORMAT_R8G8B8A8_UINT;
-	case Latte::E_HWFMT::HWFMT_8_8_8:
-		return VK_FORMAT_R8G8B8_UINT;
-	case Latte::E_HWFMT::HWFMT_8_8:
-		return VK_FORMAT_R8G8_UINT;
-	case Latte::E_HWFMT::HWFMT_8:
-		return VK_FORMAT_R8_UINT;
-	case Latte::E_HWFMT::HWFMT_32_32_32_32:
-		return VK_FORMAT_R32G32B32A32_UINT;
-	case Latte::E_HWFMT::HWFMT_32_32_32:
-		return VK_FORMAT_R32G32B32_UINT;
-	case Latte::E_HWFMT::HWFMT_32_32:
-		return VK_FORMAT_R32G32_UINT;
-	case Latte::E_HWFMT::HWFMT_32:
-		return VK_FORMAT_R32_UINT;
-	case Latte::E_HWFMT::HWFMT_16_16_16_16:
-		return VK_FORMAT_R16G16B16A16_UINT; // verified to match OpenGL
-	case Latte::E_HWFMT::HWFMT_16_16_16:
-		return VK_FORMAT_R16G16B16_UINT;
-	case Latte::E_HWFMT::HWFMT_16_16:
-		return VK_FORMAT_R16G16_UINT;
-	case Latte::E_HWFMT::HWFMT_16:
-		return VK_FORMAT_R16_UINT;
-	case Latte::E_HWFMT::HWFMT_16_16_16_16_FLOAT:
-		return VK_FORMAT_R16G16B16A16_UINT; // verified to match OpenGL
-	case Latte::E_HWFMT::HWFMT_16_16_16_FLOAT:
-		return VK_FORMAT_R16G16B16_UINT;
-	case Latte::E_HWFMT::HWFMT_16_16_FLOAT:
-		return VK_FORMAT_R16G16_UINT;
-	case Latte::E_HWFMT::HWFMT_16_FLOAT:
-		return VK_FORMAT_R16_UINT;
-	case Latte::E_HWFMT::HWFMT_2_10_10_10:
-		return VK_FORMAT_R32_UINT; // verified to match OpenGL
-	default:
-		cemuLog_log(LogType::Force, "Unsupported vertex format: {:02x}", (uint32)format);
-		assert_dbg();
-		return VK_FORMAT_UNDEFINED;
-	}
-}
-
 bool PipelineCompiler::ConsumesBlendConstants(VkBlendFactor blendFactor)
 {
 	if (blendFactor == VK_BLEND_FACTOR_CONSTANT_COLOR ||
@@ -314,61 +261,24 @@ bool PipelineCompiler::InitShaderStages(VulkanRenderer* vkRenderer, RendererShad
 
 void PipelineCompiler::InitVertexInputState(const LatteContextRegister& latteRegister, LatteDecompilerShader* vertexShader, LatteFetchShader* fetchShader)
 {
-	vertexInputAttributeDescription.reserve(16);
-	vertexInputBindingDescription.reserve(fetchShader->bufferGroups.size());
+	// with VK_EXT_vertex_input_dynamic_state the draw sets the same
+	// (draw_updateVertexInput) and what is baked here is ignored
+	auto input = std::make_unique<VulkanVertexInput>();
+	VulkanPipelineKey_VertexInput(*fetchShader, vertexShader->resourceMapping.attributeMapping, latteRegister, *input);
 
-	for (auto& bufferGroup : fetchShader->bufferGroups)
+	vertexInputAttributeDescription.resize(input->attributeCount);
+	for (uint32 i = 0; i < input->attributeCount; i++)
 	{
-		std::optional<LatteConst::VertexFetchType2> fetchType;
-
-		for (sint32 j = 0; j < bufferGroup.attribCount; ++j)
-		{
-			auto& attr = bufferGroup.attrib[j];
-
-			uint32 semanticId = vertexShader->resourceMapping.attributeMapping[attr.semanticId];
-			if (semanticId == (uint32)-1)
-				continue; // attribute not used?
-
-			VkVertexInputAttributeDescription entry{};
-			entry.location = semanticId;
-			entry.offset = attr.offset;
-			entry.binding = attr.attributeBufferIndex;
-			entry.format = GetVertexFormat(attr.format);
-			vertexInputAttributeDescription.emplace_back(entry);
-
-			if (fetchType.has_value())
-				cemu_assert_debug(fetchType == attr.fetchType);
-			else
-				fetchType = attr.fetchType;
-
-			if (attr.fetchType == LatteConst::INSTANCE_DATA)
-			{
-				cemu_assert_debug(attr.aluDivisor == 1); // other divisor not yet supported
-				// use VK_EXT_vertex_attribute_divisor
-			}
-		}
-
-		uint32 bufferIndex = bufferGroup.attributeBufferIndex;
-		uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7;
-		uint32 bufferStride = (latteRegister.GetRawView()[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
-
-		VkVertexInputBindingDescription entry{};
-#if BOOST_OS_MACOS
-		if (bufferStride % 4 != 0) {
-			bufferStride = bufferStride + (4-(bufferStride % 4));
-		}
-#endif
-		entry.stride = bufferStride;
-		if (!fetchType.has_value() || fetchType == LatteConst::VertexFetchType2::VERTEX_DATA)
-			entry.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-		else if (fetchType == LatteConst::VertexFetchType2::INSTANCE_DATA)
-			entry.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
-		else
-		{
-			cemu_assert(false);
-		}
-		entry.binding = bufferIndex;
-		vertexInputBindingDescription.emplace_back(entry);
+		const auto& a = input->attributes[i];
+		if (a.format == VK_FORMAT_UNDEFINED)
+			cemuLog_log(LogType::Force, "Unsupported vertex format in fetch shader {:016x}", fetchShader->key);
+		vertexInputAttributeDescription[i] = {a.location, a.binding, a.format, a.offset};
+	}
+	vertexInputBindingDescription.resize(input->bindingCount);
+	for (uint32 i = 0; i < input->bindingCount; i++)
+	{
+		const auto& b = input->bindings[i];
+		vertexInputBindingDescription[i] = {b.binding, b.stride, b.inputRate};
 	}
 
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -637,6 +547,8 @@ void PipelineCompiler::InitDynamicState(PipelineInfo* pipelineInfo, bool usesBle
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
 	}
+	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.vertex_input_dynamic_state)
+		dynamicStates.emplace_back(VK_DYNAMIC_STATE_VERTEX_INPUT_EXT);
 	if (VulkanRenderer::GetInstance()->m_featureControl.deviceExtensions.extended_dynamic_state2)
 	{
 		dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT);
