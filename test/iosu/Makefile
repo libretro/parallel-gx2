@@ -23,13 +23,17 @@ ifneq (,$(findstring mingw,$(CC)))
    EXE := .exe
 endif
 LRC_SRCS := $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+# RcuCell.h's C, built as the C89 lane builds it
+C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement -Wno-long-long -Wno-variadic-macros -Wall -Werror
+CORE_C_SRCS := $(SRC)/util/helpers/rcu_cell.c
 CXX_SRCS := iosu_kernel_test.cpp stubs.cpp $(SRC)/Cafe/IOSU/kernel/iosu_kernel.cpp \
 	$(SRC)/Common/SysAllocator.cpp $(SRC)/util/highresolutiontimer/HighResolutionTimer.cpp
 
 all: iosu_kernel_test$(EXE)
 
-iosu_kernel_test$(EXE): $(CXX_SRCS) $(LRC_SRCS)
+iosu_kernel_test$(EXE): $(CXX_SRCS) $(LRC_SRCS) $(CORE_C_SRCS)
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

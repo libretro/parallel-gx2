@@ -479,6 +479,20 @@ test-aes:
     - make -C test/aes clean
     - SANITIZER=address,undefined ./test/aes/run_tests.sh
 
+# The C under RcuCell.h (C89).
+test-rcu-cell:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/rcu_cell/run_tests.sh
+    - make -C test/rcu_cell clean
+    - SANITIZER=thread ./test/rcu_cell/run_tests.sh
+    - make -C test/rcu_cell clean
+    - SANITIZER=address,undefined ./test/rcu_cell/run_tests.sh
+
 # The core's reader of disc and title content volumes, over one the test
 # makes. The core's precompiled header wants fmt and glm.
 test-fst:

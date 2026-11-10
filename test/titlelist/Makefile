@@ -29,8 +29,9 @@ CXX_SRCS := titlelist_test.cpp stub_titleinfo.cpp $(SRC)/Cafe/TitleList/TitleLis
 HEADERS := $(SRC)/Cafe/TitleList/TitleList.h $(SRC)/Cafe/TitleList/TitleInfo.h $(SRC)/util/helpers/RcuCell.h \
 	$(SRC)/util/helpers/OnceGate.h stub/config/CemuConfig.h
 
-titlelist_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(HEADERS)
+titlelist_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(RCU_C) $(HEADERS)
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(RCU_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

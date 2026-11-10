@@ -15,7 +15,9 @@ ifneq (,$(findstring mingw,$(CC)))
    LIBS += -static -lws2_32
    EXE := .exe
 endif
-C_SRCS := $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+# RcuCell.h's C, built as the C89 lane builds it
+C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement -Wno-long-long -Wno-variadic-macros -Wall -Werror
+C_SRCS := $(SRC)/util/helpers/rcu_cell.c $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := handoff_test.cpp \
 	$(SRC)/Cafe/HW/Espresso/Recompiler/PPCRecompilerWorkQueue.cpp \
 	$(SRC)/Cafe/HW/Latte/Core/LatteGpuWake.cpp \
@@ -27,13 +29,14 @@ HDRS := $(SRC)/libretro/LibretroAudioRing.h $(SRC)/Cafe/HW/Latte/Core/LatteGpuWa
 	$(SRC)/Cafe/HW/Espresso/PPCTimerClock.h $(SRC)/util/helpers/AtomicPtrBag.h \
 	$(SRC)/util/helpers/MpscQueue.h $(SRC)/util/helpers/MpmcQueue.h \
 	$(SRC)/util/helpers/ClaimTicket.h $(SRC)/Cemu/nex/nexWait.h \
-	$(SRC)/util/helpers/RcuCell.h $(SRC)/util/helpers/Semaphore.h $(SRC)/util/helpers/IdleWait.h
+	$(SRC)/util/helpers/RcuCell.h $(SRC)/util/helpers/rcu_cell.h $(SRC)/util/helpers/Semaphore.h $(SRC)/util/helpers/IdleWait.h
 
 handoff_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(HDRS)
 	$(CC) $(FLAGS) -std=gnu99 -c $(LRC)/queues/retro_spsc.c -o retro_spsc.o
 	$(CC) $(FLAGS) -std=gnu99 -c $(LRC)/rthreads/retro_eventcount.c -o retro_eventcount.o
 	$(CC) $(FLAGS) -std=gnu99 -c $(LRC)/rthreads/rthreads.c -o rthreads.o
-	$(CXX) $(FLAGS) -std=gnu++20 $(CXX_SRCS) retro_spsc.o retro_eventcount.o rthreads.o $(LIBS) -o $@
+	$(CC) $(FLAGS) $(C89_FLAGS) -c $(SRC)/util/helpers/rcu_cell.c -o rcu_cell.o
+	$(CXX) $(FLAGS) -std=gnu++20 $(CXX_SRCS) retro_spsc.o retro_eventcount.o rthreads.o rcu_cell.o $(LIBS) -o $@
 	rm -f *.o
 
 clean:

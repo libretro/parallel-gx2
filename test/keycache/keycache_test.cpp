@@ -13,6 +13,7 @@
 //    finds the key or does not, as the set it read says, with no lock
 //    (run under ThreadSanitizer by CI).
 #include "Cafe/Filesystem/FST/KeyCache.h"
+#include "Cafe/Filesystem/FST/key_cache.h"
 #include "Cemu/Logging/CemuLogging.h"
 #include "config/ActiveSettings.h"
 #include "util/crypto/aes128.h"
@@ -56,6 +57,63 @@ static bool Contains(const std::string& s, std::string_view part)
 	return s.find(part) != std::string::npos;
 }
 
+// key_cache.c itself: keys.txt's lines, and a key in a file of its own
+static void TestParts(const fs::path& dir)
+{
+	struct Bad { unsigned line; int what; };
+	std::vector<Bad> bad;
+	auto parse = [&](std::string_view text, key_set_t& set) {
+		bad.clear();
+		unsigned lines = 0;
+		const bool ok = key_set_parse(&set, text.data(), text.size(), [](void* ud, unsigned line, int what) {
+			((std::vector<Bad>*)ud)->push_back({line, what});
+		}, &bad, &lines);
+		return ok ? lines : 0u;
+	};
+	key_set_t set;
+	// a comment after ';' too, formatting let be, a line too long and one
+	// too short, and one that is not hex; the example not counted
+	const std::string text =
+		"; a comment\r\n"
+		"0f1e2d3c-4b5a6978_8796a5b4 c3d2e1f0\t# KEY\r\n"
+		"\r\n"
+		"541b9889519b27d363cd21604b97c67a\n"
+		"0f1e2d3c4b5a69788796a5b4c3d2e1f00\n"
+		"0f1e2d3c\n"
+		"zz\n"
+		"0102030405060708090a0b0c0d0e0f10"; // no end of line
+	CHECK(parse(text, set) == 8);
+	CHECK(set.count == 3 && set.keys_txt == 2);
+	CHECK(set.count == 3 && memcmp(set.keys[0], KEY, 16) == 0 && set.keys[2][15] == 0x10);
+	CHECK(bad.size() == 3);
+	CHECK(bad.size() == 3 && bad[0].line == 5 && bad[0].what == KEY_CACHE_LINE_NOT_A_KEY);
+	CHECK(bad.size() == 3 && bad[1].line == 6 && bad[1].what == KEY_CACHE_LINE_NOT_A_KEY);
+	CHECK(bad.size() == 3 && bad[2].line == 7 && bad[2].what == KEY_CACHE_LINE_NOT_HEX);
+	key_set_free(&set);
+	CHECK(parse("", set) == 0 && set.count == 0);
+	key_set_free(&set);
+
+	// a key in a file: 16 octets, or 32 hex digits among white space
+	uint8 k[16];
+	const fs::path f = dir / "parts.key";
+	WriteFile(f, KEY, 16);
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_KEY && memcmp(k, KEY, 16) == 0);
+	WriteText(f, "  0F1E2D3C4B5A6978\r\n\t8796a5b4c3d2e1f0 \n");
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_KEY && memcmp(k, KEY, 16) == 0);
+	WriteText(f, "0f1e2d3c4b5a69788796a5b4c3d2e1f00");
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_NOT_A_KEY);
+	WriteText(f, "0f1e2d3c4b5a69788796a5b4c3d2e1f");
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_NOT_A_KEY);
+	WriteText(f, "0f1e2d3c4b5a69788796a5b4c3d2e1fg");
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_NOT_A_KEY);
+	// a long file of white space and then too much
+	WriteText(f, std::string(5000, ' ') + std::string(40, 'a'));
+	CHECK(key_cache_read_key_file(f.string().c_str(), k) == KEY_CACHE_FILE_NOT_A_KEY);
+	CHECK(key_cache_read_key_file((dir / "none.key").string().c_str(), k) == KEY_CACHE_FILE_ABSENT);
+	CHECK(key_cache_read_key_file(dir.string().c_str(), k) == KEY_CACHE_FILE_ABSENT);
+	fs::remove(f);
+}
+
 int main()
 {
 	AES128_init();
@@ -67,6 +125,7 @@ int main()
 	const fs::path keysTxt = dir / "system" / "Cemu" / "keys.txt";
 	const fs::path image = dir / "games" / "Zelda (USA) (En,Fr,Es).wux";
 	WriteText(image, "not looked at");
+	TestParts(dir / "games");
 
 	// a disc's header: an IV, then two blocks of zeros encrypted with KEY
 	uint8 header[48]{};

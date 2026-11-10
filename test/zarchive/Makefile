@@ -31,7 +31,7 @@ C_SRCS := $(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c \
 	$(LRC)/compat/compat_posix_string.c $(LRC)/compat/fopen_utf8.c \
 	$(LRC)/time/rtime.c $(LRC)/formats/xml/rxml.c \
 	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
-CORE_C_SRCS := $(SRC)/Cafe/Filesystem/zarchive.c $(SRC)/Common/shared_file.c
+CORE_C_SRCS := $(SRC)/Cafe/Filesystem/zarchive.c $(SRC)/Common/shared_file.c $(RCU_C)
 CXX_SRCS := zarchive_test.cpp $(SRC)/Cafe/Filesystem/ZArchiveVFS.cpp $(SRC)/util/xml/Xml.cpp
 
 zarchive_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/zarchive.h $(SRC)/Cafe/Filesystem/ZArchiveVFS.h $(SRC)/Cafe/TitleList/ParsedMetaXml.h $(SRC)/util/xml/Xml.h

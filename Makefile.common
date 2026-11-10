@@ -50,6 +50,8 @@ endif
 # The core
 # ----------------------------------------------------------------------------
 CORE_SOURCES_C := \
+	$(CORE_DIR)/src/Cafe/Filesystem/FST/key_cache.c \
+	$(CORE_DIR)/src/util/helpers/rcu_cell.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/zarchive.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_source.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \

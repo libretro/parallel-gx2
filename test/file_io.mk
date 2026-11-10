@@ -24,3 +24,6 @@ C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after
 # crypto under it, for the tests that decrypt
 AES_C := $(SRC)/util/crypto/aes128.c
 AES_LRC_C := $(LRC)/crypto/crypto.c $(LRC)/features/features_cpu.c
+# The lock-free cell under RcuCell.h (C89), for the tests that link
+# anything that keeps one
+RCU_C := $(SRC)/util/helpers/rcu_cell.c
