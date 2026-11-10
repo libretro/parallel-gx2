@@ -23,12 +23,13 @@ endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c \
-	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c $(AES_LRC_C)
 CXX_SRCS := keycache_test.cpp $(SRC)/Cafe/Filesystem/FST/KeyCache.cpp $(SRC)/util/helpers/MappedFile.cpp \
-	$(FILE_IO_CXX) $(SRC)/util/crypto/aes128.cpp $(SRC)/Common/cpu_features.cpp
+	$(FILE_IO_CXX)
 
-keycache_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(SRC)/Cafe/Filesystem/FST/KeyCache.h stub/config/ActiveSettings.h stub/WindowSystem.h
+keycache_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(AES_C) $(SRC)/Cafe/Filesystem/FST/KeyCache.h stub/config/ActiveSettings.h stub/WindowSystem.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(AES_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

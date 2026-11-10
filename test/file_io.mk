@@ -18,3 +18,7 @@ endif
 DISC_IMAGE_C := $(SRC)/Cafe/Filesystem/WUD/wud.c $(SRC)/Common/shared_file.c
 C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement \
 	-Wno-long-long -Wno-variadic-macros -Wall -Werror
+# The core's AES-128 (C89, built with C89_FLAGS) and libretro-common's
+# crypto under it, for the tests that decrypt
+AES_C := $(SRC)/util/crypto/aes128.c
+AES_LRC_C := $(LRC)/crypto/crypto.c $(LRC)/features/features_cpu.c

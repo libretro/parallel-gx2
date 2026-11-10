@@ -330,6 +330,15 @@ jobs:
           make -C test/shared_file clean
           SANITIZER=address,undefined ./test/shared_file/run_tests.sh
 
+      - name: "AES"
+        # the core's AES-128 over libretro-common's crypto (C89): standard
+        # vectors, a 64 KiB CBC block against block-by-block, CTR's
+        # counter; plain and under ASan + UBSan
+        run: |
+          ./test/aes/run_tests.sh
+          make -C test/aes clean
+          SANITIZER=address,undefined ./test/aes/run_tests.sh
+
       - name: "FST volumes"
         # the core's reader of disc and title content volumes: files from
         # unhashed and hashed clusters of a volume the test makes, through

@@ -52,7 +52,8 @@ endif
 CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/wuhb.c \
-	$(CORE_DIR)/src/Common/shared_file.c
+	$(CORE_DIR)/src/Common/shared_file.c \
+	$(CORE_DIR)/src/util/crypto/aes128.c
 CORE_SOURCES_CXX :=
 CORE_SOURCES_ASM :=
 CORE_SOURCES_OBJCXX :=
@@ -359,7 +360,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/Zir/Passes/RegisterAllocatorForGLSL.cpp \
 	$(CORE_DIR)/src/util/Zir/Passes/ZpIRRegisterAllocator.cpp \
 	$(CORE_DIR)/src/util/bootSound/BootSoundReader.cpp \
-	$(CORE_DIR)/src/util/crypto/aes128.cpp \
 	$(CORE_DIR)/src/util/crypto/crc32.cpp \
 	$(CORE_DIR)/src/util/crypto/md5.cpp \
 	$(CORE_DIR)/src/util/helpers/Deflate.cpp \

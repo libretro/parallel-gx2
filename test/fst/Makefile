@@ -20,14 +20,13 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
-C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c
+C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(LRC)/hash/lrc_hash.c $(AES_LRC_C)
 CXX_SRCS := fst_test.cpp $(SRC)/Cafe/Filesystem/FST/FST.cpp $(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp \
-	$(SRC)/util/helpers/MappedFile.cpp $(FILE_IO_CXX) \
-	$(SRC)/util/crypto/aes128.cpp $(SRC)/Common/cpu_features.cpp
+	$(SRC)/util/helpers/MappedFile.cpp $(FILE_IO_CXX)
 
-fst_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/FST/FST.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h
+fst_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(DISC_IMAGE_C) $(AES_C) $(SRC)/Cafe/Filesystem/FST/FST.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
-	for f in $(DISC_IMAGE_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(DISC_IMAGE_C) $(AES_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

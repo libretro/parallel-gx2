@@ -11,7 +11,6 @@ DEP := ../../dependencies
 FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar
 # what the core's precompiled header, which FileStream.h includes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
-# aes128.cpp and cpu_features.cpp are built with it forced in, as in the core
 CXXFLAGS_CORE += -include $(SRC)/Common/precompiled.h
 ifneq ($(SANITIZER),)
    FLAGS += -fsanitize=$(SANITIZER) -fno-omit-frame-pointer
@@ -23,13 +22,11 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
-# filestream only: FileStream is the test's own, counting reads
+# filestream: the only FileStream call left is HostPath, which the test has
 C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
-	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
-CORE_C_SRCS := $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/WUHB/wuhb.c
-CXX_SRCS := disc_image_test.cpp \
-	$(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp $(SRC)/util/crypto/aes128.cpp \
-	$(SRC)/Common/cpu_features.cpp
+	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(AES_LRC_C)
+CORE_C_SRCS := $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(AES_C)
+CXX_SRCS := disc_image_test.cpp $(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp
 
 disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Common/shared_file.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h \
 	$(SRC)/Cafe/Filesystem/WUHB/wuhb.h
