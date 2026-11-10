@@ -1,6 +1,14 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/Filesystem/FST/fstUtil.h"
 
+#include <atomic>
+
+// The mount table: a tree of mount points for each priority. A table is
+// never changed once it is published: a mount or an unmount builds a new one
+// from the one in place and swaps it in (compare-exchange, again on a race
+// with another), so a lookup never waits and never sees half a change. A
+// reader announces the table it reads in a hazard slot of its thread's, and
+// a replaced table is freed once no slot holds it.
 struct FSCMountPathNode
 {
 	std::string path;
@@ -15,6 +23,16 @@ struct FSCMountPathNode
 
 	FSCMountPathNode(FSCMountPathNode* parent) : parent(parent)
 	{
+	}
+
+	// a deep copy, under parent
+	FSCMountPathNode(const FSCMountPathNode& other, FSCMountPathNode* parent)
+		: path(other.path), parent(parent), device(other.device), ctx(other.ctx),
+		  deviceTargetPath(other.deviceTargetPath), priority(other.priority)
+	{
+		subnodes.reserve(other.subnodes.size());
+		for (const FSCMountPathNode* sub : other.subnodes)
+			subnodes.push_back(new FSCMountPathNode(*sub, this));
 	}
 
     void AssignDevice(fscDeviceC* device, void* ctx, std::string_view deviceBasePath)
@@ -44,6 +62,32 @@ struct FSCMountPathNode
 	}
 };
 
+struct FSCMountTable
+{
+	FSCMountPathNode* root[FSC_PRIORITY_COUNT];
+	FSCMountTable* retiredNext{};
+
+	FSCMountTable()
+	{
+		for (auto& r : root)
+			r = new FSCMountPathNode(nullptr);
+	}
+
+	FSCMountTable(const FSCMountTable& other)
+	{
+		for (sint32 i = 0; i < FSC_PRIORITY_COUNT; i++)
+			root[i] = new FSCMountPathNode(*other.root[i], nullptr);
+	}
+
+	FSCMountTable& operator=(const FSCMountTable&) = delete;
+
+	~FSCMountTable()
+	{
+		for (auto& r : root)
+			delete r;
+	}
+};
+
 // compare two file or directory names using FSA rules
 bool FSA_CompareNodeName(std::string_view a, std::string_view b)
 {
@@ -64,26 +108,177 @@ bool FSA_CompareNodeName(std::string_view a, std::string_view b)
 	return true;
 }
 
-FSCMountPathNode* s_fscRootNodePerPrio[FSC_PRIORITY_COUNT]{};
+static std::atomic<FSCMountTable*> s_fscTable{nullptr};
+static std::atomic<FSCMountTable*> s_fscRetired{nullptr};
+// tables made and not yet freed, for the tests
+static std::atomic<sint32> s_fscLiveTables{0};
 
-std::recursive_mutex s_fscMutex;
+// a hazard slot for each thread that reads the table, claimed at its first
+// read and given back when the thread ends
+static constexpr sint32 FSC_HAZARD_SLOTS = 256;
+static std::atomic<const FSCMountTable*> s_fscHazard[FSC_HAZARD_SLOTS];
+static std::atomic<bool> s_fscHazardTaken[FSC_HAZARD_SLOTS];
 
-#define fscEnter() s_fscMutex.lock();
-#define fscLeave() s_fscMutex.unlock();
+struct FSCHazardSlotOwner
+{
+	sint32 index{-1};
+	~FSCHazardSlotOwner()
+	{
+		if (index < 0)
+			return;
+		s_fscHazard[index].store(nullptr, std::memory_order_release);
+		s_fscHazardTaken[index].store(false, std::memory_order_release);
+	}
+};
+static thread_local FSCHazardSlotOwner t_fscHazard;
 
-FSCMountPathNode* fsc_lookupPathVirtualNode(const char* path, sint32 priority = FSC_PRIORITY_BASE);
+static std::atomic<const FSCMountTable*>& fsc_hazardSlot()
+{
+	if (t_fscHazard.index < 0)
+	{
+		for (sint32 i = 0; i < FSC_HAZARD_SLOTS; i++)
+		{
+			if (!s_fscHazardTaken[i].load(std::memory_order_relaxed) && !s_fscHazardTaken[i].exchange(true, std::memory_order_acquire))
+			{
+				t_fscHazard.index = i;
+				break;
+			}
+		}
+		cemu_assert(t_fscHazard.index >= 0); // more threads reading the file system than slots
+	}
+	return s_fscHazard[t_fscHazard.index];
+}
+
+// The table, held for as long as this lives. Held already on this thread
+// (a lookup inside an open), it is the same table.
+class FSCTableRef
+{
+public:
+	FSCTableRef() : m_slot(fsc_hazardSlot())
+	{
+		m_prev = m_slot.load(std::memory_order_relaxed);
+		if (m_prev)
+		{
+			m_table = m_prev;
+			return;
+		}
+		const FSCMountTable* t;
+		do
+		{
+			t = s_fscTable.load(std::memory_order_seq_cst);
+			m_slot.store(t, std::memory_order_seq_cst);
+		} while (t != s_fscTable.load(std::memory_order_seq_cst));
+		m_table = t;
+	}
+	~FSCTableRef()
+	{
+		m_slot.store(m_prev, std::memory_order_release);
+	}
+	FSCTableRef(const FSCTableRef&) = delete;
+	FSCTableRef& operator=(const FSCTableRef&) = delete;
+
+	const FSCMountTable* get() const { return m_table; }
+	// whether this thread held a table already
+	bool nested() const { return m_prev != nullptr; }
+
+private:
+	std::atomic<const FSCMountTable*>& m_slot;
+	const FSCMountTable* m_prev;
+	const FSCMountTable* m_table;
+};
+
+static FSCMountTable* fsc_newTable(const FSCMountTable* from)
+{
+	s_fscLiveTables.fetch_add(1, std::memory_order_relaxed);
+	return from ? new FSCMountTable(*from) : new FSCMountTable();
+}
+
+static void fsc_freeTable(FSCMountTable* t)
+{
+	delete t;
+	s_fscLiveTables.fetch_sub(1, std::memory_order_relaxed);
+}
+
+static bool fsc_isHazard(const FSCMountTable* t)
+{
+	for (auto& h : s_fscHazard)
+		if (h.load(std::memory_order_seq_cst) == t)
+			return true;
+	return false;
+}
+
+// tables replaced and no longer read are freed; those still read wait for
+// the next replacement
+static void fsc_reclaim()
+{
+	FSCMountTable* list = s_fscRetired.exchange(nullptr, std::memory_order_acq_rel);
+	while (list)
+	{
+		FSCMountTable* next = list->retiredNext;
+		if (fsc_isHazard(list))
+		{
+			list->retiredNext = s_fscRetired.load(std::memory_order_relaxed);
+			while (!s_fscRetired.compare_exchange_weak(list->retiredNext, list, std::memory_order_release, std::memory_order_relaxed))
+				;
+		}
+		else
+			fsc_freeTable(list);
+		list = next;
+	}
+}
+
+// A new table from the one in place, changed by change(table) - false to
+// leave things as they are - and swapped in
+template<typename F>
+static bool fsc_changeTable(F&& change)
+{
+	for (;;)
+	{
+		FSCTableRef ref;
+		// a change made while this thread reads the table would start from
+		// the table it reads, however stale, and never get in
+		cemu_assert(!ref.nested());
+		FSCMountTable* old = const_cast<FSCMountTable*>(ref.get());
+		FSCMountTable* table = fsc_newTable(old);
+		if (!change(*table))
+		{
+			fsc_freeTable(table);
+			return false;
+		}
+		if (s_fscTable.compare_exchange_strong(old, table, std::memory_order_seq_cst))
+		{
+			if (old)
+			{
+				old->retiredNext = s_fscRetired.load(std::memory_order_relaxed);
+				while (!s_fscRetired.compare_exchange_weak(old->retiredNext, old, std::memory_order_release, std::memory_order_relaxed))
+					;
+			}
+			break;
+		}
+		// another change came first: from its table, again
+		fsc_freeTable(table);
+	}
+	fsc_reclaim();
+	return true;
+}
+
+sint32 fsc_liveMountTables()
+{
+	return s_fscLiveTables.load(std::memory_order_relaxed);
+}
+
+static FSCMountPathNode* fsc_lookupPathVirtualNode(const FSCMountTable* table, const char* path, sint32 priority);
 
 void fsc_reset()
 {
-	// delete existing nodes
-	for (auto& itr : s_fscRootNodePerPrio)
-	{
-		delete itr;
-		itr = nullptr;
-	}
-	// init root node for each priority
-	for (sint32 i = 0; i < FSC_PRIORITY_COUNT; i++)
-		s_fscRootNodePerPrio[i] = new FSCMountPathNode(nullptr);
+	fsc_changeTable([](FSCMountTable& table) {
+		for (auto& r : table.root)
+		{
+			delete r;
+			r = new FSCMountPathNode(nullptr);
+		}
+		return true;
+	});
 }
 
 /*
@@ -94,11 +289,10 @@ void fsc_reset()
  * /vol/content/data -> Map to HostFS
  * If overlapping paths with different priority are created, then the higher priority one will be checked first
  */
-FSCMountPathNode* fsc_createMountPath(const FSCPath& mountPath, sint32 priority)
+static FSCMountPathNode* fsc_createMountPath(FSCMountTable& table, const FSCPath& mountPath, sint32 priority)
 {
 	cemu_assert(priority >= 0 && priority < FSC_PRIORITY_COUNT);
-	fscEnter();
-	FSCMountPathNode* nodeParent = s_fscRootNodePerPrio[priority];
+	FSCMountPathNode* nodeParent = table.root[priority];
 	for (size_t i=0; i< mountPath.GetNodeCount(); i++)
 	{
 		// search for subdirectory
@@ -126,14 +320,12 @@ FSCMountPathNode* fsc_createMountPath(const FSCPath& mountPath, sint32 priority)
 		if (i == (mountPath.GetNodeCount() - 1))
 		{
 			// last node
-			fscLeave();
 			return nodeSub;
 		}
 		// traverse subnode
 		nodeParent = nodeSub;
 	}
 	// path is empty or already mounted
-	fscLeave();
 	if (mountPath.GetNodeCount() == 0)
 		return nodeParent;
 	return nullptr;
@@ -151,60 +343,59 @@ sint32 fsc_mount(std::string_view mountPath, std::string_view targetPath, fscDev
 
 	FSCPath parsedMountPath(mountPathTmp);
 	// register path
-	fscEnter();
-	FSCMountPathNode* node = fsc_createMountPath(parsedMountPath, priority);
-	if( !node )
+	const bool mounted = fsc_changeTable([&](FSCMountTable& table) {
+		FSCMountPathNode* node = fsc_createMountPath(table, parsedMountPath, priority);
+		if (!node)
+			return false;
+		node->AssignDevice(fscDevice, ctx, targetPathWithSlash);
+		return true;
+	});
+	if (!mounted)
 	{
 		// path empty, invalid or already used
 		cemuLog_log(LogType::Force, "fsc_mount failed (virtual path: {})", mountPath);
-		fscLeave();
 		return FSC_STATUS_INVALID_PATH;
 	}
-    node->AssignDevice(fscDevice, ctx, targetPathWithSlash);
-	fscLeave();
 	return FSC_STATUS_OK;
 }
 
 bool fsc_unmount(std::string_view mountPath, sint32 priority)
 {
 	std::string _tmp(mountPath);
-	fscEnter();
-	FSCMountPathNode* mountPathNode = fsc_lookupPathVirtualNode(_tmp.c_str(), priority);
-	if (!mountPathNode)
-	{
-		fscLeave();
-		return false;
-	}
-	cemu_assert(mountPathNode->priority == priority);
-	cemu_assert(mountPathNode->device);
-    // unassign device
-    mountPathNode->UnassignDevice();
-	// prune empty branch
-	while (mountPathNode && !mountPathNode->IsRootNode() && mountPathNode->subnodes.empty() && !mountPathNode->device)
-	{
-		FSCMountPathNode* parent = mountPathNode->parent;
-        std::erase(parent->subnodes, mountPathNode);
-		delete mountPathNode;
-		mountPathNode = parent;
-	}
-	fscLeave();
-	return true;
+	return fsc_changeTable([&](FSCMountTable& table) {
+		FSCMountPathNode* mountPathNode = fsc_lookupPathVirtualNode(&table, _tmp.c_str(), priority);
+		if (!mountPathNode)
+			return false;
+		cemu_assert(mountPathNode->priority == priority);
+		cemu_assert(mountPathNode->device);
+		// unassign device
+		mountPathNode->UnassignDevice();
+		// prune empty branch
+		while (mountPathNode && !mountPathNode->IsRootNode() && mountPathNode->subnodes.empty() && !mountPathNode->device)
+		{
+			FSCMountPathNode* parent = mountPathNode->parent;
+			std::erase(parent->subnodes, mountPathNode);
+			delete mountPathNode;
+			mountPathNode = parent;
+		}
+		return true;
+	});
 }
 
 void fsc_unmountAll()
 {
-	fscEnter();
 	fsc_reset();
-	fscLeave();
 }
 
 // lookup virtual path and find mounted device and relative device directory
-bool fsc_lookupPath(const char* path, std::string& devicePathOut, fscDeviceC** fscDeviceOut, void** ctxOut, sint32 priority = FSC_PRIORITY_BASE)
+static bool fsc_lookupPath(const char* path, std::string& devicePathOut, fscDeviceC** fscDeviceOut, void** ctxOut, sint32 priority = FSC_PRIORITY_BASE)
 {
+	FSCTableRef ref;
+	if (!ref.get())
+		return false;
 	FSCPath parsedPath(path);
-	FSCMountPathNode* nodeParent = s_fscRootNodePerPrio[priority];
+	FSCMountPathNode* nodeParent = ref.get()->root[priority];
 	size_t i;
-	fscEnter();
 	for (i = 0; i < parsedPath.GetNodeCount(); i++)
 	{
 		// search for subdirectory
@@ -240,22 +431,21 @@ bool fsc_lookupPath(const char* path, std::string& devicePathOut, fscDeviceC** f
 			}
 			*fscDeviceOut = nodeParent->device;
 			*ctxOut = nodeParent->ctx;
-			fscLeave();
 			return true;
 		}
 		nodeParent = nodeParent->parent;
 		i--;
 	}
-	fscLeave();
 	return false;
 }
 
-// lookup path and find virtual device node
-FSCMountPathNode* fsc_lookupPathVirtualNode(const char* path, sint32 priority)
+// lookup path and find virtual device node, in table
+static FSCMountPathNode* fsc_lookupPathVirtualNode(const FSCMountTable* table, const char* path, sint32 priority)
 {
+	if (!table)
+		return nullptr;
 	FSCPath parsedPath(path);
-	FSCMountPathNode* nodeCurrentDir = s_fscRootNodePerPrio[priority];
-	fscEnter();
+	FSCMountPathNode* nodeCurrentDir = table->root[priority];
 	for (size_t i = 0; i < parsedPath.GetNodeCount(); i++)
 	{
 		// search for subdirectory
@@ -274,10 +464,8 @@ FSCMountPathNode* fsc_lookupPathVirtualNode(const char* path, sint32 priority)
 			nodeCurrentDir = nodeSub;
 			continue;
 		}
-		fscLeave();
 		return nullptr;
 	}
-	fscLeave();
 	return nodeCurrentDir;
 }
 
@@ -344,7 +532,7 @@ private:
 		cemu_assert_debug(!dirIterator);
 		dirIterator = new FSCVirtualFile::FSCDirIteratorState();
 		FSCDirEntry dirEntry;
-		fscEnter();
+		FSCTableRef ref;
 		for (auto& itr : m_folders)
 		{
 			while (itr->fscDirNext(&dirEntry))
@@ -352,7 +540,7 @@ private:
 		}
 		for (sint32 prio = FSC_PRIORITY_COUNT - 1; prio >= 0; prio--)
 		{
-			FSCMountPathNode* nodeVirtualPath = fsc_lookupPathVirtualNode(m_path.c_str(), prio);
+			FSCMountPathNode* nodeVirtualPath = fsc_lookupPathVirtualNode(ref.get(), m_path.c_str(), prio);
 			if (nodeVirtualPath)
 			{
 				for (auto& itr : nodeVirtualPath->subnodes)
@@ -366,7 +554,6 @@ private:
 				}
 			}
 		}
-		fscLeave();
 	}
 
 private:
@@ -384,7 +571,8 @@ FSCVirtualFile* fsc_open(const char* path, FSC_ACCESS_FLAG accessFlags, sint32* 
 	fscDeviceC* fscDevice = NULL;
 	*fscStatus = FSC_STATUS_UNDEFINED;
 	void* ctx;
-	fscEnter();
+	// one table for every priority looked at
+	FSCTableRef ref;
 	for (sint32 prio = maxPriority; prio >= 0; prio--)
 	{
 		if (fsc_lookupPath(path, devicePath, &fscDevice, &ctx, prio))
@@ -404,7 +592,6 @@ FSCVirtualFile* fsc_open(const char* path, FSC_ACCESS_FLAG accessFlags, sint32* 
 					// return first found file
 					cemu_assert_debug(HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE));
 					fscVirtualFile->m_isAppend = HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::IS_APPEND);
-					fscLeave();
 					return fscVirtualFile;
 				}				
 			}
@@ -419,13 +606,12 @@ FSCVirtualFile* fsc_open(const char* path, FSC_ACCESS_FLAG accessFlags, sint32* 
 		{
 			if (folderExists)
 				break;
-			folderExists |= (fsc_lookupPathVirtualNode(path, prio) != 0);
+			folderExists |= (fsc_lookupPathVirtualNode(ref.get(), path, prio) != 0);
 		}
 		if (folderExists)
 		{
 			FSCVirtualFileDirectoryIterator* dirIteratorFile = new FSCVirtualFileDirectoryIterator(path, { dirList, dirListCount});
 			*fscStatus = FSC_STATUS_OK;
-			fscLeave();
 			return dirIteratorFile;
 		}
 	}
@@ -433,7 +619,6 @@ FSCVirtualFile* fsc_open(const char* path, FSC_ACCESS_FLAG accessFlags, sint32* 
 	{
 		cemu_assert_debug(dirListCount == 0);
 	}
-	fscLeave();
 	*fscStatus = FSC_STATUS_FILE_NOT_FOUND;
 	return nullptr;
 }
@@ -452,15 +637,12 @@ FSCVirtualFile* fsc_openDirIterator(const char* path, sint32* fscStatus)
 */
 bool fsc_nextDir(FSCVirtualFile* fscFile, FSCDirEntry* dirEntry)
 {
-	fscEnter();
 	if (fscFile->fscGetType() != FSC_TYPE_DIRECTORY)
 	{
 		cemu_assert_suspicious();
-		fscLeave();
 		return false;
 	}
 	bool r = fscFile->fscDirNext(dirEntry);
-	fscLeave();
 	return r;
 }
 
@@ -473,14 +655,11 @@ bool fsc_createDir(const char* path, sint32* fscStatus)
 	*fscStatus = FSC_STATUS_UNDEFINED;
 	void* ctx;
 	std::string devicePath;
-	fscEnter();
 	if( fsc_lookupPath(path, devicePath, &fscDevice, &ctx) )
 	{
 		sint32 status = fscDevice->fscDeviceCreateDir(devicePath, ctx, fscStatus);
-		fscLeave();
 		return status;
 	}
-	fscLeave();
 	return false;
 }
 
@@ -525,18 +704,14 @@ bool fsc_remove(const char* path, sint32* fscStatus)
  */
 void fsc_close(FSCVirtualFile* fscFile)
 {
-	fscEnter();
 	delete fscFile;
-	fscLeave();
 }
 
 void fsc_flush(FSCVirtualFile* fscFile)
 {
 	if (!fscFile)
 		return;
-	fscEnter();
 	fscFile->fscFlush();
-	fscLeave();
 }
 
 /*
@@ -561,18 +736,15 @@ uint32 fsc_getFileSeek(FSCVirtualFile* fscFile)
  */
 void fsc_setFileSeek(FSCVirtualFile* fscFile, uint32 newSeek)
 {
-	fscEnter();
 	uint32 fileSize = fsc_getFileSize(fscFile);
 	if (fsc_isWritable(fscFile) == false)
 		newSeek = std::min(newSeek, fileSize);
 	fscFile->fscSetSeek((uint64)newSeek);
-	fscLeave();
 }
 
 // set file length
 void fsc_setFileLength(FSCVirtualFile* fscFile, uint32 newEndOffset)
 {
-	fscEnter();
 	uint32 fileSize = fsc_getFileSize(fscFile);
 	if (!fsc_isWritable(fscFile))
 	{
@@ -582,7 +754,6 @@ void fsc_setFileLength(FSCVirtualFile* fscFile, uint32 newEndOffset)
 	{
 		fscFile->fscSetFileLength((uint64)newEndOffset);
 	}
-	fscLeave();
 }
 
 /*
@@ -615,9 +786,7 @@ bool fsc_isWritable(FSCVirtualFile* fscFile)
  */
 uint32 fsc_readFile(FSCVirtualFile* fscFile, void* buffer, uint32 size)
 {
-	fscEnter();
 	uint32 fscStatus = fscFile->fscReadData(buffer, size);
-	fscLeave();
 	return fscStatus;
 }
 
@@ -627,17 +796,14 @@ uint32 fsc_readFile(FSCVirtualFile* fscFile, void* buffer, uint32 size)
  */
 uint32 fsc_writeFile(FSCVirtualFile* fscFile, void* buffer, uint32 size)
 {
-	fscEnter();
 	if (fsc_isWritable(fscFile) == false)
 	{
-		fscLeave();
 		return 0;
 	}
 	if (fscFile->m_isAppend)
 		fsc_setFileSeek(fscFile, fsc_getFileSize(fscFile));
 
 	uint32 fscStatus = fscFile->fscWriteData(buffer, size);
-	fscLeave();
 	return fscStatus;
 }
 
@@ -658,7 +824,7 @@ sint32 fsc_getFilePriority(const char* path, sint32 maxPriority)
 	std::string devicePath;
 	fscDeviceC* fscDevice = nullptr;
 	void* ctx;
-	fscEnter();
+	FSCTableRef ref;
 	for (sint32 prio = maxPriority; prio >= 0; prio--)
 	{
 		if (!fsc_lookupPath(path, devicePath, &fscDevice, &ctx, prio))
@@ -671,11 +837,9 @@ sint32 fsc_getFilePriority(const char* path, sint32 maxPriority)
 		delete f;
 		if (isFile)
 		{
-			fscLeave();
 			return prio;
 		}
 	}
-	fscLeave();
 	return -1;
 }
 
@@ -684,12 +848,10 @@ uint8* fsc_extractFile(const char* path, uint32* fileSize, sint32 maxPriority)
 {
 	fscDeviceC* fscDevice = nullptr;
 	sint32 fscStatus = FSC_STATUS_UNDEFINED;
-	fscEnter();
 	FSCVirtualFile* fscFile = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &fscStatus, maxPriority);
 	if( !fscFile )
 	{
 		*fileSize = 0;
-		fscLeave();
 		return nullptr;
 	}
 	uint32 fscFileSize = fsc_getFileSize(fscFile);
@@ -700,11 +862,9 @@ uint8* fsc_extractFile(const char* path, uint32* fileSize, sint32 maxPriority)
 		free(fileMem);
 		fsc_close(fscFile);
 		*fileSize = 0;
-		fscLeave();
 		return nullptr;
 	}
 	fsc_close(fscFile);
-	fscLeave();
 	return fileMem;
 }
 
@@ -712,11 +872,9 @@ std::optional<std::vector<uint8>> fsc_extractFile(const char* path, sint32 maxPr
 {
 	fscDeviceC* fscDevice = nullptr;
 	sint32 fscStatus = FSC_STATUS_UNDEFINED;
-	fscEnter();
 	FSCVirtualFile* fscFile = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &fscStatus, maxPriority);
 	if (!fscFile)
 	{
-		fscLeave();
 		return std::nullopt;
 	}
 	std::vector<uint8> fileData;
@@ -731,13 +889,11 @@ std::optional<std::vector<uint8>> fsc_extractFile(const char* path, sint32 maxPr
 		if (numBytesRead != stepReadSize)
 		{
 			fsc_close(fscFile);
-			fscLeave();
 			return std::nullopt;
 		}
 		readOffset += stepReadSize;
 	}
 	fsc_close(fscFile);
-	fscLeave();
 	return fileData;
 }
 
@@ -746,15 +902,12 @@ bool fsc_doesFileExist(const char* path, sint32 maxPriority)
 {
 	fscDeviceC* fscDevice = nullptr;
 	sint32 fscStatus = FSC_STATUS_UNDEFINED;
-	fscEnter();
 	FSCVirtualFile* fscFile = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE, &fscStatus, maxPriority);
 	if (!fscFile)
 	{
-		fscLeave();
 		return false;
 	}
 	fsc_close(fscFile);
-	fscLeave();
 	return true;
 }
 
@@ -763,15 +916,12 @@ bool fsc_doesDirectoryExist(const char* path, sint32 maxPriority)
 {
 	fscDeviceC* fscDevice = nullptr;
 	sint32 fscStatus = FSC_STATUS_UNDEFINED;
-	fscEnter();
 	FSCVirtualFile* fscFile = fsc_open(path, FSC_ACCESS_FLAG::OPEN_DIR, &fscStatus, maxPriority);
 	if (!fscFile)
 	{
-		fscLeave();
 		return false;
 	}
 	fsc_close(fscFile);
-	fscLeave();
 	return true;
 }
 

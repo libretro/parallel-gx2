@@ -93,14 +93,19 @@ FSTDataSourceApp* FSTDataSourceApp::Open(const fs::path& path, std::span<const C
 	for (const Content& c : contents)
 	{
 		Cluster& cluster = ds->m_cluster[c.index];
-		if (cluster.file)
+		if (cluster.file || cluster.streams)
 			return nullptr; // a cluster twice
-		cluster.file = FileStream::openFileMapped(path / fmt::format("{:08x}.app", c.contentId));
+		const fs::path appPath = path / fmt::format("{:08x}.app", c.contentId);
+		cluster.file = FileStream::openFileMapped(appPath);
 		if (!cluster.file)
 			return nullptr;
 		cluster.mapped = cluster.file->MappedSpan();
 		if (cluster.mapped.size() != cluster.file->GetSize())
+		{
 			cluster.mapped = {};
+			cluster.streams = new FileStreamPool(appPath, cluster.file);
+			cluster.file = nullptr;
+		}
 	}
 	return ds.release();
 }
@@ -108,13 +113,16 @@ FSTDataSourceApp* FSTDataSourceApp::Open(const fs::path& path, std::span<const C
 FSTDataSourceApp::~FSTDataSourceApp()
 {
 	for (Cluster& c : m_cluster)
+	{
 		delete c.file;
+		delete c.streams;
+	}
 }
 
 uint64 FSTDataSourceApp::readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size)
 {
 	// clusterOffset is not used: each file starts at its cluster's start
-	if (clusterIndex >= m_cluster.size() || !m_cluster[clusterIndex].file || size > 0xFFFFFFFF)
+	if (clusterIndex >= m_cluster.size() || (!m_cluster[clusterIndex].file && !m_cluster[clusterIndex].streams) || size > 0xFFFFFFFF)
 		return 0;
 	Cluster& c = m_cluster[clusterIndex];
 	if (!c.mapped.empty())
@@ -125,8 +133,17 @@ uint64 FSTDataSourceApp::readData(uint16 clusterIndex, uint64 clusterOffset, uin
 		memcpy(data, c.mapped.data() + offset, n);
 		return n;
 	}
-	c.file->SetPosition(offset);
-	return c.file->readData(data, (uint32)size);
+	if (!c.streams)
+		return 0; // an empty file
+	FileStream* fs = c.streams->Acquire();
+	uint64 got = 0;
+	if (fs)
+	{
+		fs->SetPosition(offset);
+		got = fs->readData(data, (uint32)size);
+	}
+	c.streams->Release(fs);
+	return got;
 }
 
 const uint8* FSTDataSourceApp::Lend(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint64 size)

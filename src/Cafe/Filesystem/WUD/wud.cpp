@@ -79,12 +79,19 @@ wud_t* wud_open(const fs::path& path)
 		// uncompressed file
 		wud->uncompressedSize = inputFileSize;
 	}
+	if (!wud->mapped)
+	{
+		// read from any number of threads at once, each with a stream
+		wud->streams = new FileStreamPool(path, wud->fs);
+		wud->fs = nullptr;
+	}
 	return wud;
 }
 
 void wud_close(wud_t* wud)
 {
 	delete wud->fs;
+	delete wud->streams;
 	free(wud->indexTableCopy);
 	free(wud);
 }
@@ -150,8 +157,14 @@ unsigned int wud_readData(wud_t* wud, void* buffer, unsigned int length, long lo
 		}
 		else
 		{
-			wud->fs->SetPosition(at);
-			got = wud->fs->readData(buffer, n);
+			FileStream* fs = wud->streams->Acquire();
+			got = 0;
+			if (fs)
+			{
+				fs->SetPosition(at);
+				got = fs->readData(buffer, n);
+			}
+			wud->streams->Release(fs);
 		}
 		readBytes += got;
 		if (got != n)

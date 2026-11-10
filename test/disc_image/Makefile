@@ -26,7 +26,7 @@ FLAGS += $(FILE_IO_FLAGS)
 # filestream only: FileStream is the test's own, counting reads
 C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
-CXX_SRCS := disc_image_test.cpp $(SRC)/Cafe/Filesystem/WUD/wud.cpp \
+CXX_SRCS := disc_image_test.cpp $(SRC)/Cafe/Filesystem/WUD/wud.cpp $(SRC)/Common/FileStreamPool.cpp \
 	$(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp $(SRC)/util/crypto/aes128.cpp \
 	$(SRC)/Common/cpu_features.cpp $(SRC)/Cafe/Filesystem/WUHB/WUHBReader.cpp
 

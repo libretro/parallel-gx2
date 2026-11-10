@@ -11,6 +11,10 @@
 //    there;
 //  - fsc_readFileInto reads up to what fits, at the priority asked, and says
 //    -1 for what is not there;
+//  - the mount table read without a lock: threads open, read, look up and
+//    list while another unmounts and mounts the update over and over; each
+//    sees the update or not, never half of it, and every table replaced is
+//    freed once nothing reads it;
 //  - a directory listed through both mounts has every name once, with the
 //    sizes and types the host's directory read gave.
 #include "Cafe/Filesystem/fsc.h"
@@ -18,9 +22,11 @@
 #include "Common/FileStream.h"
 #include "Cemu/Logging/CemuLogging.h"
 
+#include <atomic>
 #include <cstdio>
 #include <map>
 #include <random>
+#include <thread>
 
 static int s_failures = 0;
 #define CHECK(cond) \
@@ -128,7 +134,78 @@ int main()
 	CHECK(names["patch.bin"] == std::make_pair(false, (uint64)1));
 	CHECK(names["sub"].first);
 
+	// the update unmounted and mounted again while threads read
+	{
+		std::atomic<bool> stop{false};
+		std::atomic<int> bad{0}, sawBase{0}, sawPatch{0};
+		std::vector<std::thread> readers;
+		for (int t = 0; t < 4; t++)
+		{
+			readers.emplace_back([&, t]() {
+				std::vector<uint8> buf(patchRpx.size() + 16);
+				while (!stop.load(std::memory_order_relaxed))
+				{
+					sint32 st;
+					FSCVirtualFile* f = fsc_open("/t/code/game.rpx", FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st);
+					if (!f)
+					{
+						bad++;
+						continue;
+					}
+					const uint32 size = fsc_getFileSize(f);
+					const uint32 got = fsc_readFile(f, buf.data(), (uint32)buf.size());
+					fsc_close(f);
+					if (size == patchRpx.size() && got == size && memcmp(buf.data(), patchRpx.data(), size) == 0)
+						sawPatch++;
+					else if (size == baseRpx.size() && got == size && memcmp(buf.data(), baseRpx.data(), size) == 0)
+						sawBase++;
+					else
+						bad++;
+					const sint32 prio = fsc_getFilePriority("/t/code/patch.bin");
+					if (prio != FSC_PRIORITY_PATCH && prio != -1)
+						bad++;
+					if (t == 0)
+					{
+						FSCVirtualFile* d = fsc_openDirIterator("/t/code", &st);
+						FSCDirEntry e;
+						int n = 0;
+						while (d && fsc_nextDir(d, &e))
+							n++;
+						if (d)
+							fsc_close(d);
+						if (n != 2 && n != 4) // patch.bin and sub there or not
+							bad++;
+					}
+				}
+			});
+		}
+		for (int i = 0; i < 300; i++)
+		{
+			CHECK(fsc_unmount("/t/", FSC_PRIORITY_PATCH));
+			std::this_thread::yield();
+			CHECK(FSCDeviceHostFS_Mount("/t/", _pathToUtf8(patch) + "/", FSC_PRIORITY_PATCH));
+			std::this_thread::yield();
+		}
+		// both seen, at least once: keep reading until they have been
+		for (int i = 0; i < 2000 && (sawBase == 0 || sawPatch == 0); i++)
+		{
+			fsc_unmount("/t/", FSC_PRIORITY_PATCH);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			FSCDeviceHostFS_Mount("/t/", _pathToUtf8(patch) + "/", FSC_PRIORITY_PATCH);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		stop = true;
+		for (std::thread& r : readers)
+			r.join();
+		CHECK(bad == 0);
+		CHECK(sawBase > 0 && sawPatch > 0);
+		// nothing reads now: the next change frees every table but its own
+		CHECK(fsc_unmount("/t/", FSC_PRIORITY_PATCH));
+		CHECK(fsc_liveMountTables() == 1);
+	}
+
 	fsc_unmountAll();
+	CHECK(fsc_liveMountTables() == 1);
 	FileStream::RemoveAll(dir);
 	if (s_failures)
 	{

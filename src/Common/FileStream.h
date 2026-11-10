@@ -124,3 +124,28 @@ private:
 
 	struct RFILE* m_file;
 };
+
+// Streams of one file read at many places from many threads at once, where it
+// cannot be mapped: each reader is lent a stream of its own for a read and
+// gives it back, with no lock; one is opened when none is free.
+class FileStreamPool
+{
+public:
+	// first, if given, is the pool's to keep
+	explicit FileStreamPool(const fs::path& path, FileStream* first = nullptr);
+	~FileStreamPool();
+	FileStreamPool(const FileStreamPool&) = delete;
+	FileStreamPool& operator=(const FileStreamPool&) = delete;
+
+	// nullptr when the file can no longer be opened
+	FileStream* Acquire();
+	void Release(FileStream* stream);
+	// streams opened, the first included
+	uint32 Opened() const { return m_opened.load(std::memory_order_relaxed); }
+
+private:
+	static constexpr size_t SLOTS = 4;
+	fs::path m_path;
+	std::atomic<FileStream*> m_slots[SLOTS]{};
+	std::atomic<uint32> m_opened{0};
+};

@@ -3,6 +3,7 @@
 
 struct wud_t;
 class FileStream;
+class FileStreamPool;
 
 // Where an FST volume's encrypted octets come from: a disc image (.wud, .wux)
 // or a title's content files (.app). Each is mapped where it can be, and then
@@ -12,8 +13,8 @@ class FileStream;
 // reaches), the octets are read into that same destination and decrypted
 // there.
 //
-// Not for more than one thread at once: the FST volume reading through it is
-// used under the fsc lock.
+// Read from any number of threads at once: what is mapped is only read, and
+// what is not is read through a stream lent to each reader.
 class FSTDataSource
 {
 public:
@@ -91,8 +92,9 @@ public:
 private:
 	struct Cluster
 	{
-		FileStream* file{};
+		FileStream* file{};             // the mapping's, where mapped
 		std::span<const uint8> mapped;
+		FileStreamPool* streams{};      // where not: one for each reader at once
 	};
 	FSTDataSourceApp() = default;
 	std::vector<Cluster> m_cluster;

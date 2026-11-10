@@ -55,7 +55,7 @@ public:
 	~FSTVolume();
 
 	uint32 GetFileCount() const;
-	bool HasCorruption() const { return m_detectedCorruption; }
+	bool HasCorruption() const { return m_detectedCorruption.load(std::memory_order_relaxed); }
 
 	bool OpenFile(std::string_view path, FSTFileHandle& fileHandleOut, bool openOnlyFiles = false);
 
@@ -114,7 +114,17 @@ private:
 		uint64 contentSize; // size of the content (in blocks)
 		// hash context for single hash mode (content hash must be available)
 		std::unique_ptr<ShaStream> singleHashCtx; // unique_ptr to make this move-only
-		uint32 singleHashNumBlocksHashed{0};
+		// the next block to hash, its top bit set while a reader hashes it:
+		// one reader hashes each block, the others go on (moved only while
+		// the volume is made)
+		struct MovableAtomicU32
+		{
+			std::atomic<uint32> v{0};
+			MovableAtomicU32() = default;
+			MovableAtomicU32(MovableAtomicU32&& o) noexcept : v(o.v.load(std::memory_order_relaxed)) {}
+			MovableAtomicU32& operator=(MovableAtomicU32&& o) noexcept { v.store(o.v.load(std::memory_order_relaxed), std::memory_order_relaxed); return *this; }
+		};
+		MovableAtomicU32 singleHashNumBlocksHashed;
 	};
 
 	struct FSTEntry
@@ -189,7 +199,7 @@ private:
 	std::vector<FSTEntry> m_entries;
 	std::vector<char> m_nameStringTable;
 	NCrypto::AesKey m_partitionTitlekey;
-	bool m_detectedCorruption{false};
+	std::atomic<bool> m_detectedCorruption{false};
 
 	bool HashIsDisabled() const
 	{
@@ -198,7 +208,9 @@ private:
 
 	/* Decrypted blocks kept for the reads that follow: a fixed set of slots,
 	   made at the first read, so a read allocates nothing. A read that wants
-	   a whole block is decrypted straight to where it goes instead. */
+	   a whole block is decrypted straight to where it goes instead. A cache
+	   is one reader's while it reads: lent from a pool the volume keeps, with
+	   no lock, so any number of threads read the volume at once. */
 	struct CacheSlot
 	{
 		uint64 key{~0ull}; // CacheKey(); ~0 when empty
@@ -207,36 +219,44 @@ private:
 	};
 	static constexpr uint32 CACHE_SLOTS = 32;
 	static constexpr uint32 CACHE_SLOT_SIZE = 0x10000; // a hashed block, or a raw one
-	std::unique_ptr<uint8[]> m_cacheMemory;
-	CacheSlot m_cacheSlots[CACHE_SLOTS];
-	uint64 m_cacheAccessCounter{};
-	// the IV of the raw block after the last one decrypted outside the cache
-	uint64 m_nextIvKey{~0ull};
-	NCrypto::AesIv m_nextIv{};
+	struct BlockCache
+	{
+		std::unique_ptr<uint8[]> memory;
+		CacheSlot slots[CACHE_SLOTS];
+		uint64 accessCounter{};
+		// the IV of the raw block after the last one decrypted outside it
+		uint64 nextIvKey{~0ull};
+		NCrypto::AesIv nextIv{};
+
+		CacheSlot* Find(uint64 key);
+		// the least recently used slot, emptied, or nullptr when there is no memory
+		CacheSlot* Take();
+		uint8* Data(const CacheSlot* slot) { return memory.get() + (size_t)(slot - slots) * CACHE_SLOT_SIZE; }
+	};
+	static constexpr size_t CACHE_POOL = 4;
+	std::atomic<BlockCache*> m_caches[CACHE_POOL]{};
+	BlockCache* AcquireCache();
+	void ReleaseCache(BlockCache* cache);
 
 	static uint64 CacheKey(bool hashed, uint32 clusterIndex, uint32 blockIndex)
 	{
 		return ((uint64)hashed << 63) | ((uint64)clusterIndex << 32) | blockIndex;
 	}
-	CacheSlot* FindCacheSlot(uint64 key);
-	// the least recently used slot, emptied, or nullptr when there is no memory
-	CacheSlot* TakeCacheSlot();
-	uint8* CacheSlotData(const CacheSlot* slot) { return m_cacheMemory.get() + (size_t)(slot - m_cacheSlots) * CACHE_SLOT_SIZE; }
 
-	bool DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut);
+	bool DetermineUnhashedBlockIV(BlockCache& cache, uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut);
 	// a raw block (m_sectorSize octets) decrypted into dst and, where the
 	// cluster has a content hash and this is the next block of it, hashed
-	bool DecryptRawBlock(uint32 clusterIndex, uint32 blockIndex, uint8* dst, NCrypto::AesIv& nextIvOut);
+	bool DecryptRawBlock(BlockCache& cache, uint32 clusterIndex, uint32 blockIndex, uint8* dst, NCrypto::AesIv& nextIvOut);
 	// a hashed block's hashes (0x400) and data (0xFC00), its data checked
 	// against its H0 hash
 	bool DecryptHashedBlock(uint32 clusterIndex, uint32 blockIndex, uint8* hashDst, uint8* dataDst);
 	// from the cache, decrypted into it first when not there
-	const uint8* GetDecryptedRawBlock(uint32 clusterIndex, uint32 blockIndex);
-	const uint8* GetDecryptedHashedBlockData(uint32 clusterIndex, uint32 blockIndex);
+	const uint8* GetDecryptedRawBlock(BlockCache& cache, uint32 clusterIndex, uint32 blockIndex);
+	const uint8* GetDecryptedHashedBlockData(BlockCache& cache, uint32 clusterIndex, uint32 blockIndex);
 
 	/* File reading */
-	uint32 ReadFile_HashModeRaw(uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
-	uint32 ReadFile_HashModeHashed(uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
+	uint32 ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
+	uint32 ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
 
 	/* FST parsing */
 	struct FSTHeader

@@ -6,7 +6,8 @@
 // then an entry is read where it lies, a name compared there, and a file's
 // octets copied once from the pages to where the read wants them, with no
 // stream, no seek and nothing allocated. Where it cannot be mapped, through a
-// stream, as the fsc lock that every read is made under allows.
+// stream lent to each reader. Either way read from any number of threads at
+// once.
 class WUHBReader
 {
   public:
@@ -24,11 +25,12 @@ class WUHBReader
 	uint32 Lookup(const std::filesystem::path& path, bool isFile) const;
 
   private:
-	WUHBReader(FileStream* fileIn);
+	WUHBReader(FileStream* fileIn, const fs::path& path);
 	WUHBReader() = delete;
 
 	romfs_header_t m_header;
-	std::unique_ptr<FileStream> m_fileIn;
+	std::unique_ptr<FileStream> m_fileIn;      // the mapping's, where mapped
+	std::unique_ptr<FileStreamPool> m_streams; // where not
 	std::span<const uint8> m_mapped;
 	// len octets at offset into dst: from the mapping, or the stream
 	bool ReadAt(uint64 offset, void* dst, uint64 len) const;

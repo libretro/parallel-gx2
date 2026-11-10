@@ -209,6 +209,9 @@ bool fsc_doesFileExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 // Up to capacity octets from a file's start, read straight into dst: how many,
 // or -1 when it is not there
 sint64 fsc_readFileInto(const char* path, void* dst, uint32 capacity, sint32 maxPriority = FSC_PRIORITY_MAX);
+// mount tables made and not yet freed (each mount and unmount makes one, and
+// frees the one it replaced once nothing reads it)
+sint32 fsc_liveMountTables();
 // the priority of the mount a file is opened from at maxPriority, -1 if none
 sint32 fsc_getFilePriority(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 bool fsc_doesDirectoryExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);

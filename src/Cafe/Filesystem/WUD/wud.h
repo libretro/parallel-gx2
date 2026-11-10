@@ -11,7 +11,9 @@ struct wuxHeader_t
 
 struct wud_t
 {
-	class FileStream* fs;
+	class FileStream* fs; // the mapping's, where mapped
+	// where not mapped: a stream for each reader at once
+	class FileStreamPool* streams;
 	// the file's octets, where it is mapped, while fs lives
 	const unsigned char* mapped;
 	unsigned long long	fileSize;

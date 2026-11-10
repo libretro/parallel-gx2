@@ -1,11 +1,14 @@
 #include "WUHBReader.h"
 #include "Common/FileStream.h"
-WUHBReader::WUHBReader(FileStream* fileIn) : m_fileIn(fileIn)
+WUHBReader::WUHBReader(FileStream* fileIn, const fs::path& path) : m_fileIn(fileIn)
 {
 	cemu_assert_debug(fileIn != nullptr);
 	m_mapped = m_fileIn->MappedSpan();
 	if (m_mapped.size() != m_fileIn->GetSize())
+	{
 		m_mapped = {};
+		m_streams = std::make_unique<FileStreamPool>(path, m_fileIn.release());
+	}
 }
 
 bool WUHBReader::ReadAt(uint64 offset, void* dst, uint64 len) const
@@ -19,8 +22,10 @@ bool WUHBReader::ReadAt(uint64 offset, void* dst, uint64 len) const
 	}
 	if (len > 0xFFFFFFFF)
 		return false;
-	m_fileIn->SetPosition(offset);
-	return m_fileIn->readData(dst, (uint32)len) == len;
+	FileStream* fs = m_streams->Acquire();
+	const bool ok = fs && (fs->SetPosition(offset), fs->readData(dst, (uint32)len) == len);
+	m_streams->Release(fs);
+	return ok;
 }
 
 WUHBReader* WUHBReader::FromPath(const fs::path& path)
@@ -29,7 +34,7 @@ WUHBReader* WUHBReader::FromPath(const fs::path& path)
 	if (!fileIn)
 		return nullptr;
 
-	WUHBReader* ret = new WUHBReader(fileIn);
+	WUHBReader* ret = new WUHBReader(fileIn, path);
 	if (!ret->CheckMagicValue())
 	{
 		delete ret;
@@ -166,8 +171,15 @@ uint64 WUHBReader::ReadFromFile(uint32 entryOffset, uint64 fileOffset, uint64 le
 		memcpy(buffer, m_mapped.data() + wuhbOffset, (size_t)readAmount);
 		return readAmount;
 	}
-	m_fileIn->SetPosition(wuhbOffset);
-	return m_fileIn->readData(buffer, (uint32)std::min<uint64>(readAmount, 0xFFFFFFFF));
+	FileStream* fs = m_streams->Acquire();
+	uint64 got = 0;
+	if (fs)
+	{
+		fs->SetPosition(wuhbOffset);
+		got = fs->readData(buffer, (uint32)std::min<uint64>(readAmount, 0xFFFFFFFF));
+	}
+	m_streams->Release(fs);
+	return got;
 }
 
 uint32 WUHBReader::GetHashTableEntryOffset(uint32 hash, bool isFile) const

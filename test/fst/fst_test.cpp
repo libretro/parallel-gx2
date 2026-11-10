@@ -15,7 +15,10 @@
 //    the source once per block where a cached block reads it not at all;
 //  - a raw block's IV comes from the source when the block before is not at
 //    hand, lent or read;
-//  - a block whose data is not its H0 hash's fails the read.
+//  - a block whose data is not its H0 hash's fails the read;
+//  - threads read one volume at once, each with a block cache of its own
+//    lent from the volume's pool, from a source that lends and one that
+//    does not (run under ThreadSanitizer by CI).
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/FSTDataSource.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -26,6 +29,7 @@
 #include <cstdio>
 #include <new>
 #include <random>
+#include <thread>
 
 static int s_failures = 0;
 #define CHECK(cond) \
@@ -408,6 +412,83 @@ static void TestCorrupt()
 	CHECK(vol->ReadFile(c, HDATA + 5, 10, got) == 0);
 }
 
+// The source's octets made as they are read, safe from more than one thread:
+// a block made for each read, not kept between them
+class SharedMadeSource : public FSTDataSource
+{
+public:
+	std::vector<uint8> fst;
+
+	uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) override
+	{
+		uint8* out = (uint8*)data;
+		const uint64 at = clusterOffset + offset;
+		if (clusterIndex == 0)
+		{
+			if (at >= fst.size())
+				return 0;
+			const uint64 n = std::min<uint64>(size, fst.size() - at);
+			memcpy(out, fst.data() + at, n);
+			return n;
+		}
+		if (clusterIndex == 1)
+		{
+			RawCipher(offset, out, size);
+			return size;
+		}
+		std::unique_ptr<uint8[]> block(new uint8[HBLOCK]);
+		for (uint64 done = 0; done < size;)
+		{
+			const uint64 pos = offset + done;
+			HashedBlockCipher(pos / HBLOCK, block.get(), false);
+			const uint64 take = std::min<uint64>(size - done, HBLOCK - pos % HBLOCK);
+			memcpy(out + done, block.get() + pos % HBLOCK, take);
+			done += take;
+		}
+		return size;
+	}
+};
+
+static void TestThreads()
+{
+	std::unique_ptr<SharedMadeSource> src(new SharedMadeSource());
+	src->fst = MakeFst();
+	NCrypto::AesKey key;
+	memcpy(key.b, KEY, 16);
+	const uint32 fstSize = (uint32)src->fst.size();
+	std::unique_ptr<FSTVolume> vol(FSTVolume::OpenFromDataSource(std::move(src), 0, fstSize, key));
+	CHECK(vol != nullptr);
+	if (!vol)
+		return;
+	std::atomic<int> bad{0};
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 4; t++)
+	{
+		threads.emplace_back([&, t]() {
+			std::mt19937 rng(t + 40);
+			std::vector<uint8> got(3 * HBLOCK), want(3 * HBLOCK);
+			for (int i = 0; i < 60; i++)
+			{
+				const FileDef& f = FILES[rng() % std::size(FILES)];
+				FSTFileHandle h;
+				if (!vol->OpenFile(f.name, h, true))
+				{
+					bad++;
+					continue;
+				}
+				const uint32 at = rng() % f.size, n = std::min<uint32>(1 + rng() % (2 * HBLOCK + 9), f.size - at);
+				Expected(f, at, want.data(), n);
+				if (vol->ReadFile(h, at, n, got.data()) != n || memcmp(got.data(), want.data(), n) != 0)
+					bad++;
+			}
+		});
+	}
+	for (std::thread& t : threads)
+		t.join();
+	CHECK(bad == 0);
+	CHECK(!vol->HasCorruption());
+}
+
 int main()
 {
 	AES128_init();
@@ -417,6 +498,7 @@ int main()
 	TestVolume(false);
 	TestVolume(true);
 	TestCorrupt();
+	TestThreads();
 	if (s_failures)
 	{
 		std::printf("fst_test: %d failure(s)\n", s_failures);

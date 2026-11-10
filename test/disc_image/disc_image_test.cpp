@@ -13,6 +13,9 @@
 //    hashed block across two .wux sectors) is read and decrypted in place;
 //  - a title's content with a file missing, or a cluster twice, does not
 //    open;
+//  - unmapped, a .wud, a .wux, .app files and a .wuhb are read from four
+//    threads at once, each read through a stream of its own lent from the
+//    file's pool, and read back right (run under ThreadSanitizer by CI);
 //  - a homebrew bundle (.wuhb, a RomFS image) looks its files and
 //    directories up through hash chains that collide, and reads files back
 //    whole and at random places, mapped and not; mapped, with no read of
@@ -30,7 +33,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <random>
+#include <thread>
 
 static int s_failures = 0;
 #define CHECK(cond) \
@@ -38,7 +43,7 @@ static int s_failures = 0;
 
 // --- the stream ----------------------------------------------------------
 
-static uint32 s_reads = 0;
+static std::atomic<uint32> s_reads{0};
 static bool s_noMap = false;
 
 FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
@@ -659,6 +664,88 @@ static void TestWuhb()
 	fs::remove(path);
 }
 
+static void TestThreadsUnmapped()
+{
+	s_noMap = true;
+	std::mt19937 rng(77);
+	std::vector<uint8> image(12 * SECTOR + 0x777);
+	for (uint8& b : image)
+		b = (uint8)rng();
+	std::vector<uint8> wuxImage = image;
+	const std::vector<uint8> wux = MakeWux(wuxImage);
+	const fs::path wudPath = TempPath("parallel_gx2_threads_test.wud");
+	const fs::path wuxPath = TempPath("parallel_gx2_threads_test.wux");
+	WriteFile(wudPath, image);
+	WriteFile(wuxPath, wux);
+	const fs::path appDir = TempPath("parallel_gx2_threads_app");
+	fs::create_directories(appDir);
+	WriteFile(appDir / "00000005.app", image);
+	std::vector<RomfsFile> files;
+	for (int i = 0; i < 6; i++)
+	{
+		files.push_back({"content", fmt::format("f{}.bin", i), std::vector<uint8>(3000 + i * 9000)});
+		for (uint8& b : files.back().data)
+			b = (uint8)rng();
+	}
+	const fs::path wuhbPath = TempPath("parallel_gx2_threads_test.wuhb");
+	WriteFile(wuhbPath, MakeWuhb(files));
+
+	wud_t* wud = wud_open(wudPath);
+	wud_t* wx = wud_open(wuxPath);
+	const FSTDataSourceApp::Content contents[] = {{0, 5}};
+	std::unique_ptr<FSTDataSourceApp> app(FSTDataSourceApp::Open(appDir, contents));
+	std::unique_ptr<WUHBReader> wuhb(WUHBReader::FromPath(wuhbPath));
+	CHECK(wud && wx && app && wuhb);
+	if (wud && wx && app && wuhb)
+	{
+		CHECK(!wud->mapped && !wx->mapped && !wuhb->IsMapped());
+		std::vector<uint32> entries;
+		for (const RomfsFile& f : files)
+			entries.push_back(wuhb->Lookup("content/" + f.name, true));
+		std::atomic<int> bad{0};
+		std::vector<std::thread> threads;
+		for (int t = 0; t < 4; t++)
+		{
+			threads.emplace_back([&, t]() {
+				std::mt19937 r(t + 3);
+				std::vector<uint8> got(3 * SECTOR);
+				for (int i = 0; i < 200; i++)
+				{
+					const size_t at = r() % image.size();
+					const size_t n = std::min<size_t>(1 + r() % got.size(), image.size() - at);
+					if (wud_readData(wud, got.data(), (uint32)n, (long long)at) != n || memcmp(got.data(), image.data() + at, n) != 0)
+						bad++;
+					if (wud_readData(wx, got.data(), (uint32)n, (long long)at) != n || memcmp(got.data(), wuxImage.data() + at, n) != 0)
+						bad++;
+					if (app->readData(0, 0, at, got.data(), n) != n || memcmp(got.data(), image.data() + at, n) != 0)
+						bad++;
+					const size_t k = r() % files.size();
+					const std::vector<uint8>& fd = files[k].data;
+					const uint64 fat = r() % fd.size(), fn = std::min<uint64>(1 + r() % 5000, fd.size() - fat);
+					if (wuhb->ReadFromFile(entries[k], fat, fn, got.data()) != fn || memcmp(got.data(), fd.data() + fat, fn) != 0)
+						bad++;
+				}
+			});
+		}
+		for (std::thread& t : threads)
+			t.join();
+		CHECK(bad == 0);
+		// a stream each at most, for the four
+		CHECK(wud->streams->Opened() <= 4 && wx->streams->Opened() <= 4);
+	}
+	if (wud)
+		wud_close(wud);
+	if (wx)
+		wud_close(wx);
+	app.reset();
+	wuhb.reset();
+	s_noMap = false;
+	fs::remove(wudPath);
+	fs::remove(wuxPath);
+	fs::remove(wuhbPath);
+	fs::remove_all(appDir);
+}
+
 int main()
 {
 	AES128_init();
@@ -666,6 +753,7 @@ int main()
 	TestDiscSource();
 	TestAppSource();
 	TestWuhb();
+	TestThreadsUnmapped();
 	if (s_failures)
 	{
 		std::printf("disc_image_test: %d failure(s)\n", s_failures);

@@ -325,6 +325,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ExceptionHandler.cpp \
 	$(CORE_DIR)/src/Common/SysAllocator.cpp \
 	$(CORE_DIR)/src/Common/FileStream.cpp \
+	$(CORE_DIR)/src/Common/FileStreamPool.cpp \
 	$(CORE_DIR)/src/Common/cpu_features.cpp \
 	$(CORE_DIR)/src/Common/precompiled.cpp \
 	$(CORE_DIR)/src/audio/IAudioAPI.cpp \
