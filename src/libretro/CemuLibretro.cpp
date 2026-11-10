@@ -1785,7 +1785,6 @@ static fs::path s_mlc_path;
 // after its title screen (issue #26). Only what is missing is created.
 static void libretro_create_default_mlc_files(const fs::path& mlc)
 {
-	std::error_code ec;
 	const fs::path directories[] = {
 		mlc / "sys",
 		mlc / "usr",
@@ -1798,18 +1797,18 @@ static void libretro_create_default_mlc_files(const fs::path& mlc)
 		mlc / "sys/title/0005001b/1005c000/content", // language and country lists
 	};
 	for (const auto& dir : directories)
-		fs::create_directories(dir, ec);
+		FileStream::CreateDirectories(dir);
 
 	const fs::path langDir = mlc / "sys/title/0005001b/1005c000/content";
 	// each formatted into one buffer and written whole
-	if (!fs::exists(langDir / "language.txt", ec))
+	if (!FileStream::Exists(langDir / "language.txt"))
 	{
 		fmt::memory_buffer out;
 		for (const char* lang : { "ja", "en", "fr", "de", "it", "es", "zh", "ko", "nl", "pt", "ru", "zh" })
 			fmt::format_to(std::back_inserter(out), "\"{}\",\n", lang);
 		FileStream::WriteFile(langDir / "language.txt", out.data(), out.size());
 	}
-	if (!fs::exists(langDir / "country.txt", ec))
+	if (!FileStream::Exists(langDir / "country.txt"))
 	{
 		fmt::memory_buffer out;
 		for (size_t i = 0; i < NCrypto::GetCountryCount(); i++)
@@ -1860,15 +1859,14 @@ static void libretro_init_paths()
 	fs::path sysPath = in_named_dir(_utf8ToPath(system_dir));
 	fs::path savePath = in_named_dir(_utf8ToPath(save_dir));
 
-	std::error_code ec;
-	fs::create_directories(sysPath, ec);
-	fs::create_directories(savePath, ec);
+	FileStream::CreateDirectories(sysPath);
+	FileStream::CreateDirectories(savePath);
 	// mlc01 is where every save goes, and by libretro convention writable
 	// per-user data belongs in the save directory rather than the system one.
 	// It used to land in system/Cemu/mlc01, because that is what Cemu derives
 	// from the user data path when no mlc path is configured.
 	s_mlc_path = savePath / "mlc01";
-	fs::create_directories(s_mlc_path, ec);
+	FileStream::CreateDirectories(s_mlc_path);
 
 	// The cache path is the directory the shader cache lives *in*, not the
 	// shader cache itself: everything that uses it asks for
@@ -1890,24 +1888,24 @@ static void libretro_init_paths()
 	// only while nothing is at the right place yet, so it can never merge two
 	// caches or overwrite one.
 	const fs::path strayCache = sysPath / "shaderCache" / "shaderCache";
-	if (fs::is_directory(strayCache, ec))
+	if (FileStream::IsDirectory(strayCache))
 	{
 		const fs::path properCache = sysPath / "shaderCache";
 		bool occupied = false;
 		for (const char* sub : {"transferable", "precompiled", "driver"})
-			occupied = occupied || fs::exists(properCache / sub, ec);
+			occupied = occupied || FileStream::Exists(properCache / sub);
 		if (!occupied)
 		{
-			for (fs::directory_iterator it(strayCache, ec), end; it != end && !ec; it.increment(ec))
-				fs::rename(it->path(), properCache / it->path().filename(), ec);
-			if (!ec)
+			bool moved = true;
+			for (FileStream::Dir d(strayCache); d.Next();)
+				moved = FileStream::Rename(d.Path(), properCache / _utf8ToPath(d.Name())) && moved;
+			if (moved)
 			{
-				fs::remove(strayCache, ec);
+				FileStream::Remove(strayCache);
 				libretro_log(RETRO_LOG_INFO, "moved the shader cache out of shaderCache/shaderCache\n");
 			}
 		}
 	}
-	ec.clear();
 }
 
 // ============================================================================
@@ -2543,20 +2541,21 @@ static uintmax_t libretro_title_input_size(const std::vector<TitleInfo*>& titles
 		if (!title)
 			continue;
 		const fs::path path = title->GetPath();
-		std::error_code ec;
-		if (fs::is_regular_file(path, ec))
+		if (FileStream::IsRegularFile(path))
 		{
-			total += fs::file_size(path, ec);
+			total += FileStream::FileSize(path).value_or(0);
 			continue;
 		}
-		if (!fs::is_directory(path, ec))
-			continue;
-		for (fs::recursive_directory_iterator it(path, fs::directory_options::skip_permission_denied, ec), end;
-			it != end && !ec; it.increment(ec))
-		{
-			if (it->is_regular_file(ec))
-				total += it->file_size(ec);
-		}
+		auto walk = [&](auto& self, const fs::path& dir) -> void {
+			for (FileStream::Dir d(dir); d.Next();)
+			{
+				if (d.IsDirectory())
+					self(self, d.Path());
+				else
+					total += d.Size();
+			}
+		};
+		walk(walk, path);
 	}
 	return total;
 }
@@ -2807,10 +2806,8 @@ static void libretro_apply_core_options()
 		const uint32 persistentId = (uint32)strtoul(v, nullptr, 16);
 		if (Account::GetAccount(persistentId).GetPersistentId() == persistentId && libretro_account_removable(persistentId))
 		{
-			std::error_code ec;
-			fs::remove_all(Account::GetFileName(persistentId).parent_path(), ec);
-			if (ec)
-				libretro_log(RETRO_LOG_ERROR, "could not remove account %08x: %s\n", persistentId, ec.message().c_str());
+			if (!FileStream::RemoveAll(Account::GetFileName(persistentId).parent_path()))
+				libretro_log(RETRO_LOG_ERROR, "could not remove account %08x\n", persistentId);
 			else
 				libretro_log(RETRO_LOG_INFO, "removed account %08x\n", persistentId);
 			// And its saves, as the console deletes a user's: each title keeps
@@ -2818,17 +2815,14 @@ static void libretro_apply_core_options()
 			const std::string userDir = fmt::format("{:08x}", persistentId);
 			const fs::path saveRoot = ActiveSettings::GetMlcPath("usr/save");
 			int removedSaves = 0;
-			for (const auto& high : fs::directory_iterator(saveRoot, ec))
+			for (FileStream::Dir high(saveRoot); high.Next();)
 			{
-				std::error_code ecHigh;
-				if (!high.is_directory(ecHigh) || high.path().filename() == "system")
+				if (!high.IsDirectory() || high.Name() == "system")
 					continue;
-				std::error_code ecLow;
-				for (const auto& low : fs::directory_iterator(high.path(), ecLow))
+				for (FileStream::Dir low(high.Path()); low.Next();)
 				{
-					const fs::path dir = low.path() / "user" / userDir;
-					std::error_code ecDir;
-					if (fs::is_directory(dir, ecDir) && fs::remove_all(dir, ecDir) > 0 && !ecDir)
+					const fs::path dir = low.Path() / "user" / userDir;
+					if (FileStream::IsDirectory(dir) && FileStream::RemoveAll(dir))
 						removedSaves++;
 				}
 			}
@@ -3009,8 +3003,7 @@ static void libretro_apply_core_options()
 			if (dump)
 			{
 				// LatteShader_DumpShader writes into it without creating it.
-				std::error_code ec;
-				fs::create_directories(ActiveSettings::GetUserDataPath("dump/shaders"), ec);
+				FileStream::CreateDirectories(ActiveSettings::GetUserDataPath("dump/shaders"));
 			}
 			ActiveSettings::EnableDumpShaders(dump);
 		}
@@ -3292,15 +3285,19 @@ static void libretro_load_graphic_packs(bool withReplaced = false)
 
 	const auto packFolders = [](const fs::path& base) {
 		std::vector<fs::path> folders;
-		std::error_code ec;
-		for (fs::recursive_directory_iterator it(base, fs::directory_options::follow_directory_symlink | fs::directory_options::skip_permission_denied, ec), end;
-			!ec && it != end; it.increment(ec))
-		{
-			if (!it->is_directory(ec) || !fs::exists(it->path() / "rules.txt", ec))
-				continue;
-			folders.push_back(it->path());
-			it.disable_recursion_pending(); // a pack's own subfolders are not packs
-		}
+		auto walk = [&](auto& self, const fs::path& dir) -> void {
+			for (FileStream::Dir d(dir); d.Next();)
+			{
+				if (!d.IsDirectory())
+					continue;
+				const fs::path folder = d.Path();
+				if (FileStream::Exists(folder / "rules.txt"))
+					folders.push_back(folder); // a pack's own subfolders are not packs
+				else
+					self(self, folder);
+			}
+		};
+		walk(walk, base);
 		return folders;
 	};
 
@@ -3404,7 +3401,7 @@ static void libretro_collect_pack_options(const std::string& gamePath)
 		bool custom = false;
 		const std::string folder = libretro_pack_folder(*gp, &custom);
 		const bool replaced = !custom && customFolders.count(folder);
-		const bool replacement = custom && fs::exists(ActiveSettings::GetUserDataPath("graphicPacks") / _utf8ToPath(folder) / "rules.txt");
+		const bool replacement = custom && FileStream::Exists(ActiveSettings::GetUserDataPath("graphicPacks") / _utf8ToPath(folder) / "rules.txt");
 
 		std::vector<std::string> order;
 		auto categorized = gp->GetCategorizedPresets(order);
@@ -3854,9 +3851,8 @@ RETRO_API void retro_init()
 	// Nothing is copied anywhere: the files stay where the user put them, which
 	// for a title update is several gigabytes not written twice.
 	{
-		std::error_code ec;
 		const fs::path extraTitles = ActiveSettings::GetUserDataPath("titles");
-		fs::create_directories(extraTitles, ec);
+		FileStream::CreateDirectories(extraTitles);
 		const std::string extraTitlesUtf8 = _pathToUtf8(extraTitles);
 		auto& gamePaths = GetConfig().game_paths;
 		if (std::find(gamePaths.begin(), gamePaths.end(), extraTitlesUtf8) == gamePaths.end())
@@ -4634,9 +4630,8 @@ static void libretro_run_removals()
 	}
 	for (const fs::path& path : paths)
 	{
-		std::error_code ec;
-		fs::remove_all(path, ec);
-		cemuLog_log(LogType::Force, "install: removed {} now that the title is closed{}", _pathToUtf8(path), ec ? " (" + ec.message() + ")" : "");
+		const bool removed = FileStream::RemoveAll(path);
+		cemuLog_log(LogType::Force, "install: removed {} now that the title is closed{}", _pathToUtf8(path), removed ? "" : " (not all of it could be)");
 	}
 }
 
@@ -4821,8 +4816,7 @@ static bool libretro_request_uninstall()
 	for (const uint32 high : {0x0005000Eu, 0x0005000Cu})
 	{
 		const fs::path path = ActiveSettings::GetMlcPath(fmt::format("usr/title/{:08x}/{:08x}", high, (uint32)base));
-		std::error_code ec;
-		if (!fs::exists(path, ec))
+		if (!FileStream::Exists(path))
 			continue;
 		libretro_remove_on_unload(path);
 		found++;
@@ -4920,8 +4914,7 @@ static bool libretro_request_uninstall_game()
 	// update (0005000e) and DLC (0005000c): the same title, with the high
 	// half of the ID telling them apart
 	const fs::path path = ActiveSettings::GetMlcPath(fmt::format("usr/title/{:08x}/{:08x}", (uint32)(base >> 32), (uint32)base));
-	std::error_code ec;
-	if (!fs::exists(path, ec))
+	if (!FileStream::Exists(path))
 	{
 		libretro_show_message(RETRO_LOG_INFO, 6000, "This game is not installed in mlc01");
 		return false;
@@ -4931,7 +4924,7 @@ static bool libretro_request_uninstall_game()
 	for (const uint32 high : {0x0005000eu, 0x0005000cu})
 	{
 		const fs::path more = ActiveSettings::GetMlcPath(fmt::format("usr/title/{:08x}/{:08x}", high, (uint32)base));
-		if (fs::exists(more, ec))
+		if (FileStream::Exists(more))
 		{
 			libretro_remove_on_unload(more);
 			withMore = true;
@@ -5037,9 +5030,8 @@ static void libretro_install_titles(std::vector<TitleInfo> found, bool removeSou
 			}
 			else
 			{
-				std::error_code ec;
-				fs::remove_all(source, ec);
-				cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(source), ec ? " (" + ec.message() + ")" : "");
+				const bool removed = FileStream::RemoveAll(source);
+				cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(source), removed ? "" : " (not all of it could be)");
 			}
 		}
 	}
@@ -5052,8 +5044,7 @@ static void libretro_install_titles(std::vector<TitleInfo> found, bool removeSou
 	auto keyBeside = [](const fs::path& image) {
 		fs::path key = image;
 		key.replace_extension(".key");
-		std::error_code ec;
-		return key != image && fs::is_regular_file(key, ec) ? key : fs::path();
+		return key != image && FileStream::IsRegularFile(key) ? key : fs::path();
 	};
 	for (const auto& [archive, doneIds] : archives)
 	{
@@ -5074,13 +5065,12 @@ static void libretro_install_titles(std::vector<TitleInfo> found, bool removeSou
 			continue;
 		}
 		const fs::path key = keyBeside(archive);
-		std::error_code ec;
-		fs::remove(archive, ec);
-		cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(archive), ec ? " (" + ec.message() + ")" : "");
-		if (!key.empty() && !ec)
+		const bool removed = FileStream::Remove(archive);
+		cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(archive), removed ? "" : " (it could not be)");
+		if (!key.empty() && removed)
 		{
-			fs::remove(key, ec);
-			cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(key), ec ? " (" + ec.message() + ")" : "");
+			const bool keyRemoved = FileStream::Remove(key);
+			cemuLog_log(LogType::Force, "install: removed {}{}", _pathToUtf8(key), keyRemoved ? "" : " (it could not be)");
 		}
 	}
 
@@ -5294,8 +5284,7 @@ static void libretro_launch_game()
 	{
 		fs::path gpPath = ActiveSettings::GetUserDataPath("graphicPacks");
 		cemuLog_log(LogType::Force, "Searching for graphic packs in: {}", _pathToUtf8(gpPath));
-		std::error_code ec;
-		bool exists = fs::exists(gpPath, ec);
+		bool exists = FileStream::Exists(gpPath);
 		cemuLog_log(LogType::Force, "Graphic packs directory exists: {}", exists);
 	}
 	libretro_setup_graphic_packs();

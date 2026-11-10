@@ -151,6 +151,83 @@ bool FileStream::Rename(const fs::path& from, const fs::path& to)
 	return filestream_rename(_pathToUtf8(from).c_str(), _pathToUtf8(to).c_str()) == 0;
 }
 
+bool FileStream::CreateDirectories(const fs::path& path)
+{
+	return path_mkdir(_pathToUtf8(path).c_str());
+}
+
+std::optional<uint64> FileStream::FileSize(const fs::path& path)
+{
+	const std::string p = _pathToUtf8(path);
+	const int flags = path_stat(p.c_str());
+	if (!(flags & RETRO_VFS_STAT_IS_VALID) || (flags & RETRO_VFS_STAT_IS_DIRECTORY))
+		return std::nullopt;
+	const int64_t size = path_get_size(p.c_str());
+	return size < 0 ? std::nullopt : std::optional<uint64>((uint64)size);
+}
+
+bool FileStream::RemoveAll(const fs::path& path)
+{
+	const std::string p = _pathToUtf8(path);
+	// a file, an empty directory or a link goes at once - a link to a
+	// directory without what that holds; only a directory that is not
+	// empty has its entries removed first
+	if (filestream_delete(p.c_str()) == 0)
+		return true;
+	if (!(path_stat(p.c_str()) & RETRO_VFS_STAT_IS_VALID))
+		return true;
+	if (!path_is_directory(p.c_str()))
+		return false;
+	for (Dir d(path); d.Next();)
+		RemoveAll(d.Path());
+	return filestream_delete(p.c_str()) == 0;
+}
+
+FileStream::Dir::Dir(const fs::path& path) : m_path(path)
+{
+	m_dir = retro_opendir_include_hidden(_pathToUtf8(path).c_str(), true);
+}
+
+FileStream::Dir::~Dir()
+{
+	if (m_dir)
+		retro_closedir(m_dir);
+}
+
+bool FileStream::Dir::Next()
+{
+	if (!m_dir)
+		return false;
+	while (retro_readdir(m_dir))
+	{
+		const char* name = retro_dirent_get_name(m_dir);
+		if (!name || !strcmp(name, ".") || !strcmp(name, ".."))
+			continue;
+		m_name = name;
+		return true;
+	}
+	m_name = {};
+	return false;
+}
+
+fs::path FileStream::Dir::Path() const
+{
+	return m_path / _utf8ToPath(m_name);
+}
+
+bool FileStream::Dir::IsDirectory() const
+{
+	return m_dir && retro_dirent_is_dir(m_dir, nullptr);
+}
+
+uint64 FileStream::Dir::Size() const
+{
+	int64_t size = 0;
+	if (!m_dir || !retro_dirent_stat(m_dir, &size, nullptr) || size < 0)
+		return 0;
+	return (uint64)size;
+}
+
 void FileStream::SetPosition(uint64 pos)
 {
 	filestream_seek(m_file, (int64_t)pos, RETRO_VFS_SEEK_POSITION_START);

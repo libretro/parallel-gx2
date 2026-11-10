@@ -37,8 +37,7 @@ bool NetworkConfig::XMLExists()
 	static std::optional<bool> s_exists; // caches result of fs::exists
 	if(s_exists.has_value())
 		return *s_exists;
-	std::error_code ec;
-	if (!fs::exists(ActiveSettings::GetConfigPath("network_services.xml"), ec))
+	if (!FileStream::Exists(ActiveSettings::GetConfigPath("network_services.xml")))
 	{
 		s_exists = false;
 		return false;

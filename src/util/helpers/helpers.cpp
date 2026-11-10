@@ -278,16 +278,15 @@ uint32_t GetPhysicalCoreCount()
 
 bool TestWriteAccess(const fs::path& p)
 {
-	std::error_code ec;
 	// must be path and must exist
-	if (!fs::exists(p, ec) || !fs::is_directory(p, ec))
+	if (!FileStream::Exists(p) || !FileStream::IsDirectory(p))
 		return false;
 
 	// retry 3 times
 	for (int i = 0; i < 3; ++i)
 	{
 		const auto filename = p / fmt::format("_{}.tmp", GenerateRandomString(8));
-		if (fs::exists(filename, ec))
+		if (FileStream::Exists(filename))
 			continue;
 
 		FileStream* file = FileStream::createFile2(filename);

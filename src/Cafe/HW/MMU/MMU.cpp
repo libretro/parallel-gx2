@@ -1,4 +1,5 @@
 #include "Cafe/HW/MMU/MMU.h"
+#include "Common/FileStream.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "Cemu/Logging/CemuLogging.h"
 #include "WindowSystem.h"
@@ -412,7 +413,7 @@ void memory_createDump()
 {
 	const uint32 pageSize = MemMapper::GetPageSize();
 	fs::path path = ActiveSettings::GetUserDataPath("dump/ramDump{:}", (uint32)time(nullptr));
-	fs::create_directories(path);
+	FileStream::CreateDirectories(path);
 
 	for (auto& itr : g_mmuRanges)
 	{

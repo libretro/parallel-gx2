@@ -51,10 +51,9 @@ void LibretroGraphicPacks_InstallBundled()
 		return;
 	}
 
-	std::error_code ec;
-	for (auto& entry : fs::directory_iterator(target, ec))
-		fs::remove_all(entry.path(), ec);
-	fs::create_directories(target, ec);
+	for (FileStream::Dir d(target); d.Next();)
+		FileStream::RemoveAll(d.Path());
+	FileStream::CreateDirectories(target);
 
 	uint32 written = 0;
 	size_t pos = 0;
@@ -74,7 +73,7 @@ void LibretroGraphicPacks_InstallBundled()
 		if (nameLen == 0 || std::strstr(name, "../") || std::strstr(name, "..\\") || name[0] == '/')
 			continue;
 		const fs::path path = target / _utf8ToPath(name);
-		fs::create_directories(path.parent_path(), ec);
+		FileStream::CreateDirectories(path.parent_path());
 		std::unique_ptr<FileStream> out(FileStream::createFile2(path));
 		if (out)
 		{

@@ -1,4 +1,5 @@
 #include "SaveList.h"
+#include "Common/FileStream.h"
 #include <charconv>
 #include <util/helpers/helpers.h>
 
@@ -63,24 +64,22 @@ void CafeSaveList::RefreshThreadWorker()
 	sSLMutex.lock();
 	fs::path mlcPath = sSLMLCPath;
 	sSLMutex.unlock();
-	std::error_code ec;
-	for (auto it_titleHigh : fs::directory_iterator(mlcPath / "usr/save", ec))
+	for (FileStream::Dir high(mlcPath / "usr/save"); high.Next();)
 	{
-		if(!it_titleHigh.is_directory(ec))
+		if(!high.IsDirectory())
 			continue;
-		std::string dirName = _pathToUtf8(it_titleHigh.path().filename());
+		std::string_view dirName = high.Name();
 		if(dirName.empty())
 			continue;		
 		uint32 titleIdHigh;
 		std::from_chars_result r = std::from_chars(dirName.data(), dirName.data() + dirName.size(), titleIdHigh, 16);
 		if (r.ec != std::errc())
 			continue;
-		fs::path tmp = it_titleHigh.path();
-		for (auto it_titleLow : fs::directory_iterator(tmp, ec))
+		for (FileStream::Dir low(high.Path()); low.Next();)
 		{
-			if (!it_titleLow.is_directory(ec))
+			if (!low.IsDirectory())
 				continue;
-			dirName = _pathToUtf8(it_titleLow.path().filename());
+			dirName = low.Name();
 			if (dirName.empty())
 				continue;
 			uint32 titleIdLow;

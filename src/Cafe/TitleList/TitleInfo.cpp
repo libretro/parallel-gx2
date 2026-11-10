@@ -194,8 +194,7 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 			{
 				parentPath = parentPath.parent_path();
 				// next to content and meta?
-				std::error_code ec;
-				if (fs::exists(parentPath / "content", ec) && fs::exists(parentPath / "meta", ec))
+				if (FileStream::Exists(parentPath / "content") && FileStream::Exists(parentPath / "meta"))
 				{
 					formatOut = TitleDataFormat::HOST_FS;
 					pathOut = parentPath;
@@ -308,8 +307,7 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 	else
 	{
 		// does it point to the root folder of a title?
-		std::error_code ec;
-		if (fs::exists(path / "content", ec) && fs::exists(path / "meta", ec) && fs::exists(path / "code", ec))
+		if (FileStream::Exists(path / "content") && FileStream::Exists(path / "meta") && FileStream::Exists(path / "code"))
 		{
 			formatOut = TitleDataFormat::HOST_FS;
 			pathOut = path;

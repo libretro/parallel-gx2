@@ -1,4 +1,5 @@
 #include "Cafe/CafeSystem.h"
+#include "Common/FileStream.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -287,9 +288,8 @@ void LatteShaderCache_Load()
 	// init shader parallel compile queue
 	LatteShaderCache_initCompileQueue();
 	// create directories
-	std::error_code ec;
-	fs::create_directories(ActiveSettings::GetCachePath("shaderCache/transferable"), ec);
-	fs::create_directories(ActiveSettings::GetCachePath("shaderCache/precompiled"), ec);
+	FileStream::CreateDirectories(ActiveSettings::GetCachePath("shaderCache/transferable"));
+	FileStream::CreateDirectories(ActiveSettings::GetCachePath("shaderCache/precompiled"));
 	// initialize renderer specific caches
 	switch(g_renderer->GetType())
 	{

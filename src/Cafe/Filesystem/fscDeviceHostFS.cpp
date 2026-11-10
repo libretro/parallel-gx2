@@ -121,26 +121,22 @@ bool FSCVirtualFile_Host::fscDirNext(FSCDirEntry* dirEntry)
 	if (m_type != FSC_TYPE_DIRECTORY)
 		return false;
 
-	if (!m_dirIterator)
+	if (!m_dir)
 	{
-		// init iterator on first iteration attempt
-		m_dirIterator.reset(new fs::directory_iterator(*m_path));
-		if (!m_dirIterator)
-		{
+		// opened on the first entry asked for
+		m_dir.reset(new FileStream::Dir(*m_path));
+		if (!m_dir->Opened())
 			cemuLog_log(LogType::Force, "Failed to iterate directory: {}", _pathToUtf8(*m_path));
-			return false;
-		}
 	}
-	if (*m_dirIterator == fs::end(*m_dirIterator))
+	if (!m_dir->Next())
 		return false;
 
-	const fs::directory_entry& entry = **m_dirIterator;
-	
-	std::string fileName = entry.path().filename().generic_string();
-	if (fileName.size() >= sizeof(dirEntry->path) - 1)
-		fileName.resize(sizeof(dirEntry->path) - 1);
-	strncpy(dirEntry->path, fileName.data(), sizeof(dirEntry->path));
-	if (entry.is_directory())
+	// the name and type as the directory read gave them: nothing allocated
+	const std::string_view fileName = m_dir->Name();
+	const size_t n = std::min(fileName.size(), sizeof(dirEntry->path) - 1);
+	memcpy(dirEntry->path, fileName.data(), n);
+	dirEntry->path[n] = '\0';
+	if (m_dir->IsDirectory())
 	{
 		dirEntry->isDirectory = true;
 		dirEntry->isFile = false;
@@ -150,10 +146,8 @@ bool FSCVirtualFile_Host::fscDirNext(FSCDirEntry* dirEntry)
 	{
 		dirEntry->isDirectory = false;
 		dirEntry->isFile = true;
-		dirEntry->fileSize = entry.file_size();
+		dirEntry->fileSize = m_dir->Size();
 	}
-
-	(*m_dirIterator)++;
 	return true;
 }
 
@@ -211,9 +205,7 @@ FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_F
 	// attempt to open as directory
 	if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
 	{
-		std::error_code ec;
-		bool isExistingDir = fs::is_directory(path, ec);
-		if (isExistingDir)
+		if (FileStream::IsDirectory(path))
 		{
 			FSCVirtualFile_Host* vf = new FSCVirtualFile_Host(FSC_TYPE_DIRECTORY);
 			vf->m_path.reset(new std::filesystem::path(path));
@@ -241,15 +233,14 @@ public:
 	bool fscDeviceCreateDir(std::string_view path, void* ctx, sint32* fscStatus) override
 	{
 		fs::path dirPath = _utf8ToPath(path);
-		if (fs::exists(dirPath))
+		if (FileStream::Exists(dirPath))
 		{
-			if (!fs::is_directory(dirPath))
+			if (!FileStream::IsDirectory(dirPath))
 				cemuLog_log(LogType::Force, "CreateDir: {} already exists but is not a directory", path);
 			*fscStatus = FSC_STATUS_ALREADY_EXISTS;
 			return false;
 		}
-		std::error_code ec;
-		bool r = fs::create_directories(dirPath, ec);
+		bool r = FileStream::CreateDirectories(dirPath);
 		if (!r)
 			cemuLog_log(LogType::Force, "CreateDir: Failed to create {}", path);
 		*fscStatus = FSC_STATUS_OK;
@@ -260,13 +251,12 @@ public:
 	{
 		*fscStatus = FSC_STATUS_OK;
 		fs::path _path = _utf8ToPath(path);
-		std::error_code ec;
-		if (!fs::exists(_path, ec))
+		if (!FileStream::Exists(_path))
 		{
 			*fscStatus = FSC_STATUS_FILE_NOT_FOUND;
 			return false;
 		}
-		if (!fs::remove(_path, ec))
+		if (!FileStream::Remove(_path))
 		{
 			cemu_assert_unimplemented(); // return correct error (e.g. if directory is non-empty)
 			*fscStatus = FSC_STATUS_FILE_NOT_FOUND;
@@ -279,13 +269,12 @@ public:
 		*fscStatus = FSC_STATUS_OK;
 		fs::path _srcPath = _utf8ToPath(srcPath);
 		fs::path _dstPath = _utf8ToPath(dstPath);
-		std::error_code ec;
-		if (!fs::exists(_srcPath, ec))
+		if (!FileStream::Exists(_srcPath))
 		{
 			*fscStatus = FSC_STATUS_FILE_NOT_FOUND;
 			return false;
 		}
-		fs::rename(_srcPath, _dstPath, ec);
+		FileStream::Rename(_srcPath, _dstPath);
 		return true;
 	}
 

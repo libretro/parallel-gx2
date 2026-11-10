@@ -31,6 +31,11 @@
 //    last without a '\n'; a whole file written in one call; the mapping and
 //    views lent from a file opened mapped; a directory does not open as a
 //    file, and a path in another case opens where the file system cares;
+//  - FileStream's directories: created with what is missing above them; a
+//    listing has every entry (dot files too) once, '.' and '..' not, a
+//    directory told from a file and a file's size; a tree walked whole;
+//    RemoveAll takes a tree and leaves what a link in it points at;
+//    FileSize has nothing for a directory or what is not there;
 //  - the Vulkan pipeline cache's file: MappedFile gives a file's bytes (none
 //    for a missing or empty one), and ReplaceFileContents puts new contents
 //    in its place whole, leaving nothing beside it, or leaves it as it was;
@@ -43,6 +48,8 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <set>
+#include <map>
 #include <vector>
 
 #include "util/helpers/Deflate.h"
@@ -918,6 +925,64 @@ static void TestFileStream()
 	CHECK(FileStream::Remove(path) && !FileStream::Exists(path));
 }
 
+static void TestFileStreamDirs()
+{
+	const fs::path base = fs::temp_directory_path() / "parallel_gx2_fs_dirs";
+	FileStream::RemoveAll(base);
+	CHECK(!FileStream::Exists(base));
+	CHECK(FileStream::CreateDirectories(base / "a" / "b" / "c"));
+	CHECK(FileStream::IsDirectory(base / "a" / "b" / "c"));
+	CHECK(FileStream::CreateDirectories(base / "a")); // there already
+	CHECK(FileStream::WriteFile(base / "a" / "one.bin", "12345", 5));
+	CHECK(FileStream::WriteFile(base / "a" / ".hidden", "x", 1));
+	CHECK(FileStream::WriteFile(base / "a" / "b" / "c" / "deep.txt", "abc", 3));
+	CHECK(FileStream::FileSize(base / "a" / "one.bin") == 5u);
+	CHECK(!FileStream::FileSize(base / "a"));
+	CHECK(!FileStream::FileSize(base / "nope"));
+	CHECK(!FileStream::CreateDirectories(base / "a" / "one.bin" / "x"));
+
+	std::map<std::string, std::pair<bool, uint64>> seen;
+	int entries = 0;
+	for (FileStream::Dir d(base / "a"); d.Next();)
+	{
+		entries++;
+		seen[std::string(d.Name())] = {d.IsDirectory(), d.IsDirectory() ? 0 : d.Size()};
+		CHECK(d.Path() == base / "a" / _utf8ToPath(d.Name()));
+	}
+	CHECK(entries == 3 && seen.size() == 3);
+	CHECK(seen["one.bin"] == std::make_pair(false, (uint64)5));
+	CHECK(seen[".hidden"] == std::make_pair(false, (uint64)1));
+	CHECK(seen["b"].first);
+	{
+		FileStream::Dir none(base / "nope");
+		CHECK(!none.Opened() && !none.Next());
+	}
+
+	std::set<std::string> tree;
+	FileStream::ForEachInTree(base, [&](const fs::path& p, bool isDir) {
+		tree.insert(_pathToUtf8(p.lexically_relative(base).generic_string()) + (isDir ? "/" : ""));
+	});
+	CHECK(tree == std::set<std::string>({"a/", "a/one.bin", "a/.hidden", "a/b/", "a/b/c/", "a/b/c/deep.txt"}));
+
+#ifndef _WIN32
+	// a link to a directory outside goes, what it points at stays
+	const fs::path outside = fs::temp_directory_path() / "parallel_gx2_fs_dirs_outside";
+	FileStream::RemoveAll(outside);
+	CHECK(FileStream::CreateDirectories(outside));
+	CHECK(FileStream::WriteFile(outside / "keep.txt", "k", 1));
+	std::error_code ec;
+	fs::create_directory_symlink(outside, base / "a" / "link", ec);
+	CHECK(!ec);
+#endif
+	CHECK(FileStream::RemoveAll(base));
+	CHECK(!FileStream::Exists(base));
+	CHECK(FileStream::RemoveAll(base)); // nothing there
+#ifndef _WIN32
+	CHECK(FileStream::IsRegularFile(outside / "keep.txt"));
+	FileStream::RemoveAll(outside);
+#endif
+}
+
 static void TestMappedFile()
 {
 	const fs::path path = "mapped_test.bin";
@@ -1004,6 +1069,7 @@ int main(int argc, char** argv)
 	TestFileCacheConcurrentReads();
 	TestFileCacheHeldReader();
 	TestFileStream();
+	TestFileStreamDirs();
 	TestMappedFile();
 	if (argc > 1)
 		TestGraphicPacks(argv[1]);

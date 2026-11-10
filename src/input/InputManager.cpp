@@ -1,4 +1,5 @@
 #include "input/InputManager.h"
+#include "Common/FileStream.h"
 #include "util/helpers/MappedFile.h"
 #include "config/ActiveSettings.h"
 #include "input/ControllerFactory.h"
@@ -72,10 +73,10 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 	old_file.replace_extension(".txt"); // test .txt extension
 	file_path.replace_extension(".xml"); // force .xml extension
 
-	if (fs::exists(old_file) && !fs::exists(file_path))
+	if (FileStream::Exists(old_file) && !FileStream::Exists(file_path))
 		migrate_config(old_file);
 
-	if (!fs::exists(file_path))
+	if (!FileStream::Exists(file_path))
 		return false;
 
 	try
@@ -442,7 +443,7 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 		return false;
 
 	fs::path file_path = ActiveSettings::GetConfigPath("controllerProfiles");
-	fs::create_directories(file_path);
+	FileStream::CreateDirectories(file_path);
 
 	const auto is_default_file = filename.empty();
 	if (is_default_file)
@@ -652,9 +653,8 @@ EmulatedControllerPtr InputManager::delete_controller(size_t player_index, bool 
 
 			if(delete_profile)
 			{
-				std::error_code ec{};
-				fs::remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.xml", player_index), ec);
-				fs::remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.txt", player_index), ec);
+				FileStream::Remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.xml", player_index));
+				FileStream::Remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.txt", player_index));
 			}
 
 			return result;
@@ -670,9 +670,8 @@ EmulatedControllerPtr InputManager::delete_controller(size_t player_index, bool 
 
 			if(delete_profile)
 			{
-				std::error_code ec{};
-				fs::remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.xml", player_index), ec);
-				fs::remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.txt", player_index), ec);
+				FileStream::Remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.xml", player_index));
+				FileStream::Remove(ActiveSettings::GetConfigPath("controllerProfiles/controller{}.txt", player_index));
 			}
 
 			return result;
@@ -775,13 +774,13 @@ void InputManager::apply_game_profile()
 std::vector<std::string> InputManager::get_profiles()
 {
 	const auto path = ActiveSettings::GetConfigPath("controllerProfiles");
-	if (!exists(path))
+	if (!FileStream::Exists(path))
 		return {};
 
 	std::set<std::string> tmp;
-	for (const auto& entry : fs::directory_iterator(path))
+	for (FileStream::Dir d(path); d.Next();)
 	{
-		const auto& p = entry.path();
+		const fs::path p = _utf8ToPath(d.Name());
 		if (p.has_extension() && (p.extension() == ".xml" || p.extension() == ".txt"))
 		{
 			auto stem = _pathToUtf8(p.filename().stem());

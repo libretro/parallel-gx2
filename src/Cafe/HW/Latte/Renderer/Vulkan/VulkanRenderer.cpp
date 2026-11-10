@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Common/FileStream.h"
 #include "Common/ExceptionHandler/Breadcrumb.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "libretro/LibretroDRC.h"
@@ -1795,11 +1796,11 @@ void VulkanRenderer::PipelineCacheSaveThread(size_t savedSize, uint32 savedCrc)
 {
 	SetThreadName("vkDriverPlCache");
 	const auto dir = ActiveSettings::GetCachePath("shaderCache/driver/vk");
-	if (!fs::exists(dir))
+	if (!FileStream::Exists(dir))
 	{
 		try
 		{
-			fs::create_directories(dir);
+			FileStream::CreateDirectories(dir);
 		}
 		catch (const std::exception& ex)
 		{

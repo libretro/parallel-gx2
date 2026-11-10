@@ -1,4 +1,5 @@
 #include "WindowSystem.h"
+#include "Common/FileStream.h"
 #include "util/crypto/aes128.h"
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
@@ -70,8 +71,7 @@ void reconfigureGLDrivers()
 	// reconfigure GL drivers to store
 	const fs::path nvCacheDir = ActiveSettings::GetCachePath("shaderCache/driver/nvidia/");
 
-	std::error_code err;
-	fs::create_directories(nvCacheDir, err);
+	FileStream::CreateDirectories(nvCacheDir);
 
 	std::string nvCacheDirEnvOption("__GL_SHADER_DISK_CACHE_PATH=");
 	nvCacheDirEnvOption.append(_pathToUtf8(nvCacheDir));
@@ -212,14 +212,13 @@ void HandlePostUpdate()
 {
 	auto exeBackupPath = ActiveSettings::GetExecutablePath();
 	exeBackupPath.replace_extension( _utf8ToPath(_pathToUtf8(exeBackupPath.extension()).append(".backup")));
-	std::error_code ec;
-	if (!fs::exists(exeBackupPath, ec))
+	if (!FileStream::Exists(exeBackupPath))
 		return;
 	// try to delete update residue, but give up quickly as to not cause a permanent hang
 	// it may succeed on next turn
 	for (sint32 i=0; i<3; i++)
 	{
-		if (fs::remove(exeBackupPath, ec))
+		if (FileStream::Remove(exeBackupPath))
 			break;
 		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	}

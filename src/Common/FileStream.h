@@ -32,6 +32,53 @@ public:
 	static std::optional<bool> IsReadOnly(const fs::path& path);
 	static bool Remove(const fs::path& path);
 	static bool Rename(const fs::path& from, const fs::path& to);
+	// the directory and those above it that are missing; true if it is there
+	static bool CreateDirectories(const fs::path& path);
+	// a file's size; nothing for what is not there
+	static std::optional<uint64> FileSize(const fs::path& path);
+	// a file, or a directory with all it holds; true if nothing is left
+	static bool RemoveAll(const fs::path& path);
+
+	// A directory's entries, '.' and '..' left out, in no order, through the
+	// same VFS as the files (retro_dirent): for (Dir d(p); d.Next();) ...
+	class Dir
+	{
+	public:
+		explicit Dir(const fs::path& path);
+		~Dir();
+		Dir(const Dir&) = delete;
+		Dir& operator=(const Dir&) = delete;
+
+		bool Opened() const { return m_dir != nullptr; }
+		// on to the next entry; false past the last
+		bool Next();
+		// the entry's name, valid until the next Next
+		std::string_view Name() const { return m_name; }
+		fs::path Path() const;
+		bool IsDirectory() const;
+		// a file's size, from what was read with the entry where it can be
+		uint64 Size() const;
+
+	private:
+		struct RDIR* m_dir{};
+		fs::path m_path;
+		std::string_view m_name;
+	};
+
+	// Every file and directory under path, depth first, a directory before
+	// what it holds: f(const fs::path&, bool isDirectory)
+	template<typename F>
+	static void ForEachInTree(const fs::path& path, F&& f)
+	{
+		for (Dir d(path); d.Next();)
+		{
+			const fs::path p = d.Path();
+			const bool isDir = d.IsDirectory();
+			f(p, isDir);
+			if (isDir)
+				ForEachInTree(p, f);
+		}
+	}
 
 	void SetPosition(uint64 pos);
 	uint64 GetSize();

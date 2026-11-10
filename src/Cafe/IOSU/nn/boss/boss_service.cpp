@@ -1,4 +1,5 @@
 #include "Cafe/OS/libs/nn_common.h"
+#include "Common/FileStream.h"
 #include "util/helpers/MappedFile.h"
 #include "util/helpers/helpers.h"
 #include "util/helpers/EventWake.h"
@@ -81,8 +82,7 @@ namespace iosu::boss
 		static bool CheckIfStorageExists(const DirectoryName& bossDirectory, uint64 titleId, uint32 persistentId)
 		{
 			fs::path fadPath = ActiveSettings::GetMlcPath("usr/boss/{:08x}/{:08x}/user/common/{:08x}/{}", GetTitleIdHigh(titleId), GetTitleIdLow(titleId), persistentId, bossDirectory.name2.c_str());
-			std::error_code ec;
-			return fs::exists(fadPath, ec);
+			return FileStream::Exists(fadPath);
 		}
 
 		nnResult Load(TaskId& taskId, uint64 titleId, uint32 persistentId)
@@ -91,9 +91,8 @@ namespace iosu::boss
 			m_hasValidFadData = false;
 			memset(&m_fadData, 0, sizeof(m_fadData));
 			fs::path fadPath = ActiveSettings::GetMlcPath("usr/boss/{:08x}/{:08x}/user/common/{:08x}/{}", GetTitleIdHigh(titleId), GetTitleIdLow(titleId), persistentId, taskId.id.c_str());
-			std::error_code ec;
-			if (!fs::exists(fadPath, ec))
-				fs::create_directories(fadPath, ec);
+			if (!FileStream::Exists(fadPath))
+				FileStream::CreateDirectories(fadPath);
 			fadPath /= "fad.db";
 			m_fadFilePath = fadPath;
 			FileStream* fs = FileStream::openFile2(fadPath);
@@ -109,9 +108,8 @@ namespace iosu::boss
 		{
 			memset(&m_fadData, 0, sizeof(m_fadData));
 			fs::path fadPath = ActiveSettings::GetMlcPath("usr/boss/{:08x}/{:08x}/user/common/{:08x}/{}", GetTitleIdHigh(titleId), GetTitleIdLow(titleId), persistentId, taskId.id.c_str());
-			std::error_code ec;
-			if (!fs::exists(fadPath, ec))
-				fs::create_directories(fadPath, ec);
+			if (!FileStream::Exists(fadPath))
+				FileStream::CreateDirectories(fadPath);
 			m_fadFilePath = fadPath / "fad.db";
 			FileStream* fs = FileStream::createFile2(m_fadFilePath);
 			if (fs)
@@ -263,8 +261,7 @@ namespace iosu::boss
 		nnResult Delete()
 		{
 			cemu_assert_debug(m_isValid); // only call this after successful Open()
-			std::error_code ec;
-			if (!fs::remove(m_nsDataPath, ec) )
+			if (!FileStream::Remove(m_nsDataPath) )
 				cemuLog_log(LogType::Force, "Failed to delete BOSS file {}", _pathToUtf8(m_nsDataPath));
 			// remove from FAD
 			TaskId taskId(m_bossDirectory.name2.c_str());
@@ -280,10 +277,9 @@ namespace iosu::boss
 			if (!m_isValid)
 				return false;
 			// check if the file actually exists on the host filesystem
-			std::error_code ec;
 			if (m_nsDataPath.empty())
 				return false;
-			bool r = fs::exists(m_nsDataPath, ec);
+			bool r = FileStream::Exists(m_nsDataPath);
 			if (!r)
 				cemuLog_log(LogType::Force, "BOSS: File exists in FAD cache but not on disk {}. To fix this reset the SpotPass cache. In the menu under debug select \"Clear SpotPass cache\"", _pathToUtf8(m_nsDataPath));
 			return r;
@@ -707,8 +703,7 @@ namespace iosu::boss
 
 			// if the file already exists locally, skip download
 			// but still add the entry to the FAD db
-			std::error_code ec;
-			if (fs::exists(dataFilePath))
+			if (FileStream::Exists(dataFilePath))
 			{
 				cemuLog_log(LogType::Force, "\t- {} (DataId:{:08x} {}KB) (Skipping, already downloaded)", nbdlFile.fileName, nbdlFile.dataId, (nbdlFile.size+1023)/1024);
 				TrackDownloadedNbdlFile(nbdlFile);
@@ -787,8 +782,8 @@ namespace iosu::boss
 			memcpy(fileHMAC, &((BossNbdlHeader*)receivedData.data())->encryptedHeader.uknHashData, 32);
 			// write decrypted data to filesystem using a temporary path
 			fs::path tmpDataPath = ActiveSettings::GetMlcPath("usr/boss/{:08x}/{:08x}/user/common/data/{}/.{:08x}", (uint32)(titleId >> 32), (uint32)(titleId & 0xFFFFFFFF), m_taskId.id.c_str(), nbdlFile.dataId);
-			if (!fs::exists(tmpDataPath.parent_path()))
-				fs::create_directories(tmpDataPath.parent_path(), ec);
+			if (!FileStream::Exists(tmpDataPath.parent_path()))
+				FileStream::CreateDirectories(tmpDataPath.parent_path());
 			FileStream* fs = FileStream::createFile2(tmpDataPath);
 			if (fs)
 			{
@@ -818,11 +813,11 @@ namespace iosu::boss
 			{
 				// failed to verify hash
 				cemuLog_log(LogType::Force, "Failed to verify hash for SpotPass nbdl file: {}", _pathToUtf8(tmpDataPath));
-				fs::remove(tmpDataPath, ec);
+				FileStream::Remove(tmpDataPath);
 				return;
 			}
 			// rename temporary file to final path
-			fs::rename(tmpDataPath, dataFilePath, ec);
+			FileStream::Rename(tmpDataPath, dataFilePath);
 			// update FAD entry
 			TrackDownloadedNbdlFile(nbdlFile);
 		}

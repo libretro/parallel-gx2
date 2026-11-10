@@ -218,8 +218,7 @@ void InfoLog_TitleLoaded()
 		cemuLog_log(LogType::Force, "TitleRegion: US");
 
 	fs::path effectiveSavePath = getTitleSavePath();
-	std::error_code ec;
-	const bool saveDirExists = fs::exists(effectiveSavePath, ec);
+	const bool saveDirExists = FileStream::Exists(effectiveSavePath);
 	cemuLog_log(LogType::Force, "Save path:   {}{}", _pathToUtf8(effectiveSavePath), saveDirExists ? "" : " (not present)");
 
 	// log shader cache name
@@ -304,8 +303,8 @@ uint32 LoadSharedData()
 	bool hasAllShareddataFiles = true;
 	for (sint32 i = 0; i < sizeof(shareddataDef) / sizeof(shareddataDef[0]); i++)
 	{
-		bool existsInMLC = fs::exists(ActiveSettings::GetMlcPath(shareddataDef[i].mlcPath));
-		bool existsInResources = fs::exists(ActiveSettings::GetDataPath(shareddataDef[i].resourcePath));
+		bool existsInMLC = FileStream::Exists(ActiveSettings::GetMlcPath(shareddataDef[i].mlcPath));
+		bool existsInResources = FileStream::Exists(ActiveSettings::GetDataPath(shareddataDef[i].resourcePath));
 
 		if (!existsInMLC && !existsInResources)
 		{
@@ -444,8 +443,7 @@ void cemu_initForGame()
 			std::string origin;
 			if (!relative.empty() && *relative.begin() != "..")
 			{
-				std::error_code ec;
-				origin = fs::exists(bundledBase / relative / "rules.txt", ec)
+				origin = FileStream::Exists(bundledBase / relative / "rules.txt")
 					? fmt::format(" (customGraphicPacks/{}, replaces the bundled pack)", _pathToUtf8(relative.generic_string()))
 					: fmt::format(" (customGraphicPacks/{}, not in the bundled set)", _pathToUtf8(relative.generic_string()));
 			}
@@ -963,8 +961,7 @@ namespace CafeSystem
 		{
 			// check for content folder
 			fs::path contentPath = executablePath.parent_path().parent_path().append("content");
-			std::error_code ec;
-			if (fs::is_directory(contentPath, ec))
+			if (FileStream::IsDirectory(contentPath))
 			{
 				// mounting content folder
 				bool r = FSCDeviceHostFS_Mount(std::string("/vol/content").c_str(), _pathToUtf8(contentPath), FSC_PRIORITY_BASE);
@@ -1356,11 +1353,9 @@ namespace CafeSystem
 		if (!IsTitleRunning() || _pathToExecutable.empty())
 			return;
 		const fs::path dumpDirectory = ActiveSettings::GetUserDataPath("dump/rpx/{:016x}", GetForegroundTitleId());
-		std::error_code ec;
-		fs::create_directories(dumpDirectory, ec);
-		if (ec)
+		if (!FileStream::CreateDirectories(dumpDirectory))
 		{
-			cemuLog_log(LogType::Force, "Failed to create RPX dump directory \"{}\": {}", _pathToUtf8(dumpDirectory), ec.message());
+			cemuLog_log(LogType::Force, "Failed to create RPX dump directory \"{}\"", _pathToUtf8(dumpDirectory));
 			return;
 		}
 		auto dumpFile = [&dumpDirectory](const std::string& sourcePath)

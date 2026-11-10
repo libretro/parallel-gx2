@@ -1,4 +1,5 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "Common/FileStream.h"
 #include "util/helpers/MappedFile.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "config/CemuConfig.h"
@@ -110,20 +111,20 @@ void GraphicPack2::LoadGraphicPack(fs::path graphicPackPath)
 
 void GraphicPack2::LoadAll()
 {
-	std::error_code ec;
-	fs::path basePath = ActiveSettings::GetUserDataPath("graphicPacks");
-	for (fs::recursive_directory_iterator it(basePath, fs::directory_options::follow_directory_symlink | fs::directory_options::skip_permission_denied, ec); it != end(it); ++it)
-	{
-		if (!it->is_directory(ec))
-			continue;
-		fs::path gfxPackPath = it->path();
-		if (fs::exists(gfxPackPath / "rules.txt", ec))
+	// every directory with a rules.txt, not looking deeper into one
+	auto walk = [](auto& self, const fs::path& dir) -> void {
+		for (FileStream::Dir d(dir); d.Next();)
 		{
-			LoadGraphicPack(gfxPackPath);
-			it.disable_recursion_pending(); // dont recurse deeper in a gfx pack directory
-			continue;
+			if (!d.IsDirectory())
+				continue;
+			const fs::path gfxPackPath = d.Path();
+			if (FileStream::Exists(gfxPackPath / "rules.txt"))
+				LoadGraphicPack(gfxPackPath);
+			else
+				self(self, gfxPackPath);
 		}
-	}
+	};
+	walk(walk, ActiveSettings::GetUserDataPath("graphicPacks"));
 }
 
 bool GraphicPack2::LoadGraphicPack(const fs::path& rulesPath, IniParser& rules)
@@ -771,14 +772,14 @@ bool GraphicPack2::SetActivePreset(std::string_view category, std::string_view n
 void GraphicPack2::LoadShaders()
 {
 	fs::path path = GetRulesPath();
-	for (auto& it : fs::directory_iterator(path.remove_filename()))
+	for (FileStream::Dir d(path.remove_filename()); d.Next();)
 	{
-		if (!is_regular_file(it))
+		if (d.IsDirectory())
 			continue;
 
 		try
 		{
-			const auto& p = it.path();
+			const fs::path p = d.Path();
 			auto filename = p.filename().wstring();
 			uint64 shader_base_hash = 0;
 			uint64 shader_aux_hash = 0;
@@ -910,11 +911,16 @@ void GraphicPack2::_iterateReplacedFiles(const fs::path& currentPath, bool isAOC
 {
 	uint64 currentTitleId = CafeSystem::GetForegroundTitleId();
 	uint64 aocTitleId = (currentTitleId & 0xFFFFFFFFull) | 0x0005000c00000000ull;
-	for (auto& it : fs::recursive_directory_iterator(currentPath))
-	{
-		if (fs::is_regular_file(it))
+	auto walk = [&](auto& self, const fs::path& dir, const fs::path& relative) -> void {
+		for (FileStream::Dir d(dir); d.Next();)
 		{
-			fs::path virtualMountPath = fs::relative(it.path(), currentPath);
+			const fs::path rel = relative / _utf8ToPath(d.Name());
+			if (d.IsDirectory())
+			{
+				self(self, d.Path(), rel);
+				continue;
+			}
+			fs::path virtualMountPath = rel;
 			if (isAOC)
 			{
 				virtualMountPath = fs::path(fmt::format("/vol/aoc{:016x}/", aocTitleId)) / virtualMountPath;
@@ -923,9 +929,10 @@ void GraphicPack2::_iterateReplacedFiles(const fs::path& currentPath, bool isAOC
 			{
 				virtualMountPath = fs::path(virtualMountBase) / virtualMountPath;
 			}
-			fscDeviceRedirect_add(virtualMountPath.generic_string(), it.file_size(), it.path().generic_string(), m_fs_priority);
+			fscDeviceRedirect_add(virtualMountPath.generic_string(), d.Size(), d.Path().generic_string(), m_fs_priority);
 		}
-	}
+	};
+	walk(walk, currentPath, fs::path());
 }
 
 void GraphicPack2::LoadReplacedFiles()
@@ -941,8 +948,7 @@ void GraphicPack2::LoadReplacedFiles()
 	fs::path contentPath(gfxPackPath);
 	contentPath.append("content");
 
-	std::error_code ec;
-	if (fs::exists(contentPath, ec))
+	if (FileStream::Exists(contentPath))
 	{
 		// setup redirections
 		fscDeviceRedirect_map();
@@ -952,7 +958,7 @@ void GraphicPack2::LoadReplacedFiles()
 	fs::path aocPath(gfxPackPath);
 	aocPath.append("aoc");
 
-	if (fs::exists(aocPath, ec))
+	if (FileStream::Exists(aocPath))
 	{
 		uint64 aocTitleId = CafeSystem::GetForegroundTitleId();
 		aocTitleId = aocTitleId & 0xFFFFFFFFULL;
@@ -966,7 +972,7 @@ void GraphicPack2::LoadReplacedFiles()
 	fs::path codePath(gfxPackPath);
 	codePath.append("code");
 	
-	if (fs::exists(codePath, ec))
+	if (FileStream::Exists(codePath))
 	{
 	    // setup redirections
 		fscDeviceRedirect_map();

@@ -1,4 +1,5 @@
 #include "Cafe/Filesystem/fsc.h"
+#include "Common/FileStream.h"
 
 class FSCVirtualFile_Host : public FSCVirtualFile
 {
@@ -31,5 +32,5 @@ private:
 	bool m_isWritable{ false };
 	// directory
 	std::unique_ptr<std::filesystem::path> m_path{};
-	std::unique_ptr<std::filesystem::directory_iterator> m_dirIterator{};
+	std::unique_ptr<class FileStream::Dir> m_dir{};
 };

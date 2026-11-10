@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Common/FileStream.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -33,8 +34,7 @@ VulkanPipelineStableCache& VulkanPipelineStableCache::GetInstance()
 
 uint32 VulkanPipelineStableCache::BeginLoading(uint64 cacheTitleId)
 {
-	std::error_code ec;
-	fs::create_directories(ActiveSettings::GetCachePath("shaderCache/transferable"), ec);
+	FileStream::CreateDirectories(ActiveSettings::GetCachePath("shaderCache/transferable"));
 	const auto pathCacheFile = ActiveSettings::GetCachePath("shaderCache/transferable/{:016x}_vkpipeline.bin", cacheTitleId);
 	
 	// init cache loader state

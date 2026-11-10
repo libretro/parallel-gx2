@@ -31,8 +31,7 @@ namespace iosu
 		void MakeDirectory()
 		{
 			fs::path path = GetPDFile(".");
-			std::error_code ec;
-			fs::create_directories(path, ec);
+			FileStream::CreateDirectories(path);
 		}
 
 		chrono_d::year_month_day GetDateFromDayIndex(uint16 dayIndex)

@@ -373,11 +373,9 @@ public:
 
 	bool Save(const std::wstring& filename)
 	{
-		std::error_code err;
-		fs::create_directories(fs::path(filename).parent_path(), err);
-		if (err)
+		if (!FileStream::CreateDirectories(fs::path(filename).parent_path()))
 		{
-			cemuLog_log(LogType::Force, "can't create parent path for save file: {}", err.message());
+			cemuLog_log(LogType::Force, "can't create parent path for save file: {}", _pathToUtf8(fs::path(filename).parent_path()));
 			return false;
 		}
 

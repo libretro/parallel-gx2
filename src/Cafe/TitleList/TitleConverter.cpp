@@ -247,9 +247,7 @@ namespace TitleConverter
 
 			bool Copy(const std::string& fscPath, const fs::path& dst)
 			{
-				std::error_code ec;
-				fs::create_directories(dst, ec);
-				if (ec)
+				if (!FileStream::CreateDirectories(dst))
 				{
 					error = fmt::format("could not create {}", _pathToUtf8(dst));
 					return false;
@@ -326,11 +324,10 @@ namespace TitleConverter
 		tmpDir += ".tmp";
 		fs::path oldDir = targetDir;
 		oldDir += ".old";
-		std::error_code ec;
 		// Left over from an install that was cut short. Neither name is eight
 		// hex digits, so the title scan never took them for a title.
-		fs::remove_all(tmpDir, ec);
-		fs::remove_all(oldDir, ec);
+		FileStream::RemoveAll(tmpDir);
+		FileStream::RemoveAll(oldDir);
 
 		InstallContext ctx;
 		ctx.cancel = &cancel;
@@ -366,31 +363,28 @@ namespace TitleConverter
 		if (!ok)
 		{
 			error = ctx.error;
-			fs::remove_all(tmpDir, ec);
+			FileStream::RemoveAll(tmpDir);
 			return false;
 		}
 
-		if (fs::exists(targetDir, ec))
+		if (FileStream::Exists(targetDir))
 		{
-			fs::rename(targetDir, oldDir, ec);
-			if (ec)
+			if (!FileStream::Rename(targetDir, oldDir))
 			{
-				error = fmt::format("could not move the installed version out of the way: {}", ec.message());
-				fs::remove_all(tmpDir, ec);
+				error = "could not move the installed version out of the way";
+				FileStream::RemoveAll(tmpDir);
 				return false;
 			}
 		}
-		fs::create_directories(targetDir.parent_path(), ec);
-		fs::rename(tmpDir, targetDir, ec);
-		if (ec)
+		FileStream::CreateDirectories(targetDir.parent_path());
+		if (!FileStream::Rename(tmpDir, targetDir))
 		{
-			error = fmt::format("could not move the installed title into place: {}", ec.message());
-			std::error_code ec2;
-			fs::rename(oldDir, targetDir, ec2);
-			fs::remove_all(tmpDir, ec2);
+			error = "could not move the installed title into place";
+			FileStream::Rename(oldDir, targetDir);
+			FileStream::RemoveAll(tmpDir);
 			return false;
 		}
-		fs::remove_all(oldDir, ec);
+		FileStream::RemoveAll(oldDir);
 		return true;
 	}
 

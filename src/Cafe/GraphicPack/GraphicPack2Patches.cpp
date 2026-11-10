@@ -73,10 +73,10 @@ bool GraphicPack2::LoadCemuPatches()
 	bool foundPatches = false;
 	fs::path path(m_rulesPath);
 	path.remove_filename();
-	for (auto& p : fs::directory_iterator(path))
+	for (FileStream::Dir d(path); d.Next();)
 	{
-		auto& path = p.path();
-		if (fs::is_regular_file(p.status()) && path.has_filename())
+		const fs::path path = d.Path();
+		if (!d.IsDirectory())
 		{
 			// check if filename matches
 			std::string filename = _pathToUtf8(path.filename());

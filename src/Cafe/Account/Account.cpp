@@ -118,7 +118,7 @@ Account::Account(uint32 persistent_id, std::wstring_view mii_name)
 
 Account::Account(std::wstring_view file_name)
 {
-	if (!fs::exists(file_name.data()))
+	if (!FileStream::Exists(file_name.data()))
 		throw std::runtime_error("given file doesn't exist");
 
 	std::unique_ptr<FileStream> file(FileStream::openFile2(file_name));
@@ -175,13 +175,8 @@ std::error_code Account::Load()
 std::error_code Account::Save()
 {
 	fs::path path = ActiveSettings::GetMlcPath(fmt::format(L"usr/save/system/act/{:08x}", m_persistent_id));
-	if (!fs::exists(path))
-	{
-		std::error_code ec;
-		fs::create_directories(path, ec);
-		if (ec)
-			return ec;
-	}
+	if (!FileStream::CreateDirectories(path))
+		return std::make_error_code(std::errc::io_error);
 		
 	path /= "account.dat";
 
@@ -286,14 +281,14 @@ const std::vector<Account>& Account::RefreshAccounts()
 {
 	std::vector<Account> result;
 	const fs::path path = ActiveSettings::GetMlcPath("usr/save/system/act");
-	if (fs::exists(path))
+	if (FileStream::Exists(path))
 	{
-		for (const auto& it : fs::directory_iterator(path))
+		for (FileStream::Dir d(path); d.Next();)
 		{
-			if (!fs::is_directory(it))
+			if (!d.IsDirectory())
 				continue;
 
-			const auto file_name = it.path().filename().string();
+			const std::string file_name(d.Name());
 			if (file_name.size() != 8)
 				continue;
 
@@ -363,7 +358,7 @@ uint32 Account::GetNextPersistentId()
 {
 	uint32 result = kMinPersistendId;
 	const auto file = ActiveSettings::GetMlcPath("usr/save/system/act/persisid.dat");
-	if(fs::exists(file))
+	if(FileStream::Exists(file))
 	{
 		std::unique_ptr<FileStream> f(FileStream::openFile2(file));
 		if(f)
@@ -403,17 +398,17 @@ OnlineValidator Account::ValidateOnlineFiles() const
 	OnlineValidator result{};
 	
 	const auto otp = ActiveSettings::GetUserDataPath("otp.bin");
-	if (!fs::exists(otp))
+	if (!FileStream::Exists(otp))
 		result.otp = OnlineValidator::FileState::Missing;
-	else if (fs::file_size(otp) != 1024)
+	else if (FileStream::FileSize(otp) != 1024)
 		result.otp = OnlineValidator::FileState::Corrupted;
 	else
 		result.otp = OnlineValidator::FileState::Ok;
 	
 	const auto seeprom = ActiveSettings::GetUserDataPath("seeprom.bin");
-	if (!fs::exists(seeprom))
+	if (!FileStream::Exists(seeprom))
 		result.seeprom = OnlineValidator::FileState::Missing;
-	else if (fs::file_size(seeprom) != 512)
+	else if (FileStream::FileSize(seeprom) != 512)
 		result.seeprom = OnlineValidator::FileState::Corrupted;
 	else
 		result.seeprom = OnlineValidator::FileState::Ok;
@@ -421,14 +416,14 @@ OnlineValidator Account::ValidateOnlineFiles() const
 	for(const auto& v : iosuCrypt_getCertificateKeys())
 	{
 		const auto p = ActiveSettings::GetMlcPath(L"sys/title/0005001b/10054000/content/{}", v);
-		if (!fs::exists(p) || !fs::is_regular_file(p))
+		if (!FileStream::IsRegularFile(p))
 			result.missing_files.emplace_back(p.generic_wstring());
 	}
 
 	for (const auto& v : iosuCrypt_getCertificateNames())
 	{
 		const auto p = ActiveSettings::GetMlcPath(L"sys/title/0005001b/10054000/content/{}", v);
-		if (!fs::exists(p) || !fs::is_regular_file(p))
+		if (!FileStream::IsRegularFile(p))
 			result.missing_files.emplace_back(p.generic_wstring());
 	}
 

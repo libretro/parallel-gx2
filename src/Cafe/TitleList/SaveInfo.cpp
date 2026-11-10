@@ -7,8 +7,7 @@
 SaveInfo::SaveInfo(TitleId titleId) : m_titleId(titleId)
 {
 	m_path = GetSavePath(titleId);
-	std::error_code ec;
-	m_isValid = fs::is_directory(m_path, ec);
+	m_isValid = FileStream::IsDirectory(m_path);
 }
 
 std::string SaveInfo::GetStorageSubpathByTitleId(TitleId titleId)

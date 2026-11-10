@@ -1,5 +1,6 @@
 
 #include "Cafe/OS/common/OSCommon.h"
+#include "Common/FileStream.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
@@ -1943,8 +1944,7 @@ void RPLLoader_AddDependency(std::string_view name, bool isMainExecutable)
 	// 3) The game's code directory
 	// note: Some games ship with copies of system RPLs which are never actually loaded since the SLC lookup takes precedence (Example games include MH3G which has erreula.rpl and swkbd.rpl, Disney Epic Mickey 2 which comes with erreula.rpl)
 	const auto cafeLibsFilePath = ActiveSettings::GetUserDataPath("cafeLibs/{}", fileName);
-	std::error_code ec;
-	bool rplExistsInCafeLibs = fs::exists(cafeLibsFilePath, ec) && ActiveSettings::LoadSharedLibrariesEnabled(); // load from cafeLibs only if the option is enabled
+	bool rplExistsInCafeLibs = FileStream::Exists(cafeLibsFilePath) && ActiveSettings::LoadSharedLibrariesEnabled(); // load from cafeLibs only if the option is enabled
 	bool isBlacklisted = false;
 	if (rplExistsInCafeLibs)
 	{

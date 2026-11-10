@@ -279,8 +279,7 @@ bool GameProfile::Load(uint64_t title_id)
 void GameProfile::Save(uint64_t title_id)
 {
 	auto gameProfileDir = ActiveSettings::GetConfigPath("gameProfiles");
-	if (std::error_code ex_ec; !fs::exists(gameProfileDir, ex_ec))
-		fs::create_directories(gameProfileDir, ex_ec);
+	FileStream::CreateDirectories(gameProfileDir);
 	auto gameProfilePath = gameProfileDir / fmt::format("{:016x}.ini", title_id);
 	FileStream* fs = FileStream::createFile2(gameProfilePath);
 	if (!fs)

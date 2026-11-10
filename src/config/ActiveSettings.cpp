@@ -1,4 +1,5 @@
 #include "Cafe/GameProfile/GameProfile.h"
+#include "Common/FileStream.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #ifdef ENABLE_VULKAN
@@ -29,9 +30,8 @@ void ActiveSettings::SetPaths(bool isPortableMode,
 	failedWriteAccess.clear();
 	for (auto&& path : {userDataPath, configPath, cachePath})
 	{
-		std::error_code ec;
-		if (!fs::exists(path, ec))
-			fs::create_directories(path, ec);
+		if (!FileStream::Exists(path))
+			FileStream::CreateDirectories(path);
 		if (!TestWriteAccess(path))
 		{
 			cemuLog_log(LogType::Force, "Failed to write to {}", _pathToUtf8(path));

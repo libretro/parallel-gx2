@@ -149,8 +149,7 @@ void CafeTitleList::AddScanPath(fs::path path)
 void CafeTitleList::SetMLCPath(fs::path path)
 {
 	std::unique_lock _lock(sTLMutex);
-	std::error_code ec;
-	if (!fs::is_directory(path, ec))
+	if (!FileStream::IsDirectory(path))
 	{
 		cemuLog_log(LogType::Force, "MLC set to invalid path: {}", _pathToUtf8(path));
 		return;
@@ -297,12 +296,10 @@ bool CafeTitleList::RefreshWorkerThread()
 		// scan MLC
 		if (!mlcPath.empty())
 		{
-			std::error_code ec;
-			for (auto& it : fs::directory_iterator(mlcPath / "usr/title", ec))
+			for (FileStream::Dir d(mlcPath / "usr/title"); d.Next();)
 			{
-				if (!it.is_directory(ec))
-					continue;
-				ScanMLCPath(it.path());
+				if (d.IsDirectory())
+					ScanMLCPath(d.Path());
 			}
 			ScanMLCPath(mlcPath / "sys/title/00050010");
 			ScanMLCPath(mlcPath / "sys/title/00050030");
@@ -374,17 +371,16 @@ void CafeTitleList::ScanGamePath(const fs::path& path)
 	std::vector<fs::path> filesInDirectory;
 	std::vector<fs::path> dirsInDirectory;
 	bool hasContentFolder = false, hasCodeFolder = false, hasMetaFolder = false;
-	std::error_code ec;
-	for (auto& it : fs::directory_iterator(path, ec))
-	{		
-		if (it.is_regular_file(ec))
+	for (FileStream::Dir d(path); d.Next();)
+	{
+		if (!d.IsDirectory())
 		{
-			filesInDirectory.emplace_back(it.path());
+			filesInDirectory.emplace_back(d.Path());
 		}
-		else if (it.is_directory(ec))
+		else
 		{
-			dirsInDirectory.emplace_back(it.path());
-			std::string dirName = _pathToUtf8(it.path().filename());
+			dirsInDirectory.emplace_back(d.Path());
+			const std::string_view dirName = d.Name();
 			if (boost::iequals(dirName, "content"))
 				hasContentFolder = true;
 			else if (boost::iequals(dirName, "code"))
@@ -435,13 +431,12 @@ void CafeTitleList::ScanGamePath(const fs::path& path)
 
 void CafeTitleList::ScanMLCPath(const fs::path& path)
 {
-	std::error_code ec;
-	for (auto& it : fs::directory_iterator(path, ec))
+	for (FileStream::Dir d(path); d.Next();)
 	{
-		if (!it.is_directory())
+		if (!d.IsDirectory())
 			continue;
 		// only scan directories which match the title id naming scheme
-		std::string dirName = _pathToUtf8(it.path().filename());
+		const std::string_view dirName = d.Name();
 		if(dirName.size() != 8)
 			continue;
 		bool containsNoHexCharacter = false;
@@ -457,11 +452,12 @@ void CafeTitleList::ScanMLCPath(const fs::path& path)
 		if(containsNoHexCharacter)
 			continue;
 
-		if (fs::is_directory(it.path() / "code", ec) &&
-			fs::is_directory(it.path() / "content", ec) &&
-			fs::is_directory(it.path() / "meta", ec))
+		const fs::path titlePath = d.Path();
+		if (FileStream::IsDirectory(titlePath / "code") &&
+			FileStream::IsDirectory(titlePath / "content") &&
+			FileStream::IsDirectory(titlePath / "meta"))
 		{
-			TitleInfo* titleInfo = new TitleInfo(it);
+			TitleInfo* titleInfo = new TitleInfo(titlePath);
 			if (titleInfo->IsValid() && titleInfo->ParseXmlInfo())
 				AddDiscoveredTitle(titleInfo);
 			else

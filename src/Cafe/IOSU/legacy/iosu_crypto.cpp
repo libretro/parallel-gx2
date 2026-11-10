@@ -502,18 +502,17 @@ bool iosuCrypto_checkRequirementMLCFile(std::string_view mlcSubpath, std::string
 
 sint32 iosuCrypt_checkRequirementsForOnlineMode(std::string& additionalErrorInfo)
 {
-	std::error_code ec;
 	// check if otp.bin is present
 	const auto otp_file = ActiveSettings::GetUserDataPath("otp.bin");
-	if(!fs::exists(otp_file, ec))
+	if(!FileStream::Exists(otp_file))
 		return IOS_CRYPTO_ONLINE_REQ_OTP_MISSING;
-	if(fs::file_size(otp_file, ec) != 1024)
+	if(FileStream::FileSize(otp_file) != 1024)
 		return IOS_CRYPTO_ONLINE_REQ_OTP_CORRUPTED;
 	// check if seeprom.bin is present
 	const auto seeprom_file = ActiveSettings::GetUserDataPath("seeprom.bin");
-	if (!fs::exists(seeprom_file, ec))
+	if (!FileStream::Exists(seeprom_file))
 		return IOS_CRYPTO_ONLINE_REQ_SEEPROM_MISSING;
-	if (fs::file_size(seeprom_file, ec) != 512)
+	if (FileStream::FileSize(seeprom_file) != 512)
 		return IOS_CRYPTO_ONLINE_REQ_SEEPROM_CORRUPTED;
 	
 	for (const auto& c : g_certificates)
