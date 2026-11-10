@@ -72,12 +72,11 @@ void GraphicPack2::LoadGraphicPack(fs::path graphicPackPath)
 {
 	fs::path rulesPath = graphicPackPath;
 	rulesPath.append("rules.txt");
-	std::unique_ptr<FileStream> fs_rules(FileStream::openFile2(rulesPath));
-	if (!fs_rules)
+	// read where it lies
+	MappedFile rulesData(rulesPath);
+	if (!rulesData.opened())
 		return;
-	std::vector<uint8> rulesData;
-	fs_rules->extract(rulesData);
-	IniParser iniParser(rulesData, _pathToUtf8(rulesPath));
+	IniParser iniParser(rulesData.span(), _pathToUtf8(rulesPath));
 
 	if (!iniParser.NextSection())
 	{
@@ -996,14 +995,11 @@ bool GraphicPack2::Activate()
 			return false;
 	}
 
-	FileStream* fs_rules = FileStream::openFile2(m_rulesPath);
-	if (!fs_rules)
+	MappedFile rulesData(m_rulesPath);
+	if (!rulesData.opened())
 		return false;
-	std::vector<uint8> rulesData;
-	fs_rules->extract(rulesData);
-	delete fs_rules;
 
-	IniParser rules({ (char*)rulesData.data(), rulesData.size()}, GetNormalizedPathString());
+	IniParser rules(rulesData.span(), GetNormalizedPathString());
 
 	// load rules
 	try

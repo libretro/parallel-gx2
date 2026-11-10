@@ -1,4 +1,6 @@
 #include "Cafe/OS/common/OSCommon.h"
+#include "Cafe/Filesystem/fsc.h"
+#include "Cafe/RPXHash.h"
 #include "WindowSystem.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "Cafe/GameProfile/GameProfile.h"
@@ -89,13 +91,17 @@ MPTR _entryPoint = MPTR_NULL;
 
 uint32 generateHashFromRawRPXData(uint8* rpxData, sint32 size)
 {
-	uint32 h = 0x3416DCBF;
-	for (sint32 i = 0; i < size; i++)
-	{
-		uint32 c = rpxData[i];
-		h = (h << 3) | (h >> 29);
-		h += c;
-	}
+	return RPXHash_Update(RPXHASH_SEED, rpxData, size < 0 ? 0 : (size_t)size);
+}
+
+// generateHashFromRawRPXData over a file, read a chunk at a time
+static std::optional<uint32> hashRPXFile(const char* path, sint32 maxPriority)
+{
+	static constexpr uint32 CHUNK = 256 * 1024;
+	std::unique_ptr<uint8[]> buf(new uint8[CHUNK]);
+	uint32 h = RPXHASH_SEED;
+	if (!fsc_readFileInChunks(path, maxPriority, buf.get(), CHUNK, [&](const uint8* data, uint32 size) { h = RPXHash_Update(h, data, size); }))
+		return std::nullopt;
 	return h;
 }
 
@@ -180,18 +186,16 @@ void LoadMainExecutable()
 		SetEntryPoint(RPLLoader_GetModuleEntrypoint(applicationRPX));
 	}
 	free(rpxData);
-	// get RPX hash of game without update
-	uint32 baseRpxSize = 0;
-	uint8* baseRpxData = fsc_extractFile(!_pathToBaseExecutable.empty() ? _pathToBaseExecutable.c_str() : _pathToExecutable.c_str(), &baseRpxSize, FSC_PRIORITY_BASE);
-	if (baseRpxData == nullptr)
-	{
+	// get RPX hash of game without update: the same file when nothing above
+	// the base title gives it, hashed again only when something does, and then
+	// a chunk at a time rather than read whole
+	const std::string& basePath = !_pathToBaseExecutable.empty() ? _pathToBaseExecutable : _pathToExecutable;
+	if (basePath == _pathToExecutable && fsc_getFilePriority(_pathToExecutable.c_str()) == FSC_PRIORITY_BASE)
 		currentBaseApplicationHash = currentUpdatedApplicationHash;
-	}
+	else if (std::optional<uint32> h = hashRPXFile(basePath.c_str(), FSC_PRIORITY_BASE))
+		currentBaseApplicationHash = *h;
 	else
-	{
-		currentBaseApplicationHash = generateHashFromRawRPXData(baseRpxData, baseRpxSize);
-	}
-	free(baseRpxData);
+		currentBaseApplicationHash = currentUpdatedApplicationHash;
 }
 
 fs::path getTitleSavePath()

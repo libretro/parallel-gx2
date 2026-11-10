@@ -641,6 +641,32 @@ uint32 fsc_writeFile(FSCVirtualFile* fscFile, void* buffer, uint32 size)
 	return fscStatus;
 }
 
+sint32 fsc_getFilePriority(const char* path, sint32 maxPriority)
+{
+	std::string devicePath;
+	fscDeviceC* fscDevice = nullptr;
+	void* ctx;
+	fscEnter();
+	for (sint32 prio = maxPriority; prio >= 0; prio--)
+	{
+		if (!fsc_lookupPath(path, devicePath, &fscDevice, &ctx, prio))
+			continue;
+		sint32 fscStatus = FSC_STATUS_UNDEFINED;
+		FSCVirtualFile* f = fscDevice->fscDeviceOpenByPath(devicePath, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, ctx, &fscStatus);
+		if (!f)
+			continue;
+		const bool isFile = f->fscGetType() == FSC_TYPE_FILE;
+		delete f;
+		if (isFile)
+		{
+			fscLeave();
+			return prio;
+		}
+	}
+	fscLeave();
+	return -1;
+}
+
 // helper function to load a file into memory
 uint8* fsc_extractFile(const char* path, uint32* fileSize, sint32 maxPriority)
 {

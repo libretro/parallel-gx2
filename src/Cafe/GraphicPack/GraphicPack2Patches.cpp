@@ -1,4 +1,5 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "util/helpers/MappedFile.h"
 #include "Cemu/Logging/CemuLogging.h"
 #include "Common/FileStream.h"
 #include "WindowSystem.h"
@@ -82,13 +83,10 @@ bool GraphicPack2::LoadCemuPatches()
 			std::string filename = _pathToUtf8(path.filename());
 			if (boost::istarts_with(filename, "patch_") && boost::iends_with(filename, ".asm"))
 			{
-				FileStream* patchFile = FileStream::openFile2(path);
-				if (patchFile)
+				MappedFile fileData(path);
+				if (fileData.opened())
 				{
-					// read file
-					std::vector<uint8> fileData;
-					patchFile->extract(fileData);
-					delete patchFile;
+					// read where it lies
 					MemStreamReader patchesStream(fileData.data(), (sint32)fileData.size());
 					// load Cemu style patch file
 					if (!ParseCemuPatchesTxtInternal(patchesStream))
@@ -120,13 +118,9 @@ void GraphicPack2::LoadPatchFiles()
 	fs::path path(m_rulesPath);
 	path.remove_filename();
 	path.append("patches.txt");
-	FileStream* patchFile = FileStream::openFile2(path);
-	if (patchFile == nullptr)
+	MappedFile fileData(path);
+	if (!fileData.opened())
 		return;
-	// read file
-	std::vector<uint8> fileData;
-	patchFile->extract(fileData);
-	delete patchFile;
 	cemu_assert_debug(list_patchGroups.empty());
 	// parse
 	MemStreamReader patchesStream(fileData.data(), (sint32)fileData.size());

@@ -1,4 +1,5 @@
 #include "Common/precompiled.h"
+#include "util/helpers/MappedFile.h"
 #include "Common/FileStream.h"
 #include "Cemu/ncrypto/ncrypto.h"
 #include "Cafe/Filesystem/FST/FSTDataSource.h"
@@ -295,12 +296,9 @@ FSTVolume* FSTVolume::OpenFromContentFolder(fs::path folderPath, ErrorCode* erro
 {
 	SET_FST_ERROR(UNKNOWN_ERROR);
 	// load TMD
-	FileStream* tmdFile = FileStream::openFile2(folderPath / "title.tmd");
-	if (!tmdFile)
+	MappedFile tmdData(folderPath / "title.tmd");
+	if (!tmdData.opened())
 		return nullptr;
-	std::vector<uint8> tmdData;
-	tmdFile->extract(tmdData);
-	delete tmdFile;
 	NCrypto::TMDParser tmdParser;
 	if (!tmdParser.parse(tmdData.data(), tmdData.size()))
 	{
@@ -308,15 +306,12 @@ FSTVolume* FSTVolume::OpenFromContentFolder(fs::path folderPath, ErrorCode* erro
 		return nullptr;
 	}
 	// load ticket
-	FileStream* ticketFile = FileStream::openFile2(folderPath / "title.tik");
-	if (!ticketFile)
+	MappedFile ticketData(folderPath / "title.tik");
+	if (!ticketData.opened())
 	{
 		SET_FST_ERROR(TITLE_TIK_MISSING);
 		return nullptr;
 	}
-	std::vector<uint8> ticketData;
-	ticketFile->extract(ticketData);
-	delete ticketFile;
 	NCrypto::ETicketParser ticketParser;
 	if (!ticketParser.parse(ticketData.data(), ticketData.size()))
 	{

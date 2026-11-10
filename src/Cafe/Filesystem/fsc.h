@@ -206,6 +206,8 @@ uint32 fsc_writeFile(FSCVirtualFile* fscFile, void* buffer, uint32 size);
 uint8* fsc_extractFile(const char* path, uint32* fileSize, sint32 maxPriority = FSC_PRIORITY_MAX);
 std::optional<std::vector<uint8>> fsc_extractFile(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 bool fsc_doesFileExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
+// the priority of the mount a file is opened from at maxPriority, -1 if none
+sint32 fsc_getFilePriority(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 bool fsc_doesDirectoryExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 
 // wud device
@@ -223,3 +225,30 @@ bool FSCDeviceHostFS_Mount(std::string_view mountPath, std::string_view hostTarg
 // redirect device
 void fscDeviceRedirect_map();
 void fscDeviceRedirect_add(std::string_view virtualSourcePath, size_t fileSize, const fs::path& targetFilePath, sint32 priority);
+
+// A file read through buf, bufSize octets at a time, each piece handed to
+// f(const uint8* data, uint32 size): no buffer the size of the file. False
+// when it is not there or a read falls short.
+template<typename F>
+bool fsc_readFileInChunks(const char* path, sint32 maxPriority, uint8* buf, uint32 bufSize, F&& f)
+{
+	sint32 fscStatus = FSC_STATUS_UNDEFINED;
+	FSCVirtualFile* file = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &fscStatus, maxPriority);
+	if (!file)
+		return false;
+	uint32 remaining = fsc_getFileSize(file);
+	bool ok = true;
+	while (remaining > 0)
+	{
+		const uint32 n = remaining < bufSize ? remaining : bufSize;
+		if (fsc_readFile(file, buf, n) != n)
+		{
+			ok = false;
+			break;
+		}
+		f((const uint8*)buf, n);
+		remaining -= n;
+	}
+	fsc_close(file);
+	return ok;
+}
