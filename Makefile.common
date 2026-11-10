@@ -52,6 +52,7 @@ endif
 CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/key_cache.c \
 	$(CORE_DIR)/src/util/helpers/rcu_cell.c \
+	$(CORE_DIR)/src/util/helpers/mapped_file.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/zarchive.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_source.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_table.c \
@@ -71,7 +72,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceHostFS.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceRedirect.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceWua.cpp \
-	$(CORE_DIR)/src/Cafe/Filesystem/ZArchiveVFS.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceWud.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceWuhb.cpp \
 	$(CORE_DIR)/src/Cafe/GamePatch.cpp \
@@ -367,7 +367,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/crypto/crc32.cpp \
 	$(CORE_DIR)/src/util/crypto/md5.cpp \
 	$(CORE_DIR)/src/util/helpers/Deflate.cpp \
-	$(CORE_DIR)/src/util/helpers/MappedFile.cpp \
 	$(CORE_DIR)/src/util/helpers/Serializer.cpp \
 	$(CORE_DIR)/src/util/helpers/helpers.cpp \
 	$(CORE_DIR)/src/util/highresolutiontimer/HighResolutionTimer.cpp \

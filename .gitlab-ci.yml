@@ -493,6 +493,18 @@ test-rcu-cell:
     - make -C test/rcu_cell clean
     - SANITIZER=address,undefined ./test/rcu_cell/run_tests.sh
 
+# The C (C89) under MappedFile.h, mapped and read.
+test-mapped-file:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/mapped_file/run_tests.sh
+    - make -C test/mapped_file clean
+    - SANITIZER=address,undefined ./test/mapped_file/run_tests.sh
+
 # The C (C89) a volume's entries are looked up, listed and named in.
 test-fst-table:
   stage: test

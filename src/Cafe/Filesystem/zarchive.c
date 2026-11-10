@@ -6,6 +6,7 @@
 #include <retro_atomic.h>
 
 #include "Common/shared_file.h"
+#include "util/helpers/rcu_cell.h"
 #include "zarchive.h"
 
 /* readers kept for lookups, listings and reads: one for each thread that
@@ -26,6 +27,9 @@ struct zarchive
    retro_atomic_ptr_t readers[ZARCHIVE_READER_SLOTS];
 #endif
    retro_atomic_int_t readers_made;
+   /* while shared: its holders; 0 once the last has given it back, after
+    * which it is taken by none and leaves the table */
+   retro_atomic_int_t holders;
 };
 
 /* --- what a reader asks for ------------------------------------------------ */
@@ -220,6 +224,7 @@ zarchive_t *zarchive_open(const char *path, unsigned flags, char *why_not, size_
    if (!ar)
       return zarchive_fail(NULL, why_not, why_cap, "out of memory");
    retro_atomic_int_init(&ar->readers_made, 0);
+   retro_atomic_int_init(&ar->holders, 0);
 #ifdef RETRO_ATOMIC_HAS_PTR
    for (i = 0; i < ZARCHIVE_READER_SLOTS; i++)
       retro_atomic_ptr_init(&ar->readers[i], NULL);
@@ -429,4 +434,193 @@ void zarchive_dir_close(zarchive_dir_t *dir)
    if (dir->z)
       zarchive_release(dir->ar, dir->z);
    dir->z = NULL;
+}
+
+/* --- archives shared by path ----------------------------------------------- */
+
+/* test/zarchive runs code of its own at the two moments the table can be
+ * raced: an archive opened and not yet in the table, and one whose last
+ * holder has let it go and not yet taken it out */
+#ifdef ZARCHIVE_TEST_HOOKS
+void zarchive_test_opened(const char *path);
+void zarchive_test_let_go(const zarchive_t *ar);
+#define ZARCHIVE_TEST_OPENED(path) zarchive_test_opened(path)
+#define ZARCHIVE_TEST_LET_GO(ar) zarchive_test_let_go(ar)
+#else
+#define ZARCHIVE_TEST_OPENED(path) do { } while (0)
+#define ZARCHIVE_TEST_LET_GO(ar) do { } while (0)
+#endif
+
+/* the shared archives, a table replaced whole when one comes or goes */
+typedef struct zarchive_shared
+{
+   size_t count;
+   zarchive_t *ar[1]; /* count of them */
+} zarchive_shared_t;
+
+static retro_atomic_ptr_t zarchive_shared_cell_ptr;
+
+/* Made by the first to share an archive and kept for the process: two at
+ * once both make one, and the one not put in place is let go - no turn is
+ * waited for. */
+static rcu_cell_t *zarchive_shared_cell(void)
+{
+   rcu_cell_t *cell = (rcu_cell_t*)retro_atomic_load_acquire_ptr(&zarchive_shared_cell_ptr);
+   if (cell)
+      return cell;
+   cell = (rcu_cell_t*)calloc(1, sizeof(*cell));
+   if (!cell)
+      return NULL;
+   if (!rcu_cell_init(cell, NULL))
+   {
+      rcu_cell_deinit(cell);
+      free(cell);
+      return NULL;
+   }
+   if (!retro_atomic_cas_ptr(&zarchive_shared_cell_ptr, NULL, cell))
+   {
+      rcu_cell_deinit(cell);
+      free(cell);
+   }
+   return (rcu_cell_t*)retro_atomic_load_acquire_ptr(&zarchive_shared_cell_ptr);
+}
+
+/* one more holder, unless there are none left: then it is on its way out */
+static bool zarchive_hold(zarchive_t *ar)
+{
+   int n = retro_atomic_load_acquire_int(&ar->holders);
+   while (n > 0)
+   {
+      if (retro_atomic_cas_int(&ar->holders, n, n + 1))
+         return true;
+      n = retro_atomic_load_acquire_int(&ar->holders);
+   }
+   return false;
+}
+
+/* an archive in the table for path that takes one more holder */
+static zarchive_t *zarchive_shared_find(const zarchive_shared_t *t, const char *path)
+{
+   size_t i;
+   if (!t)
+      return NULL;
+   for (i = 0; i < t->count; i++)
+   {
+      if (strcmp(t->ar[i]->path, path) == 0 && zarchive_hold(t->ar[i]))
+         return t->ar[i];
+   }
+   return NULL;
+}
+
+/* t with add put in, or drop taken out; NULL for an empty table, and for
+ * one that could not be made (failed then says so) */
+static zarchive_shared_t *zarchive_shared_with(const zarchive_shared_t *t,
+      zarchive_t *add, const zarchive_t *drop, bool *failed)
+{
+   size_t have = t ? t->count : 0;
+   size_t i, n = 0;
+   zarchive_shared_t *next;
+   *failed = false;
+   for (i = 0; i < have; i++)
+      n += t->ar[i] != drop;
+   if (n + (add != NULL) == 0)
+      return NULL;
+   next = (zarchive_shared_t*)malloc(sizeof(*next) + n * sizeof(next->ar[0]));
+   if (!next)
+   {
+      *failed = true;
+      return NULL;
+   }
+   n = 0;
+   for (i = 0; i < have; i++)
+   {
+      if (t->ar[i] != drop)
+         next->ar[n++] = t->ar[i];
+   }
+   if (add)
+      next->ar[n++] = add;
+   next->count = n;
+   return next;
+}
+
+zarchive_t *zarchive_acquire_shared(const char *path)
+{
+   rcu_cell_t *cell = zarchive_shared_cell();
+   rcu_reader_t r;
+   zarchive_t *found;
+   zarchive_t *opened;
+   const zarchive_shared_t *t;
+   zarchive_shared_t *next;
+   bool failed;
+   if (!cell || !path)
+      return NULL;
+   /* held already: one more holder, and no turn taken */
+   found = zarchive_shared_find((const zarchive_shared_t*)rcu_read_begin(cell, &r), path);
+   rcu_read_end(&r);
+   if (found)
+      return found;
+   /* opening one can take a while: done outside a writer's turn */
+   opened = zarchive_open(path, 0, NULL, 0);
+   if (!opened)
+      return NULL;
+   retro_atomic_store_release_int(&opened->holders, 1);
+   ZARCHIVE_TEST_OPENED(path);
+   rcu_write_begin(cell);
+   t = (const zarchive_shared_t*)rcu_write_current(cell);
+   /* opened by another meanwhile: that one is shared */
+   found = zarchive_shared_find(t, path);
+   next = found ? NULL : zarchive_shared_with(t, opened, NULL, &failed);
+   if (found || failed)
+   {
+      /* the table as it was: nothing for the readers to move off */
+      rcu_write_publish(cell, (void*)t);
+      zarchive_close(opened);
+      return found;
+   }
+   free(rcu_write_publish(cell, next));
+   return opened;
+}
+
+void zarchive_release_shared(zarchive_t *ar)
+{
+   rcu_cell_t *cell;
+   zarchive_shared_t *next;
+   bool failed;
+   if (!ar)
+      return;
+   if (retro_atomic_fetch_sub_int(&ar->holders, 1) != 1)
+      return;
+   /* The last holder: none takes it now. Out of the table, and closed once
+    * every reader that may have seen it in the table has left. */
+   ZARCHIVE_TEST_LET_GO(ar);
+   cell = (rcu_cell_t*)retro_atomic_load_acquire_ptr(&zarchive_shared_cell_ptr);
+   rcu_write_begin(cell);
+   next = zarchive_shared_with((const zarchive_shared_t*)rcu_write_current(cell), NULL, ar, &failed);
+   if (failed)
+   {
+      /* no memory for a smaller table: left in it, held by none and taken
+       * by none - kept open rather than closed under a reader */
+      rcu_write_publish(cell, (void*)rcu_write_current(cell));
+      return;
+   }
+   free(rcu_write_publish(cell, next));
+   zarchive_close(ar);
+}
+
+size_t zarchive_shared_count(void)
+{
+   rcu_cell_t *cell = (rcu_cell_t*)retro_atomic_load_acquire_ptr(&zarchive_shared_cell_ptr);
+   rcu_reader_t r;
+   const zarchive_shared_t *t;
+   size_t i, n = 0;
+   if (!cell)
+      return 0;
+   t = (const zarchive_shared_t*)rcu_read_begin(cell, &r);
+   for (i = 0; t && i < t->count; i++)
+   {
+      if (retro_atomic_load_acquire_int(&t->ar[i]->holders) > 0)
+         n++;
+   }
+   rcu_read_end(&r);
+   return n;
 }

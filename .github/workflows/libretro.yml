@@ -350,6 +350,15 @@ jobs:
           make -C test/rcu_cell clean
           SANITIZER=address,undefined ./test/rcu_cell/run_tests.sh
 
+      - name: "Whole-file reads"
+        # the C (C89) under MappedFile.h: files lent from their mapping and,
+        # built without mappings, read once; missing, empty, a directory, one
+        # replaced under its name while open; plain and under ASan + UBSan
+        run: |
+          ./test/mapped_file/run_tests.sh
+          make -C test/mapped_file clean
+          SANITIZER=address,undefined ./test/mapped_file/run_tests.sh
+
       - name: "FST tables"
         # the C (C89) a volume's entries are looked up, listed and named in:
         # tables made right and made wrong, and made wrong at random, which

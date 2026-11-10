@@ -10,7 +10,7 @@ SRC := ../../src
 CXX ?= g++
 CC ?= gcc
 DEP := ../../dependencies
-FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar
+FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar -DHAVE_THREADS
 # stub/ first: ActiveSettings as the test has it
 CXXFLAGS_CORE := -iquote stub -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
@@ -26,11 +26,13 @@ include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c \
 	$(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c $(LRC)/encodings/encoding_rzstd.c \
-	$(LRC)/encodings/encoding_xxh64.c $(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c
+	$(LRC)/encodings/encoding_xxh64.c $(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c \
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := fsc_test.cpp $(SRC)/Cafe/Filesystem/fsc.cpp $(SRC)/Cafe/Filesystem/fscDeviceHostFS.cpp \
 	$(SRC)/Cafe/Filesystem/fscDeviceWuhb.cpp $(SRC)/Cafe/Filesystem/fscDeviceWua.cpp $(FILE_IO_CXX)
-# the bundle reader and the file reader under it, C89
-CORE_C_SRCS := $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(SRC)/Common/shared_file.c $(SRC)/Cafe/Filesystem/zarchive.c
+# the bundle and archive readers, the file reader under them and the cell
+# shared archives are kept in, C89
+CORE_C_SRCS := $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(SRC)/Common/shared_file.c $(SRC)/Cafe/Filesystem/zarchive.c $(RCU_C)
 
 fsc_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUHB/wuhb.h $(SRC)/Cafe/Filesystem/zarchive.h ../disc_image/romfs_image.h $(SRC)/Cafe/Filesystem/fsc.h $(SRC)/Cafe/Filesystem/fscDeviceHostFS.h $(SRC)/Cafe/RPXHash.h stub/config/ActiveSettings.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done

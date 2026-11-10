@@ -1,5 +1,5 @@
 # The core's Wii U archive reader (src/Cafe/Filesystem/zarchive.c, C89, and
-# the C++ over it in ZArchiveVFS.cpp) over
+# the C++ helpers over it in ZArchiveVFS.h) over
 # libretro-common's zar, against archives libretro-common's writer makes
 # (run_tests.sh). SANITIZER=thread or SANITIZER=address,undefined for the
 # sanitizer runs.
@@ -8,7 +8,7 @@ SRC := ../../src
 CXX ?= g++
 CC ?= gcc
 DEP := ../../dependencies
-FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_RZSTD -DENABLE_VULKAN -DHAVE_THREADS
+FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_RZSTD -DENABLE_VULKAN -DHAVE_THREADS -DZARCHIVE_TEST_HOOKS
 # what the core's precompiled header, which FileStream.h includes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
 ifneq ($(SANITIZER),)
@@ -32,7 +32,7 @@ C_SRCS := $(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c \
 	$(LRC)/time/rtime.c $(LRC)/formats/xml/rxml.c \
 	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CORE_C_SRCS := $(SRC)/Cafe/Filesystem/zarchive.c $(SRC)/Common/shared_file.c $(RCU_C)
-CXX_SRCS := zarchive_test.cpp $(SRC)/Cafe/Filesystem/ZArchiveVFS.cpp $(SRC)/util/xml/Xml.cpp
+CXX_SRCS := zarchive_test.cpp $(SRC)/util/xml/Xml.cpp
 
 zarchive_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/zarchive.h $(SRC)/Cafe/Filesystem/ZArchiveVFS.h $(SRC)/Cafe/TitleList/ParsedMetaXml.h $(SRC)/util/xml/Xml.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done

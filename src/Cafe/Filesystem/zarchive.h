@@ -79,6 +79,18 @@ bool zarchive_dir_next(zarchive_dir_t *dir, const char **name, size_t *len, zar_
 bool zarchive_dir_failed(const zarchive_dir_t *dir);
 void zarchive_dir_close(zarchive_dir_t *dir);
 
+/* The one archive open for a path, shared by whatever holds it: opened by
+ * the first to ask (two at once may both open it; one is kept, the other
+ * closed), closed when the last holder gives it back. Taking one already
+ * held, and giving one back that others hold, change only its count of
+ * holders; the table of shared archives is read without a lock and
+ * replaced whole only when an archive comes or goes (rcu_cell.h). NULL if
+ * the path cannot be read as an archive. */
+zarchive_t *zarchive_acquire_shared(const char *path);
+void zarchive_release_shared(zarchive_t *ar);
+/* shared archives held now */
+size_t zarchive_shared_count(void);
+
 RETRO_END_DECLS
 
 #endif

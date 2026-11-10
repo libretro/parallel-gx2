@@ -5,14 +5,21 @@
 // What the C++ side keeps over Wii U archives (zarchive.h): one archive
 // shared by every title that holds it, and listings taken a name at a time.
 
-// The one archive open for a path, shared by whatever holds it: opened by
-// the first to ask (two at once may both open it; one is kept), closed when
-// the last gives it back. No lock: the table of shared archives is replaced
-// whole (RcuCell).
-zarchive_t* ZArchive_AcquireShared(const fs::path& path);
-void ZArchive_ReleaseShared(zarchive_t* zar);
+// The one archive open for a path, shared by whatever holds it
+// (zarchive_acquire_shared), the path as FileStream opens one
+inline zarchive_t* ZArchive_AcquireShared(const fs::path& path)
+{
+	return zarchive_acquire_shared(FileStream::HostPath(path).c_str());
+}
+inline void ZArchive_ReleaseShared(zarchive_t* zar)
+{
+	zarchive_release_shared(zar);
+}
 // archives shared now
-size_t ZArchive_SharedCount();
+inline size_t ZArchive_SharedCount()
+{
+	return zarchive_shared_count();
+}
 
 // fn(name, node) for each entry of the directory at path, in name order;
 // false when the directory could not be listed. Nothing allocated: name is

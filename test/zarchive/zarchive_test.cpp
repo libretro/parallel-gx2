@@ -34,6 +34,7 @@
 
 
 #include <atomic>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -461,6 +462,24 @@ static void TestUnordered()
 	fs::remove(path);
 }
 
+// zarchive.c's test hooks (ZARCHIVE_TEST_HOOKS): run once each when set
+static std::function<void(const char*)> s_onOpened;
+static std::function<void(const zarchive_t*)> s_onLetGo;
+extern "C" void zarchive_test_opened(const char* path)
+{
+	auto fn = std::move(s_onOpened);
+	s_onOpened = nullptr;
+	if (fn)
+		fn(path);
+}
+extern "C" void zarchive_test_let_go(const zarchive_t* ar)
+{
+	auto fn = std::move(s_onLetGo);
+	s_onLetGo = nullptr;
+	if (fn)
+		fn(ar);
+}
+
 static void TestShared(const fs::path& path, const std::vector<TestFile>& files)
 {
 	CHECK(ZArchive_SharedCount() == 0);
@@ -516,6 +535,35 @@ static void TestShared(const fs::path& path, const std::vector<TestFile>& files)
 	for (std::thread& t : threads)
 		t.join();
 	CHECK(bad == 0 && ZArchive_SharedCount() == 0);
+
+	// Two open it at once: the second to put it in the table finds the
+	// first's there, shares that one, and closes its own
+	{
+		zarchive_t* other = nullptr;
+		s_onOpened = [&](const char*) { other = ZArchive_AcquireShared(path); };
+		zarchive_t* mine = ZArchive_AcquireShared(path);
+		CHECK(other && mine == other && ZArchive_SharedCount() == 1);
+		ZArchive_ReleaseShared(mine);
+		CHECK(ZArchive_SharedCount() == 1 && LookUp(other, files[0].path));
+		ZArchive_ReleaseShared(other);
+		CHECK(ZArchive_SharedCount() == 0);
+	}
+	// Asked for while its last holder lets it go, and before it leaves the
+	// table: not taken back from the one closing it, but opened anew
+	{
+		zarchive_t* first = ZArchive_AcquireShared(path);
+		zarchive_t* again = nullptr;
+		size_t during = 99;
+		s_onLetGo = [&](const zarchive_t*) {
+			again = ZArchive_AcquireShared(path);
+			during = ZArchive_SharedCount();
+		};
+		ZArchive_ReleaseShared(first);
+		CHECK(again && again != first && during == 1);
+		CHECK(ZArchive_SharedCount() == 1 && LookUp(again, files[1].path));
+		ZArchive_ReleaseShared(again);
+		CHECK(ZArchive_SharedCount() == 0);
+	}
 }
 
 int main()
