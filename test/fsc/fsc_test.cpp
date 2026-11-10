@@ -16,9 +16,14 @@
 //    sees the update or not, never half of it, and every table replaced is
 //    freed once nothing reads it;
 //  - a directory listed through both mounts has every name once, with the
-//    sizes and types the host's directory read gave.
+//    sizes and types the host's directory read gave;
+//  - a homebrew bundle (.wuhb) mounted: its directories list their
+//    directories and files with their sizes - a name too long for the
+//    entry cut and ended - and its files read back, mapped and not.
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/RPXHash.h"
+#include "Cafe/Filesystem/WUHB/wuhb.h"
+#include "../disc_image/romfs_image.h"
 #include "Common/FileStream.h"
 #include "Cemu/Logging/CemuLogging.h"
 
@@ -202,6 +207,53 @@ int main()
 		// nothing reads now: the next change frees every table but its own
 		CHECK(fsc_unmount("/t/", FSC_PRIORITY_PATCH));
 		CHECK(fsc_liveMountTables() == 1);
+	}
+
+	// a homebrew bundle, mounted as a title is
+	{
+		std::vector<RomfsFile> files;
+		files.push_back({"meta", "meta.xml", Bytes(300, 9)});
+		for (int i = 0; i < 9; i++)
+			files.push_back({"content", fmt::format("file{}.bin", i), Bytes(1000 + i * 777, 10 + i)});
+		files.push_back({"content", std::string(300, 'L'), Bytes(5, 30)});
+		files.push_back({"content/sub", "deep.dat", Bytes(4321, 31)});
+		const fs::path bundle = dir / "test.wuhb";
+		const std::vector<uint8> image = MakeWuhb(files);
+		CHECK(FileStream::WriteFile(bundle, image.data(), image.size()));
+		for (unsigned flags : {0u, (unsigned)WUHB_OPEN_NO_MAP})
+		{
+			wuhb_t* reader = wuhb_open(_pathToUtf8(bundle).c_str(), flags);
+			CHECK(reader != nullptr);
+			if (!reader)
+				continue;
+			CHECK(FSCDeviceWUHB_Mount("/w/", "", reader, FSC_PRIORITY_BASE));
+			sint32 st;
+			FSCVirtualFile* listing = fsc_openDirIterator("/w/content", &st);
+			CHECK(listing != nullptr);
+			std::map<std::string, std::pair<bool, uint64>> seen;
+			FSCDirEntry entry;
+			while (listing && fsc_nextDir(listing, &entry))
+				seen[std::string(entry.GetPath())] = {entry.isDirectory, entry.fileSize};
+			if (listing)
+				fsc_close(listing);
+			CHECK(seen.size() == 11);
+			CHECK(seen["sub"].first);
+			CHECK(seen["file3.bin"] == std::make_pair(false, (uint64)(1000 + 3 * 777)));
+			CHECK(seen.count(std::string(FSC_MAX_DIR_NAME_LENGTH - 1, 'L')) == 1);
+			for (const RomfsFile& f : files)
+			{
+				if (f.name.size() > 100)
+					continue;
+				std::vector<uint8> got(f.data.size() + 8, 0xEE);
+				const std::string p = "/w/" + f.dir + "/" + f.name;
+				CHECK(fsc_readFileInto(p.c_str(), got.data(), (uint32)got.size()) == (sint64)f.data.size()
+					&& memcmp(got.data(), f.data.data(), f.data.size()) == 0);
+			}
+			uint8 one[1];
+			CHECK(fsc_readFileInto("/w/content/none.bin", one, 1) == -1);
+			CHECK(fsc_unmount("/w/", FSC_PRIORITY_BASE));
+			wuhb_close(reader);
+		}
 	}
 
 	fsc_unmountAll();

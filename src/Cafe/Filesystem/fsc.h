@@ -223,7 +223,7 @@ bool FSCDeviceWUD_Mount(std::string_view mountPath, std::string_view destination
 bool FSCDeviceWUA_Mount(std::string_view mountPath, std::string_view destinationBaseDir, class ZArchive* archive, sint32 priority);
 
 // wuhb device
-bool FSCDeviceWUHB_Mount(std::string_view mountPath, std::string_view destinationBaseDir, class WUHBReader* wuhbReader, sint32 priority);
+bool FSCDeviceWUHB_Mount(std::string_view mountPath, std::string_view destinationBaseDir, struct wuhb* wuhbReader, sint32 priority);
 
 // hostFS device
 bool FSCDeviceHostFS_Mount(std::string_view mountPath, std::string_view hostTargetPath, sint32 priority);

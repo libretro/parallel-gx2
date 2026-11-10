@@ -1,6 +1,6 @@
 #include "TitleInfo.h"
 #include "Cafe/Filesystem/fscDeviceHostFS.h"
-#include "Cafe/Filesystem/WUHB/WUHBReader.h"
+#include "Cafe/Filesystem/WUHB/wuhb.h"
 #include "Cafe/Filesystem/FST/FST.h"
 #include "util/xml/Xml.h"
 #include "Common/FileStream.h"
@@ -272,9 +272,9 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 		}
 		else if (boost::iends_with(filenameStr, ".wuhb"))
 		{
-			std::unique_ptr<WUHBReader> reader{WUHBReader::FromPath(path)};
-			if(reader)
+			if (wuhb_t* reader = wuhb_open(FileStream::HostPath(path).c_str(), 0))
 			{
+				wuhb_close(reader);
 				formatOut = TitleDataFormat::WUHB;
 				pathOut = path;
 				return true;
@@ -295,9 +295,9 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 		// whose name told us nothing
 		if (fileType == CafeTitleFileType::UNKNOWN && !boost::iends_with(filenameStr, ".wuhb"))
 		{
-			std::unique_ptr<WUHBReader> reader{WUHBReader::FromPath(path)};
-			if (reader)
+			if (wuhb_t* reader = wuhb_open(FileStream::HostPath(path).c_str(), 0))
 			{
+				wuhb_close(reader);
 				formatOut = TitleDataFormat::WUHB;
 				pathOut = path;
 				return true;
@@ -460,7 +460,7 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 	{
 		if (!m_wuhbreader)
 		{
-			m_wuhbreader = WUHBReader::FromPath(m_fullPath);
+			m_wuhbreader = wuhb_open(FileStream::HostPath(m_fullPath).c_str(), 0);
 			if (!m_wuhbreader)
 				return false;
 		}
@@ -468,7 +468,7 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 		if (!r)
 		{
 			cemuLog_log(LogType::Force, "Failed to mount {} to {}", virtualPath, subfolder);
-			delete m_wuhbreader;
+			wuhb_close(m_wuhbreader);
 			m_wuhbreader = nullptr;
 			return false;
 		}
@@ -507,7 +507,7 @@ void TitleInfo::Unmount(std::string_view virtualPath)
 			if (m_wuhbreader)
 			{
 				cemu_assert_debug(m_titleFormat == TitleDataFormat::WUHB);
-				delete m_wuhbreader;
+				wuhb_close(m_wuhbreader);
 				m_wuhbreader = nullptr;
 			}
 		}

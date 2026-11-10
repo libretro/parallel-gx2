@@ -1,19 +1,19 @@
-#include "Filesystem/WUHB/WUHBReader.h"
+#include "Cafe/Filesystem/WUHB/wuhb.h"
+#include "Common/FileStream.h"
 #include "Cafe/Filesystem/fsc.h"
-#include "Cafe/Filesystem/FST/FST.h"
 
 class FSCDeviceWuhbFileCtx : public FSCVirtualFile
 {
   public:
-	FSCDeviceWuhbFileCtx(WUHBReader* reader, uint32 entryOffset, uint32 fscType)
-		: m_wuhbReader(reader), m_entryOffset(entryOffset), m_fscType(fscType)
+	FSCDeviceWuhbFileCtx(wuhb_t* reader, uint32 entryOffset, uint32 fscType)
+		: m_wuhbReader(reader), m_fscType(fscType), m_entryOffset(entryOffset)
 	{
-		cemu_assert(entryOffset != ROMFS_ENTRY_EMPTY);
-		if (fscType == FSC_TYPE_DIRECTORY)
+		cemu_assert(entryOffset != WUHB_ENTRY_EMPTY);
+		wuhb_dir_t entry;
+		if (fscType == FSC_TYPE_DIRECTORY && wuhb_dir_entry(reader, entryOffset, &entry, nullptr, 0))
 		{
-			romfs_direntry_t entry = reader->GetDirEntry(entryOffset);
-			m_dirIterOffset = entry.dirListHead;
-			m_fileIterOffset = entry.fileListHead;
+			m_dirIterOffset = entry.dir_list_head;
+			m_fileIterOffset = entry.file_list_head;
 		}
 	}
 	sint32 fscGetType() override
@@ -25,7 +25,7 @@ class FSCDeviceWuhbFileCtx : public FSCVirtualFile
 		if (m_fscType == FSC_TYPE_FILE)
 		{
 			if (id == FSC_QUERY_SIZE)
-				return m_wuhbReader->GetFileSize(m_entryOffset);
+				return wuhb_file_size(m_wuhbReader, m_entryOffset);
 			else if (id == FSC_QUERY_WRITEABLE)
 				return 0; // WUHB images are read-only
 			else
@@ -46,7 +46,7 @@ class FSCDeviceWuhbFileCtx : public FSCVirtualFile
 	{
 		if (m_fscType != FSC_TYPE_FILE)
 			return 0;
-		auto read = m_wuhbReader->ReadFromFile(m_entryOffset, m_seek, size, buffer);
+		const uint32 read = (uint32)wuhb_read_file(m_wuhbReader, m_entryOffset, m_seek, size, buffer);
 		m_seek += read;
 		return read;
 	}
@@ -64,44 +64,52 @@ class FSCDeviceWuhbFileCtx : public FSCVirtualFile
 	{
 		cemu_assert_error();
 	}
+	// each name read straight into the entry, nothing allocated
 	bool fscDirNext(FSCDirEntry* dirEntry) override
 	{
-		if (m_dirIterOffset != ROMFS_ENTRY_EMPTY)
+		while (m_dirIterOffset != WUHB_ENTRY_EMPTY)
 		{
-			romfs_direntry_t entry = m_wuhbReader->GetDirEntry(m_dirIterOffset);
-			m_dirIterOffset = entry.listNext;
-			if(entry.name_size > 0)
+			wuhb_dir_t entry;
+			if (!wuhb_dir_entry(m_wuhbReader, m_dirIterOffset, &entry, dirEntry->path, sizeof(dirEntry->path)))
+			{
+				m_dirIterOffset = WUHB_ENTRY_EMPTY;
+				break;
+			}
+			m_dirIterOffset = entry.list_next;
+			if (entry.name_size > 0)
 			{
 				dirEntry->isDirectory = true;
 				dirEntry->isFile = false;
 				dirEntry->fileSize = 0;
-				std::strncpy(dirEntry->path, entry.name.c_str(), FSC_MAX_DIR_NAME_LENGTH);
 				return true;
 			}
 		}
-		if (m_fileIterOffset != ROMFS_ENTRY_EMPTY)
+		while (m_fileIterOffset != WUHB_ENTRY_EMPTY)
 		{
-			romfs_fentry_t entry = m_wuhbReader->GetFileEntry(m_fileIterOffset);
-			m_fileIterOffset = entry.listNext;
-			if(entry.name_size > 0)
+			wuhb_file_t entry;
+			if (!wuhb_file_entry(m_wuhbReader, m_fileIterOffset, &entry, dirEntry->path, sizeof(dirEntry->path)))
+			{
+				m_fileIterOffset = WUHB_ENTRY_EMPTY;
+				break;
+			}
+			m_fileIterOffset = entry.list_next;
+			if (entry.name_size > 0)
 			{
 				dirEntry->isDirectory = false;
 				dirEntry->isFile = true;
-				dirEntry->fileSize = entry.size;
-				std::strncpy(dirEntry->path, entry.name.c_str(), FSC_MAX_DIR_NAME_LENGTH);
+				dirEntry->fileSize = (uint32)entry.size;
 				return true;
 			}
 		}
-
 		return false;
 	}
 
   private:
-	WUHBReader* m_wuhbReader{};
+	wuhb_t* m_wuhbReader{};
 	uint32 m_fscType;
-	uint32 m_entryOffset = ROMFS_ENTRY_EMPTY;
-	uint32 m_dirIterOffset = ROMFS_ENTRY_EMPTY;
-	uint32 m_fileIterOffset = ROMFS_ENTRY_EMPTY;
+	uint32 m_entryOffset = WUHB_ENTRY_EMPTY;
+	uint32 m_dirIterOffset = WUHB_ENTRY_EMPTY;
+	uint32 m_fileIterOffset = WUHB_ENTRY_EMPTY;
 	uint64 m_seek = 0;
 };
 
@@ -109,24 +117,25 @@ class fscDeviceWUHB : public fscDeviceC
 {
 	FSCVirtualFile* fscDeviceOpenByPath(std::string_view path, FSC_ACCESS_FLAG accessFlags, void* ctx, sint32* fscStatus) override
 	{
-		WUHBReader* reader = (WUHBReader*)ctx;
+		wuhb_t* reader = (wuhb_t*)ctx;
 		cemu_assert_debug(!HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::WRITE_PERMISSION)); // writing to WUHB is not supported
 
 		bool isFile;
-		uint32 table_offset = ROMFS_ENTRY_EMPTY;
+		uint32 table_offset = WUHB_ENTRY_EMPTY;
 
-		if (table_offset == ROMFS_ENTRY_EMPTY && HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
+		// the path looked up where it lies: nothing allocated
+		if (table_offset == WUHB_ENTRY_EMPTY && HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
 		{
-			table_offset = reader->Lookup(path, false);
+			table_offset = wuhb_lookup(reader, path.data(), path.size(), false);
 			isFile = false;
 		}
-		if (table_offset == ROMFS_ENTRY_EMPTY && HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE))
+		if (table_offset == WUHB_ENTRY_EMPTY && HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE))
 		{
-			table_offset = reader->Lookup(path, true);
+			table_offset = wuhb_lookup(reader, path.data(), path.size(), true);
 			isFile = true;
 		}
 
-		if (table_offset == ROMFS_ENTRY_EMPTY)
+		if (table_offset == WUHB_ENTRY_EMPTY)
 		{
 			*fscStatus = FSC_STATUS_FILE_NOT_FOUND;
 			return nullptr;
@@ -145,7 +154,7 @@ class fscDeviceWUHB : public fscDeviceC
 	}
 };
 
-bool FSCDeviceWUHB_Mount(std::string_view mountPath, std::string_view destinationBaseDir, WUHBReader* wuhbReader, sint32 priority)
+bool FSCDeviceWUHB_Mount(std::string_view mountPath, std::string_view destinationBaseDir, wuhb_t* wuhbReader, sint32 priority)
 {
 	return fsc_mount(mountPath, destinationBaseDir, &fscDeviceWUHB::instance(), wuhbReader, priority) == FSC_STATUS_OK;
 }

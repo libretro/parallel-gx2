@@ -26,13 +26,13 @@ FLAGS += $(FILE_IO_FLAGS)
 # filestream only: FileStream is the test's own, counting reads
 C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
-CORE_C_SRCS := $(DISC_IMAGE_C)
+CORE_C_SRCS := $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/WUHB/wuhb.c
 CXX_SRCS := disc_image_test.cpp \
 	$(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp $(SRC)/util/crypto/aes128.cpp \
-	$(SRC)/Common/cpu_features.cpp $(SRC)/Cafe/Filesystem/WUHB/WUHBReader.cpp
+	$(SRC)/Common/cpu_features.cpp
 
 disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Common/shared_file.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h \
-	$(SRC)/Cafe/Filesystem/WUHB/WUHBReader.h
+	$(SRC)/Cafe/Filesystem/WUHB/wuhb.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@

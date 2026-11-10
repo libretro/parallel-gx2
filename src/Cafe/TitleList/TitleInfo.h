@@ -309,7 +309,7 @@ private:
 	std::vector<std::pair<sint32, std::string>> m_mountpoints;
 	class FSTVolume* m_wudVolume{};
 	class ZArchive* m_zarchive{};
-	class WUHBReader* m_wuhbreader{};
+	struct wuhb* m_wuhbreader{};
 	// xml info
 	bool m_hasParsedXmlFiles{ false };
 	ParsedMetaXml* m_parsedMetaXml{};

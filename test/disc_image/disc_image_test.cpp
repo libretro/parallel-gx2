@@ -31,7 +31,8 @@
 #include "Cafe/Filesystem/FST/FSTDataSource.h"
 #include "Common/FileStream.h"
 #include "util/crypto/aes128.h"
-#include "Cafe/Filesystem/WUHB/WUHBReader.h"
+#include "Cafe/Filesystem/WUHB/wuhb.h"
+#include "romfs_image.h"
 #include "Cemu/Logging/CemuLogging.h"
 
 #include <streams/file_stream.h>
@@ -54,7 +55,7 @@ std::string FileStream::HostPath(const fs::path& path)
 	return path.string();
 }
 
-// --- what WUHBReader takes from the rest of the core --------------------
+// --- what the C++ under test takes from the rest of the core -------------
 
 uint64 s_loggingFlagMask = 0;
 
@@ -450,139 +451,6 @@ static void TestAppSource()
 
 // --- a homebrew bundle -------------------------------------------------------
 
-static void PutBE(std::vector<uint8>& v, size_t at, uint64 x, int bytes)
-{
-	for (int i = 0; i < bytes; i++)
-		v[at + i] = (uint8)(x >> (8 * (bytes - 1 - i)));
-}
-
-static uint32 RomfsHash(uint32 parent, std::string_view name)
-{
-	uint32 hash = parent ^ 123456789;
-	for (char ch : name)
-	{
-		unsigned char c = (unsigned char)ch;
-		if (c >= 'a' && c <= 'z')
-			c = c + 'A' - 'a';
-		hash = (hash >> 5) | (hash << 27);
-		hash ^= c;
-	}
-	return hash;
-}
-
-struct RomfsFile
-{
-	std::string dir;  // "" for the root, else "a/b"
-	std::string name;
-	std::vector<uint8> data;
-};
-
-// A RomFS image as a .wuhb holds one: the root, content, content/sub and
-// meta; hash tables of three buckets, so that chains collide. With loop, the
-// last entry of every file chain points back at the chain's first.
-static std::vector<uint8> MakeWuhb(const std::vector<RomfsFile>& files, bool loop = false)
-{
-	struct Dir { std::string path, name; uint32 parent; uint32 offset; uint32 hash = 0xFFFFFFFF; };
-	std::vector<Dir> dirs = {{"", "", 0}, {"content", "content", 0}, {"content/sub", "sub", 1}, {"meta", "meta", 0}};
-	const uint32 BUCKETS = 3;
-	auto padded = [](size_t n) { return (n + 3) & ~(size_t)3; };
-	uint32 at = 0;
-	for (Dir& d : dirs)
-	{
-		d.offset = at;
-		at += (uint32)(24 + padded(d.name.size()));
-	}
-	const uint32 dirTableSize = at;
-	auto dirIndex = [&](const std::string& path) {
-		for (size_t i = 0; i < dirs.size(); i++)
-			if (dirs[i].path == path)
-				return (uint32)i;
-		return 0u;
-	};
-	std::vector<uint32> fileOffset(files.size()), fileData(files.size());
-	at = 0;
-	uint32 dataAt = 0;
-	for (size_t i = 0; i < files.size(); i++)
-	{
-		fileOffset[i] = at;
-		at += (uint32)(32 + padded(files[i].name.size()));
-		fileData[i] = dataAt;
-		dataAt += (uint32)((files[i].data.size() + 31) & ~(size_t)31);
-	}
-	const uint32 fileTableSize = at;
-	// buckets: heads, and each entry's next in its chain
-	std::vector<uint32> dirBucket(BUCKETS, 0xFFFFFFFF), fileBucket(BUCKETS, 0xFFFFFFFF);
-	std::vector<uint32> fileNext(files.size(), 0xFFFFFFFF);
-	for (size_t i = dirs.size(); i-- > 0;)
-	{
-		const uint32 b = RomfsHash(dirs[dirs[i].parent].offset, dirs[i].name) % BUCKETS;
-		dirs[i].hash = dirBucket[b];
-		dirBucket[b] = dirs[i].offset;
-	}
-	for (size_t i = files.size(); i-- > 0;)
-	{
-		const uint32 b = RomfsHash(dirs[dirIndex(files[i].dir)].offset, files[i].name) % BUCKETS;
-		fileNext[i] = fileBucket[b];
-		fileBucket[b] = fileOffset[i];
-	}
-	if (loop)
-	{
-		for (size_t i = 0; i < files.size(); i++)
-			if (fileNext[i] == 0xFFFFFFFF)
-			{
-				const uint32 b = RomfsHash(dirs[dirIndex(files[i].dir)].offset, files[i].name) % BUCKETS;
-				fileNext[i] = fileBucket[b];
-			}
-	}
-
-	const size_t header = 0x50;
-	const size_t dirHash = header, dirTable = dirHash + BUCKETS * 4;
-	const size_t fileHash = dirTable + dirTableSize, fileTable = fileHash + BUCKETS * 4;
-	const size_t partition = (fileTable + fileTableSize + 63) & ~(size_t)63;
-	std::vector<uint8> img(partition + dataAt);
-	memcpy(img.data(), "WUHB", 4);
-	PutBE(img, 4, header, 4);
-	const uint64 fields[] = {dirHash, BUCKETS * 4, dirTable, dirTableSize, fileHash, BUCKETS * 4, fileTable, fileTableSize, partition};
-	for (int i = 0; i < 9; i++)
-		PutBE(img, 8 + 8 * i, fields[i], 8);
-	for (uint32 b = 0; b < BUCKETS; b++)
-	{
-		PutBE(img, dirHash + 4 * b, dirBucket[b], 4);
-		PutBE(img, fileHash + 4 * b, fileBucket[b], 4);
-	}
-	for (const Dir& d : dirs)
-	{
-		const size_t e = dirTable + d.offset;
-		PutBE(img, e, dirs[d.parent].offset, 4);
-		PutBE(img, e + 4, 0xFFFFFFFF, 4); // sibling
-		PutBE(img, e + 8, 0xFFFFFFFF, 4); // child
-		PutBE(img, e + 12, 0xFFFFFFFF, 4);
-		PutBE(img, e + 16, d.hash, 4);
-		PutBE(img, e + 20, d.name.size(), 4);
-		memcpy(img.data() + e + 24, d.name.data(), d.name.size());
-	}
-	// each directory's first file, for a listing
-	for (size_t i = files.size(); i-- > 0;)
-	{
-		const size_t e = dirTable + dirs[dirIndex(files[i].dir)].offset;
-		const uint32 head = (uint32)img[e + 12] << 24 | (uint32)img[e + 13] << 16 | (uint32)img[e + 14] << 8 | img[e + 15];
-		PutBE(img, fileTable + fileOffset[i] + 4, head, 4);
-		PutBE(img, e + 12, fileOffset[i], 4);
-	}
-	for (size_t i = 0; i < files.size(); i++)
-	{
-		const size_t e = fileTable + fileOffset[i];
-		PutBE(img, e, dirs[dirIndex(files[i].dir)].offset, 4);
-		PutBE(img, e + 8, fileData[i], 8);
-		PutBE(img, e + 16, files[i].data.size(), 8);
-		PutBE(img, e + 24, fileNext[i], 4);
-		PutBE(img, e + 28, files[i].name.size(), 4);
-		memcpy(img.data() + e + 32, files[i].name.data(), files[i].name.size());
-		if (!files[i].data.empty())
-			memcpy(img.data() + partition + fileData[i], files[i].data.data(), files[i].data.size());
-	}
-	return img;
-}
 
 static void TestWuhb()
 {
@@ -607,59 +475,123 @@ static void TestWuhb()
 
 	for (bool map : {true, false})
 	{
-		std::unique_ptr<WUHBReader> reader(WUHBReader::FromPath(path, map));
+		wuhb_t* reader = wuhb_open(path.string().c_str(), map ? 0 : WUHB_OPEN_NO_MAP);
 		CHECK(reader != nullptr);
 		if (!reader)
 			continue;
-		CHECK(reader->IsMapped() == map);
+		CHECK(wuhb_is_mapped(reader) == map);
+		auto Lookup = [&](const std::string& p, bool isFile) { return wuhb_lookup(reader, p.data(), p.size(), isFile); };
+		auto FileName = [&](uint32 e) { wuhb_file_t f; char n[256]; return wuhb_file_entry(reader, e, &f, n, sizeof(n)) ? std::string(n) : std::string("?"); };
+		auto DirName = [&](uint32 e) { wuhb_dir_t d; char n[256]; return wuhb_dir_entry(reader, e, &d, n, sizeof(n)) ? std::string(n) : std::string("?"); };
 		bool all = true;
 		std::vector<uint8> got(80000);
 		for (const RomfsFile& f : files)
 		{
 			const std::string p = f.dir.empty() ? f.name : f.dir + "/" + f.name;
-			const uint32 e = reader->Lookup(p, true);
-			all = all && e != ROMFS_ENTRY_EMPTY && reader->GetFileSize(e) == f.data.size();
-			if (e == ROMFS_ENTRY_EMPTY)
+			const uint32 e = Lookup(p, true);
+			all = all && e != WUHB_ENTRY_EMPTY && wuhb_file_size(reader, e) == f.data.size();
+			if (e == WUHB_ENTRY_EMPTY)
 				continue;
-			all = all && reader->Lookup("/" + p, true) == e;
-			// a name it begins, and one that begins it, are not it
-			all = all && reader->Lookup(p + "x", true) == ROMFS_ENTRY_EMPTY
-				&& reader->Lookup(p.substr(0, p.size() - 1), true) == ROMFS_ENTRY_EMPTY;
-			all = all && reader->ReadFromFile(e, 0, got.size(), got.data()) == f.data.size()
+			all = all && Lookup("/" + p, true) == e;
+			// a name it begins, and one that begins it, are not it; nor is
+			// it with '/' after it, or in another case
+			all = all && Lookup(p + "x", true) == WUHB_ENTRY_EMPTY
+				&& Lookup(p.substr(0, p.size() - 1), true) == WUHB_ENTRY_EMPTY
+				&& Lookup(p + "/", true) == WUHB_ENTRY_EMPTY;
+			std::string upper = p;
+			for (char& c : upper)
+				c = (char)toupper((unsigned char)c);
+			all = all && (upper == p || Lookup(upper, true) == WUHB_ENTRY_EMPTY);
+			// doubled '/' between names count as one
+			if (!f.dir.empty())
+				all = all && Lookup(f.dir + "//" + f.name, true) == e;
+			all = all && wuhb_read_file(reader, e, 0, got.size(), got.data()) == f.data.size()
 				&& (f.data.empty() || memcmp(got.data(), f.data.data(), f.data.size()) == 0);
 			for (int i = 0; i < 10 && !f.data.empty(); i++)
 			{
 				const uint64 at = rng() % f.data.size(), len = 1 + rng() % 9000;
 				const uint64 want = std::min<uint64>(len, f.data.size() - at);
-				all = all && reader->ReadFromFile(e, at, len, got.data()) == want
+				all = all && wuhb_read_file(reader, e, at, len, got.data()) == want
 					&& memcmp(got.data(), f.data.data() + at, want) == 0;
 			}
-			all = all && reader->ReadFromFile(e, f.data.size(), 1, got.data()) == 0;
-			all = all && reader->GetFileEntry(e).name == f.name;
+			all = all && wuhb_read_file(reader, e, f.data.size(), 1, got.data()) == 0;
+			all = all && FileName(e) == f.name;
+			// cut to fit, and ended
+			{
+				wuhb_file_t fe;
+				char cut[5];
+				all = all && wuhb_file_entry(reader, e, &fe, cut, sizeof(cut)) && fe.name_size == f.name.size()
+					&& std::string(cut) == f.name.substr(0, 4);
+			}
 		}
 		CHECK(all);
 		// directories, and what is not there
-		const uint32 sub = reader->Lookup("content/sub", false);
-		CHECK(sub != ROMFS_ENTRY_EMPTY && reader->GetDirEntry(sub).name == "sub");
-		CHECK(sub != ROMFS_ENTRY_EMPTY && reader->Lookup("content/sub/", false) == sub);
-		CHECK(reader->Lookup("content/file9.bin", true) == ROMFS_ENTRY_EMPTY);
-		CHECK(reader->Lookup("content/sub/file1.bin", true) == ROMFS_ENTRY_EMPTY);
-		CHECK(reader->Lookup("nope/file1.bin", true) == ROMFS_ENTRY_EMPTY);
-		CHECK(reader->Lookup("content/file1.bi", true) == ROMFS_ENTRY_EMPTY);
-		CHECK(reader->GetFileSize(0x7FFFFFF0) == 0);
-		CHECK(reader->ReadFromFile(ROMFS_ENTRY_EMPTY, 0, 1, got.data()) == 0);
+		const uint32 sub = Lookup("content/sub", false);
+		CHECK(sub != WUHB_ENTRY_EMPTY && DirName(sub) == "sub");
+		CHECK(sub != WUHB_ENTRY_EMPTY && Lookup("content/sub/", false) == sub);
+		// a directory is no file, with '/' after it or not
+		CHECK(Lookup("content/sub/", true) == WUHB_ENTRY_EMPTY && Lookup("content/sub", true) == WUHB_ENTRY_EMPTY);
+		CHECK(Lookup("content/file9.bin", true) == WUHB_ENTRY_EMPTY);
+		CHECK(Lookup("content/sub/file1.bin", true) == WUHB_ENTRY_EMPTY);
+		CHECK(Lookup("nope/file1.bin", true) == WUHB_ENTRY_EMPTY);
+		CHECK(Lookup("content/file1.bi", true) == WUHB_ENTRY_EMPTY);
+		CHECK(wuhb_file_size(reader, 0x7FFFFFF0) == 0);
+		CHECK(wuhb_read_file(reader, WUHB_ENTRY_EMPTY, 0, 1, got.data()) == 0);
+		// the root, as "", "/" and "//"
+		const uint32 root = Lookup("", false);
+		CHECK(root != WUHB_ENTRY_EMPTY && Lookup("/", false) == root && Lookup("//", false) == root);
+		// a directory lists what it holds: its directories, then its files
+		{
+			const uint32 content = Lookup("content", false);
+			wuhb_dir_t d;
+			CHECK(content != WUHB_ENTRY_EMPTY && wuhb_dir_entry(reader, content, &d, nullptr, 0));
+			std::vector<std::string> dirs, names;
+			for (uint32 e = d.dir_list_head, n = 0; e != WUHB_ENTRY_EMPTY && n < 100; n++)
+			{
+				wuhb_dir_t c;
+				char name[256];
+				if (!wuhb_dir_entry(reader, e, &c, name, sizeof(name)))
+					break;
+				dirs.push_back(name);
+				e = c.list_next;
+			}
+			for (uint32 e = d.file_list_head, n = 0; e != WUHB_ENTRY_EMPTY && n < 100; n++)
+			{
+				wuhb_file_t c;
+				char name[256];
+				if (!wuhb_file_entry(reader, e, &c, name, sizeof(name)))
+					break;
+				names.push_back(name);
+				e = c.list_next;
+			}
+			CHECK(dirs.size() == 1 && dirs[0] == "sub");
+			CHECK(names.size() == 10);
+		}
+		wuhb_close(reader);
 	}
 
 	// a chain that comes back round: what is not there is not found
 	WriteFile(path, MakeWuhb(files, true));
-	std::unique_ptr<WUHBReader> looped(WUHBReader::FromPath(path));
-	CHECK(looped && looped->Lookup("content/file5.bin", true) != ROMFS_ENTRY_EMPTY);
-	CHECK(looped && looped->Lookup("content/file9.bin", true) == ROMFS_ENTRY_EMPTY);
-	looped.reset();
+	wuhb_t* looped = wuhb_open(path.string().c_str(), 0);
+	CHECK(looped && wuhb_lookup(looped, "content/file5.bin", 17, true) != WUHB_ENTRY_EMPTY);
+	CHECK(looped && wuhb_lookup(looped, "content/file9.bin", 17, true) == WUHB_ENTRY_EMPTY);
+	wuhb_close(looped);
 	// not a bundle
 	std::vector<uint8> notOne(0x60);
 	WriteFile(path, notOne);
-	CHECK(WUHBReader::FromPath(path) == nullptr);
+	CHECK(wuhb_open(path.string().c_str(), 0) == nullptr);
+	// a header that says its hash tables hold nothing
+	{
+		std::vector<uint8> bad = MakeWuhb(files);
+		for (int i = 0; i < 8; i++)
+			bad[0x10 + i] = 0;
+		WriteFile(path, bad);
+		CHECK(wuhb_open(path.string().c_str(), 0) == nullptr);
+	}
+	// too short for its header
+	WriteFile(path, std::vector<uint8>{'W', 'U', 'H', 'B'});
+	CHECK(wuhb_open(path.string().c_str(), 0) == nullptr);
+	CHECK(wuhb_open(fs::temp_directory_path().string().c_str(), 0) == nullptr);
 	fs::remove(path);
 }
 
@@ -692,14 +624,17 @@ static void TestThreadsUnmapped()
 	wud_t* wx = wud_open(wuxPath.string().c_str(), WUD_OPEN_NO_MAP);
 	const FSTDataSourceApp::Content contents[] = {{0, 5}};
 	std::unique_ptr<FSTDataSourceApp> app(FSTDataSourceApp::Open(appDir, contents, false));
-	std::unique_ptr<WUHBReader> wuhb(WUHBReader::FromPath(wuhbPath, false));
+	wuhb_t* wuhb = wuhb_open(wuhbPath.string().c_str(), WUHB_OPEN_NO_MAP);
 	CHECK(wud && wx && app && wuhb);
 	if (wud && wx && app && wuhb)
 	{
-		CHECK(!wud_isMapped(wud) && !wud_isMapped(wx) && !wuhb->IsMapped());
+		CHECK(!wud_isMapped(wud) && !wud_isMapped(wx) && !wuhb_is_mapped(wuhb));
 		std::vector<uint32> entries;
 		for (const RomfsFile& f : files)
-			entries.push_back(wuhb->Lookup("content/" + f.name, true));
+		{
+			const std::string p = "content/" + f.name;
+			entries.push_back(wuhb_lookup(wuhb, p.data(), p.size(), true));
+		}
 		std::atomic<int> bad{0};
 		std::vector<std::thread> threads;
 		for (int t = 0; t < 4; t++)
@@ -720,7 +655,7 @@ static void TestThreadsUnmapped()
 					const size_t k = r() % files.size();
 					const std::vector<uint8>& fd = files[k].data;
 					const uint64 fat = r() % fd.size(), fn = std::min<uint64>(1 + r() % 5000, fd.size() - fat);
-					if (wuhb->ReadFromFile(entries[k], fat, fn, got.data()) != fn || memcmp(got.data(), fd.data() + fat, fn) != 0)
+					if (wuhb_read_file(wuhb, entries[k], fat, fn, got.data()) != fn || memcmp(got.data(), fd.data() + fat, fn) != 0)
 						bad++;
 				}
 			});
@@ -736,7 +671,7 @@ static void TestThreadsUnmapped()
 	if (wx)
 		wud_close(wx);
 	app.reset();
-	wuhb.reset();
+	wuhb_close(wuhb);
 	fs::remove(wudPath);
 	fs::remove(wuxPath);
 	fs::remove(wuhbPath);
