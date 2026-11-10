@@ -4,18 +4,20 @@
 //    no file I/O after it, any case, files and directories, the root included;
 //  - every file reads back whole, in chunks and at random places, through
 //    blocks kept as they are and compressed ones;
-//  - threads share one archive, each with its own ZArchiveFile, and read and
-//    look up at once (run under ThreadSanitizer by CI);
+//  - threads share one archive and read and look up at once (run under
+//    ThreadSanitizer by CI);
 //  - the archive's readers are lent and given back: on one thread every
 //    lookup, listing and read of every file shares one, and four threads
 //    at once make no more than four;
 //  - an archive shared by path: asked for twice, the same one, kept until
 //    the last holder gives it back; asked for and given back by four threads
 //    at once, never more than one for the path, and none once all are back;
-//  - an archive that maps is read from its mapping alone: once open, no
-//    lookup, listing or read of any file opens a stream or reads one; one
-//    that does not map (FileStream refusing, as a frontend's VFS file does)
-//    reads the same through streams of its own;
+//  - an archive that maps is read from its mapping alone: no lookup,
+//    listing or read of any file opens a stream; one that does not map (as
+//    a frontend's VFS file does not) reads the same through the stream it
+//    was opened with on one thread, and no more than one a thread on four;
+//  - a listing taken a name at a time and given up halfway gives its reader
+//    back; a path too long for a listing or a lookup is none;
 //  - an archive that is not one, or is cut short, does not open, and says
 //    what it found instead (the reason the user is shown);
 //  - a title's meta.xml as Breath of the Wild's (a BOM, twelve languages,
@@ -25,12 +27,11 @@
 //    Wild's .wua holds its meta/ (meta.xml first and last, the rest unsorted
 //    between): every name is found, the first of the two the one a lookup
 //    gives, as Cemu's reader takes it.
-// FileStream is the one below, over libretro-common's filestream as the core's
-// is, counting what the reader opens and reads.
+// The reader is C (zarchive.c, over shared_file.c), built as the C89 lane
+// builds it; the shared table and the listing helpers are the C++ over it.
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 #include "Cafe/TitleList/ParsedMetaXml.h"
 
-#include <streams/file_stream.h>
 
 #include <atomic>
 #include <cstdio>
@@ -42,59 +43,29 @@ static int s_failures = 0;
 #define CHECK(cond) \
 	do { if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
 
-// --- the stream ----------------------------------------------------------
+// --- the archive, as the C++ above it uses one ---------------------------
 
-static std::atomic<uint32> s_opens{0};
-static std::atomic<uint32> s_reads{0};
-static bool s_noMap = false;
-
-FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
+// as the core's, but for a case-insensitive search the test does not need
+std::string FileStream::HostPath(const fs::path& path)
 {
-	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-	if (!f)
-		return nullptr;
-	s_opens++;
-	return new FileStream(f);
+	return path.string();
 }
 
-FileStream* FileStream::openFileMapped(const fs::path& path)
+static ZArchivePtr Open(const fs::path& path, bool map = true, std::string* whyNot = nullptr)
 {
-	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ,
-		s_noMap ? RETRO_VFS_FILE_ACCESS_HINT_NONE : RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS);
-	if (!f)
-		return nullptr;
-	s_opens++;
-	return new FileStream(f);
+	char why[512];
+	ZArchivePtr zar(zarchive_open(path.string().c_str(), map ? 0 : ZARCHIVE_OPEN_NO_MAP, why, sizeof(why)));
+	if (!zar && whyNot)
+		*whyNot = why;
+	return zar;
 }
 
-std::span<const uint8> FileStream::MappedSpan()
+static std::optional<zar_file_t> LookUp(const zarchive_t* zar, std::string_view path)
 {
-	int64_t len = 0;
-	const uint8_t* map = filestream_get_mapped_ptr(m_file, &len);
-	return map && len > 0 ? std::span<const uint8>(map, (size_t)len) : std::span<const uint8>();
-}
-
-FileStream::~FileStream()
-{
-	filestream_close(m_file);
-}
-
-uint64 FileStream::GetSize()
-{
-	const int64_t size = filestream_get_size(m_file);
-	return size < 0 ? 0 : (uint64)size;
-}
-
-void FileStream::SetPosition(uint64 pos)
-{
-	filestream_seek(m_file, (int64_t)pos, RETRO_VFS_SEEK_POSITION_START);
-}
-
-uint32 FileStream::readData(void* data, uint32 length)
-{
-	s_reads++;
-	const int64_t n = filestream_read(m_file, data, length);
-	return n < 0 ? 0 : (uint32)n;
+	zar_file_t n;
+	if (!zarchive_lookup(zar, path.data(), path.size(), &n))
+		return std::nullopt;
+	return n;
 }
 
 // --- an archive ----------------------------------------------------------
@@ -168,53 +139,78 @@ static std::string Upper(std::string s)
 
 // --- tests -------------------------------------------------------------------
 
-static void TestIndex(const ZArchive& zar, const std::vector<TestFile>& files)
+static void TestIndex(const zarchive_t* zar, const std::vector<TestFile>& files)
 {
-	const uint32 opens = s_opens, reads = s_reads;
+	const unsigned streams = zarchive_streams_opened(zar);
 
-	std::optional<ZArchive::Node> root = zar.LookUp("");
+	std::optional<zar_file_t> root = LookUp(zar, "");
 	CHECK(root && root->dir && root->size == 2);
-	std::vector<ZArchive::DirEntry> entries;
-	CHECK(zar.ListDir("", entries) && entries.size() == 2);
+	std::vector<ZArchiveEntry> entries;
+	CHECK(ZArchive_ListDir(zar, "", entries) && entries.size() == 2);
 	CHECK(entries.size() == 2 && entries[0].name == "0005000010101a00_v0" && entries[0].node.dir);
 	CHECK(entries.size() == 2 && entries[1].name == "0005000e10101a00_v32" && entries[1].node.dir);
-	CHECK(!zar.ListDir("0005000010101a00_v0/code/app.xml", entries));
-	CHECK(!zar.ListDir("nope", entries));
+	CHECK(!ZArchive_ListDir(zar, "0005000010101a00_v0/code/app.xml", entries));
+	CHECK(!ZArchive_ListDir(zar, "nope", entries));
 
 	bool all = true;
 	for (const TestFile& f : files)
 	{
-		std::optional<ZArchive::Node> n = zar.LookUp(Upper(f.path));
+		std::optional<zar_file_t> n = LookUp(zar, Upper(f.path));
 		all = all && n && !n->dir && n->size == f.data.size();
 	}
 	CHECK(all);
-	CHECK(!zar.LookUp("0005000010101a00_v0/content/Common/File_9999.szs"));
-	CHECK(!zar.LookUp("0005000010101a00_v0/code/app.xml/x"));
+	CHECK(!LookUp(zar, "0005000010101a00_v0/content/Common/File_9999.szs"));
+	CHECK(!LookUp(zar, "0005000010101a00_v0/code/app.xml/x"));
 
-	std::optional<ZArchive::Node> common = zar.LookUp("/0005000010101a00_v0\\content/common/");
+	std::optional<zar_file_t> common = LookUp(zar, "/0005000010101a00_v0\\content/common/");
 	CHECK(common && common->dir && common->size == 1500);
 	std::string prev;
-	all = zar.ListDir("0005000010101A00_V0/content/Common", entries) && entries.size() == 1500;
-	for (const ZArchive::DirEntry& e : entries)
+	all = ZArchive_ListDir(zar, "0005000010101A00_V0/content/Common", entries) && entries.size() == 1500;
+	for (const ZArchiveEntry& e : entries)
 	{
 		// each with the size a lookup gives, in name order
-		std::optional<ZArchive::Node> n = zar.LookUp("0005000010101a00_v0/content/Common/" + e.name);
+		std::optional<zar_file_t> n = LookUp(zar, "0005000010101a00_v0/content/Common/" + e.name);
 		all = all && !e.node.dir && (prev.empty() || prev < e.name) && n && n->size == e.node.size
 			&& n->offset == e.node.offset;
 		prev = e.name;
 	}
 	CHECK(all);
 
-	// all of it from the index in memory
-	CHECK(s_opens == opens && s_reads == reads);
+	// all of it from the index in memory: no stream more
+	CHECK(zarchive_streams_opened(zar) == streams);
+
+	// a listing a name at a time, given up halfway: its reader goes back
+	{
+		zarchive_dir_t dir;
+		const char* name;
+		size_t len;
+		zar_file_t node;
+		CHECK(zarchive_dir_open(zar, &dir, "0005000010101a00_v0/content/Common", 34));
+		for (int i = 0; i < 10; i++)
+			CHECK(zarchive_dir_next(&dir, &name, &len, &node) && len == 13 && name[len] == 0);
+		zarchive_dir_close(&dir);
+		const unsigned made = zarchive_readers_made(zar);
+		CHECK(LookUp(zar, "0005000010101a00_v0/code/app.xml"));
+		CHECK(zarchive_readers_made(zar) == made);
+		// a path too long for a listing is none
+		const std::string longPath(ZARCHIVE_DIR_PATH_MAX, 'a');
+		CHECK(!zarchive_dir_open(zar, &dir, longPath.data(), longPath.size()) && !zarchive_dir_next(&dir, &name, &len, &node));
+		zarchive_dir_close(&dir);
+		CHECK(!LookUp(zar, longPath));
+	}
 }
 
-static bool ReadsBack(const ZArchive& zar, const TestFile& f, std::mt19937& rng)
+static bool ReadsBack(const zarchive_t* zar, const TestFile& f, std::mt19937& rng)
 {
-	std::optional<ZArchive::Node> n = zar.LookUp(f.path);
+	std::optional<zar_file_t> n = LookUp(zar, f.path);
 	if (!n)
 		return false;
-	ZArchiveFile file(zar, *n);
+	struct
+	{
+		const zarchive_t* zar;
+		zar_file_t node;
+		uint64 Read(uint64 offset, void* dst, uint64 size) { return zarchive_read(zar, &node, offset, dst, size); }
+	} file{zar, *n};
 	std::vector<uint8> got(f.data.size() + 16);
 	if (file.Read(0, got.data(), got.size()) != f.data.size() || !std::equal(f.data.begin(), f.data.end(), got.begin()))
 		return false;
@@ -238,7 +234,7 @@ static bool ReadsBack(const ZArchive& zar, const TestFile& f, std::mt19937& rng)
 	return file.Read(f.data.size(), got.data(), 1) == 0;
 }
 
-static void TestReads(const ZArchive& zar, const std::vector<TestFile>& files)
+static void TestReads(const zarchive_t* zar, const std::vector<TestFile>& files)
 {
 	std::mt19937 rng(99);
 	bool all = true;
@@ -247,7 +243,7 @@ static void TestReads(const ZArchive& zar, const std::vector<TestFile>& files)
 	CHECK(all);
 }
 
-static void TestThreads(const ZArchive& zar, const std::vector<TestFile>& files)
+static void TestThreads(const zarchive_t* zar, const std::vector<TestFile>& files)
 {
 	std::atomic<int> bad{0};
 	std::vector<std::thread> threads;
@@ -289,13 +285,13 @@ static void TestBroken(const fs::path& good)
 	std::string why;
 	auto says = [&](const char* what) { return why.find(what) != std::string::npos; };
 	write(bytes.size() - 1);
-	CHECK(ZArchive::Open(bad, &why) == nullptr);
+	CHECK(Open(bad, true, &why) == nullptr);
 	// cut short by one: the footer is read one octet early
 	CHECK(says("magic") && says(fmt::format("the file's: {}", bytes.size() - 1).c_str()));
 	write(100);
-	CHECK(ZArchive::Open(bad, &why) == nullptr);
+	CHECK(Open(bad, true, &why) == nullptr);
 	CHECK(says("100 bytes long"));
-	CHECK(ZArchive::Open(fs::temp_directory_path() / "parallel_gx2_no_such.wua", &why) == nullptr);
+	CHECK(Open(fs::temp_directory_path() / "parallel_gx2_no_such.wua", true, &why) == nullptr);
 	CHECK(says("could not be opened"));
 	// one whose footer is right but whose size is not the file's (as a
 	// stream reporting the wrong size would make it): both sizes are given
@@ -305,13 +301,13 @@ static void TestBroken(const fs::path& good)
 		for (int i = 0; i < 8; i++)
 			bytes[bytes.size() - 16 + i] = (uint8)(claimed >> (56 - 8 * i));
 		write(bytes.size());
-		CHECK(ZArchive::Open(bad, &why) == nullptr);
+		CHECK(Open(bad, true, &why) == nullptr);
 		CHECK(says("magic 169f52d6") && says(fmt::format("size {} (the file's: {})", claimed, bytes.size()).c_str()));
 		bytes = saved;
 	}
 	// an archive that opens leaves the reason alone
 	why = "untouched";
-	std::unique_ptr<ZArchive> ok(ZArchive::Open(good, &why));
+	ZArchivePtr ok = Open(good, true, &why);
 	CHECK(ok != nullptr && why == "untouched");
 	fs::remove(bad);
 }
@@ -434,32 +430,31 @@ static void TestUnordered()
 		std::fclose(f);
 	}
 
-	std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+	ZArchivePtr zar = Open(path);
 	CHECK(zar != nullptr);
 	if (zar)
 	{
-		std::optional<ZArchive::Node> n = zar->LookUp(std::string(meta) + "META.XML");
+		std::optional<zar_file_t> n = LookUp(zar.get(), std::string(meta) + "META.XML");
 		CHECK(n && n->size == xml.size());
 		if (n)
 		{
 			std::vector<uint8> buf(n->size);
-			ZArchiveFile file(*zar, *n);
-			CHECK(file.Read(0, buf.data(), buf.size()) == xml.size());
+			CHECK(zarchive_read(zar.get(), &*n, 0, buf.data(), buf.size()) == xml.size());
 			std::unique_ptr<ParsedMetaXml> parsed(ParsedMetaXml::Parse(buf.data(), buf.size()));
 			CHECK(parsed && parsed->GetTitleId() == 0x00050000101C9400ull);
 		}
 		// bootTvTex.tga is no more; every other name is found
-		CHECK(!zar->LookUp(std::string(meta) + "bootTvTex.tga"));
+		CHECK(!LookUp(zar.get(), std::string(meta) + "bootTvTex.tga"));
 		bool all = true;
 		for (const auto& f : files)
 			if (f.first != "bootTvTex.tga")
 			{
-				n = zar->LookUp(meta + f.first);
+				n = LookUp(zar.get(), meta + f.first);
 				all = all && n && n->size == f.second.size();
 			}
 		CHECK(all);
-		std::vector<ZArchive::DirEntry> entries;
-		CHECK(zar->ListDir(std::string(meta), entries) && entries.size() == files.size());
+		std::vector<ZArchiveEntry> entries;
+		CHECK(ZArchive_ListDir(zar.get(), std::string(meta), entries) && entries.size() == files.size());
 		CHECK(entries.size() == files.size() && entries.front().name == "USK_de.jpg" && entries.back().name == "meta.xml");
 	}
 	zar.reset();
@@ -468,40 +463,39 @@ static void TestUnordered()
 
 static void TestShared(const fs::path& path, const std::vector<TestFile>& files)
 {
-	CHECK(ZArchive::SharedCount() == 0);
-	ZArchive* a = ZArchive::AcquireShared(path);
-	const uint32 opens = s_opens;
-	ZArchive* b = ZArchive::AcquireShared(path); // not opened again
-	CHECK(a && a == b && ZArchive::SharedCount() == 1 && s_opens == opens);
-	ZArchive::ReleaseShared(a);
-	CHECK(ZArchive::SharedCount() == 1 && b->LookUp(files[0].path));
-	ZArchive::ReleaseShared(b);
-	CHECK(ZArchive::SharedCount() == 0);
-	CHECK(ZArchive::AcquireShared(fs::temp_directory_path() / "parallel_gx2_no_such.wua") == nullptr);
-	CHECK(ZArchive::SharedCount() == 0);
+	CHECK(ZArchive_SharedCount() == 0);
+	zarchive_t* a = ZArchive_AcquireShared(path);
+	zarchive_t* b = ZArchive_AcquireShared(path); // not opened again
+	CHECK(a && a == b && ZArchive_SharedCount() == 1);
+	ZArchive_ReleaseShared(a);
+	CHECK(ZArchive_SharedCount() == 1 && LookUp(b, files[0].path));
+	ZArchive_ReleaseShared(b);
+	CHECK(ZArchive_SharedCount() == 0);
+	CHECK(ZArchive_AcquireShared(fs::temp_directory_path() / "parallel_gx2_no_such.wua") == nullptr);
+	CHECK(ZArchive_SharedCount() == 0);
 
 	std::atomic<int> bad{0};
 	std::vector<std::thread> threads;
-	ZArchive* held = ZArchive::AcquireShared(path); // one kept throughout
+	zarchive_t* held = ZArchive_AcquireShared(path); // one kept throughout
 	for (int t = 0; t < 4; t++)
 	{
 		threads.emplace_back([&, t]() {
 			std::mt19937 rng(t + 11);
 			for (int i = 0; i < 50; i++)
 			{
-				ZArchive* z = ZArchive::AcquireShared(path);
-				if (!z || z != held || ZArchive::SharedCount() != 1)
+				zarchive_t* z = ZArchive_AcquireShared(path);
+				if (!z || z != held || ZArchive_SharedCount() != 1)
 					bad++;
-				if (z && !ReadsBack(*z, files[rng() % files.size()], rng))
+				if (z && !ReadsBack(z, files[rng() % files.size()], rng))
 					bad++;
-				ZArchive::ReleaseShared(z);
+				ZArchive_ReleaseShared(z);
 			}
 		});
 	}
 	for (std::thread& t : threads)
 		t.join();
-	ZArchive::ReleaseShared(held);
-	CHECK(bad == 0 && ZArchive::SharedCount() == 0);
+	ZArchive_ReleaseShared(held);
+	CHECK(bad == 0 && ZArchive_SharedCount() == 0);
 	// and with none held between: opened and deleted as they come and go
 	threads.clear();
 	for (int t = 0; t < 4; t++)
@@ -510,18 +504,18 @@ static void TestShared(const fs::path& path, const std::vector<TestFile>& files)
 			std::mt19937 rng(t + 21);
 			for (int i = 0; i < 20; i++)
 			{
-				ZArchive* z = ZArchive::AcquireShared(path);
-				if (!z || ZArchive::SharedCount() != 1)
+				zarchive_t* z = ZArchive_AcquireShared(path);
+				if (!z || ZArchive_SharedCount() != 1)
 					bad++;
-				if (z && !ReadsBack(*z, files[rng() % files.size()], rng))
+				if (z && !ReadsBack(z, files[rng() % files.size()], rng))
 					bad++;
-				ZArchive::ReleaseShared(z);
+				ZArchive_ReleaseShared(z);
 			}
 		});
 	}
 	for (std::thread& t : threads)
 		t.join();
-	CHECK(bad == 0 && ZArchive::SharedCount() == 0);
+	CHECK(bad == 0 && ZArchive_SharedCount() == 0);
 }
 
 int main()
@@ -532,25 +526,23 @@ int main()
 	const fs::path path = MakeArchive(files);
 	for (bool map : {true, false})
 	{
-		s_noMap = !map;
-		std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+		ZArchivePtr zar = Open(path, map);
 		CHECK(zar != nullptr);
 		if (!zar)
 			continue;
-		CHECK(zar->IsMapped() == map);
-		const uint32 opens = s_opens, reads = s_reads;
-		TestIndex(*zar, files);
-		TestReads(*zar, files);
-		CHECK(zar->ReadersMade() == 1);
-		TestThreads(*zar, files);
-		CHECK(zar->ReadersMade() <= 4);
-		// mapped, every octet came from the pages; else each file its stream
-		if (map)
-			CHECK(s_opens == opens && s_reads == reads);
-		else
-			CHECK(s_opens > opens && s_reads > reads);
+		CHECK(zarchive_is_mapped(zar.get()) == map);
+		CHECK(zarchive_size(zar.get()) > 0 && std::string(zarchive_path(zar.get())) == path.string());
+		TestIndex(zar.get(), files);
+		TestReads(zar.get(), files);
+		CHECK(zarchive_readers_made(zar.get()) == 1);
+		// one thread: the stream it was opened with serves every read
+		CHECK(zarchive_streams_opened(zar.get()) == (map ? 0u : 1u));
+		TestThreads(zar.get(), files);
+		CHECK(zarchive_readers_made(zar.get()) <= 4);
+		// mapped, every octet came from the pages; else no more streams
+		// than threads, shared by every file
+		CHECK(map ? zarchive_streams_opened(zar.get()) == 0 : zarchive_streams_opened(zar.get()) <= 4);
 	}
-	s_noMap = false;
 	TestShared(path, files);
 	TestBroken(path);
 	fs::remove(path);

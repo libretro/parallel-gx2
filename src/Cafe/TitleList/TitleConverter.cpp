@@ -444,7 +444,7 @@ namespace TitleConverter
 			return false;
 
 		// The archive has to be readable back, or it is not worth keeping.
-		std::unique_ptr<ZArchive> reader(ZArchive::Open(outputPathTmp));
+		ZArchivePtr reader = ZArchive_Open(outputPathTmp);
 		if (!reader)
 		{
 			error = "the archive could not be read back";
@@ -476,12 +476,13 @@ std::vector<TitleInfo> TitleConverter::TitlesInContent(const fs::path& path)
 	std::vector<TitleInfo> titles;
 	if (path.has_extension() && boost::iequals(_pathToUtf8(path.extension()), ".wua"))
 	{
-		std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
+		ZArchivePtr zar = ZArchive_Open(path);
 		if (!zar)
 			return titles;
-		std::vector<ZArchive::DirEntry> rootDir;
-		zar->ListDir("", rootDir);
-		for (const ZArchive::DirEntry& dirEntry : rootDir)
+		std::vector<ZArchiveEntry> rootDir;
+		ZArchive_ListDir(zar.get(), "", rootDir);
+		zar.reset();
+		for (const ZArchiveEntry& dirEntry : rootDir)
 		{
 			TitleId parsedId;
 			uint16 parsedVersion;

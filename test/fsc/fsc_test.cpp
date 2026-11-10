@@ -19,10 +19,16 @@
 //    sizes and types the host's directory read gave;
 //  - a homebrew bundle (.wuhb) mounted: its directories list their
 //    directories and files with their sizes - a name too long for the
-//    entry cut and ended - and its files read back, mapped and not.
+//    entry cut and ended - and its files read back, mapped and not;
+//  - a Wii U archive (.wua) mounted the same way (fscDeviceWua.cpp,
+//    zarchive.c): listed a name at a time through the device, with the
+//    sizes the archive has, and its files read back, mapped and not; a
+//    file opened as a directory and the other way round are not found.
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/RPXHash.h"
 #include "Cafe/Filesystem/WUHB/wuhb.h"
+#include "Cafe/Filesystem/zarchive.h"
+#include <formats/zar.h>
 #include "../disc_image/romfs_image.h"
 #include "Common/FileStream.h"
 #include "Cemu/Logging/CemuLogging.h"
@@ -253,6 +259,65 @@ int main()
 			CHECK(fsc_readFileInto("/w/content/none.bin", one, 1) == -1);
 			CHECK(fsc_unmount("/w/", FSC_PRIORITY_BASE));
 			wuhb_close(reader);
+		}
+	}
+
+	// a Wii U archive, mounted as a title in one is
+	{
+		struct Entry { std::string path; std::vector<uint8> data; };
+		std::vector<Entry> entries = {
+			{"0005000010101a00_v0/meta/meta.xml", Bytes(500, 40)},
+			{"0005000010101a00_v0/content/a.bin", Bytes(70000, 41)},
+			{"0005000010101a00_v0/content/b.bin", Bytes(3, 42)},
+			{"0005000010101a00_v0/content/empty.bin", {}},
+			{"0005000010101a00_v0/content/sub/deep.bin", Bytes(123457, 43)},
+		};
+		const fs::path archive = dir / "test.wua";
+		FILE* out = std::fopen(_pathToUtf8(archive).c_str(), "wb");
+		CHECK(out != nullptr);
+		zar_writer_t* w = zar_writer_new([](void* ud, const void* data, size_t len) {
+			return (int)(std::fwrite(data, 1, len, (FILE*)ud) == len);
+		}, out, 3);
+		for (const Entry& e : entries)
+		{
+			CHECK(zar_writer_file(w, e.path.c_str()) == ZAR_OK);
+			CHECK(zar_writer_append(w, e.data.data(), e.data.size()) == ZAR_OK);
+		}
+		CHECK(zar_writer_finish(w) == ZAR_OK);
+		zar_writer_free(w);
+		std::fclose(out);
+		for (unsigned flags : {0u, (unsigned)ZARCHIVE_OPEN_NO_MAP})
+		{
+			zarchive_t* zar = zarchive_open(_pathToUtf8(archive).c_str(), flags, nullptr, 0);
+			CHECK(zar != nullptr);
+			if (!zar)
+				continue;
+			CHECK(FSCDeviceWUA_Mount("/z/", "0005000010101a00_v0/", zar, FSC_PRIORITY_BASE));
+			sint32 st;
+			FSCVirtualFile* listing = fsc_openDirIterator("/z/content", &st);
+			CHECK(listing != nullptr);
+			std::map<std::string, std::pair<bool, uint64>> seen;
+			FSCDirEntry entry;
+			while (listing && fsc_nextDir(listing, &entry))
+				seen[std::string(entry.GetPath())] = {entry.isDirectory, entry.fileSize};
+			if (listing)
+				fsc_close(listing);
+			CHECK(seen.size() == 4);
+			CHECK(seen["sub"].first);
+			CHECK(seen["a.bin"] == std::make_pair(false, (uint64)70000));
+			CHECK(seen["empty.bin"] == std::make_pair(false, (uint64)0));
+			for (const Entry& e : entries)
+			{
+				std::vector<uint8> got(e.data.size() + 8, 0xEE);
+				const std::string p = "/z/" + e.path.substr(e.path.find('/') + 1);
+				CHECK(fsc_readFileInto(p.c_str(), got.data(), (uint32)got.size()) == (sint64)e.data.size()
+					&& (e.data.empty() || memcmp(got.data(), e.data.data(), e.data.size()) == 0));
+			}
+			// a directory is no file, and a file no directory
+			CHECK(fsc_open("/z/content/sub", FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &st) == nullptr);
+			CHECK(fsc_openDirIterator("/z/content/a.bin", &st) == nullptr);
+			CHECK(fsc_unmount("/z/", FSC_PRIORITY_BASE));
+			zarchive_close(zar);
 		}
 	}
 

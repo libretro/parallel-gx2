@@ -1,109 +1,70 @@
 #pragma once
+#include "Cafe/Filesystem/zarchive.h"
 #include "Common/FileStream.h"
-#include <formats/zar.h>
 
-#include <atomic>
+// What the C++ side keeps over Wii U archives (zarchive.h): one archive
+// shared by every title that holds it, and listings taken a name at a time.
 
-// A Wii U archive (.wua, and Miiverse's OfflineDB.zar) read with
-// libretro-common's zar, opened the way the rest of Cemu opens a game image:
-// through FileStream, so an archive the host application hands over - an
-// Android content:// URI behind SAF, say - reads like any other file.
-//
-// The archive is mapped where it can be, once, for as long as it is open:
-// lookups and listings read the index where it lies, and a file's octets go
-// from the mapping straight to where the read wants them - a block kept as
-// it is copied once, a compressed one decoded from the pages - with no
-// stream, no seek and nothing shared but the pages. Where it cannot be
-// mapped (a file only the frontend's VFS reaches, or one too big for the
-// address space) the index - everything past the blocks: records, names,
-// tree and footer - is read into memory once on opening, and each
-// ZArchiveFile reads its blocks through a stream of its own. Either way
-// nothing changes after opening, so any number of threads look up, list
-// and read at once, each with a zar_t of its own: lent from a pool the
-// archive keeps, with no lock, and given back after the operation, so a
-// lookup or a read makes no reader - and no Zstandard decoder - of its own
-// once the pool has one free, and a block decoded for one file is there for
-// the next read that wants it.
-class ZArchive
+// The one archive open for a path, shared by whatever holds it: opened by
+// the first to ask (two at once may both open it; one is kept), closed when
+// the last gives it back. No lock: the table of shared archives is replaced
+// whole (RcuCell).
+zarchive_t* ZArchive_AcquireShared(const fs::path& path);
+void ZArchive_ReleaseShared(zarchive_t* zar);
+// archives shared now
+size_t ZArchive_SharedCount();
+
+// fn(name, node) for each entry of the directory at path, in name order;
+// false when the directory could not be listed. Nothing allocated: name is
+// valid during the call.
+template<typename TFn>
+bool ZArchive_ForEachEntry(const zarchive_t* zar, std::string_view path, TFn fn)
 {
-public:
-	using Node = zar_file_t;
-
-	struct DirEntry
+	zarchive_dir_t dir;
+	if (!zarchive_dir_open(zar, &dir, path.data(), path.size()))
 	{
-		std::string name;
-		Node node;
-	};
+		zarchive_dir_close(&dir);
+		return false;
+	}
+	const char* name;
+	size_t len;
+	zar_file_t node;
+	while (zarchive_dir_next(&dir, &name, &len, &node))
+		fn(std::string_view(name, len), node);
+	const bool ok = !zarchive_dir_failed(&dir);
+	zarchive_dir_close(&dir);
+	return ok;
+}
 
-	// nullptr if it cannot be read as an archive, and then in @whyNot, if
-	// given, what was found instead
-	static ZArchive* Open(const fs::path& path, std::string* whyNot = nullptr);
-	// The one archive open for a path, shared by whatever holds it: opened by
-	// the first to ask (two at once may both open it; one is kept), deleted
-	// when the last gives it back. No lock: the table of shared archives is
-	// replaced whole (RcuCell).
-	static ZArchive* AcquireShared(const fs::path& path);
-	static void ReleaseShared(ZArchive* zar);
-	// archives shared now
-	static size_t SharedCount();
-	~ZArchive();
-	ZArchive(const ZArchive&) = delete;
-	ZArchive& operator=(const ZArchive&) = delete;
-
-	// A file or a directory; the empty path is the root
-	std::optional<Node> LookUp(std::string_view path) const;
-	// A directory's entries, in name order
-	bool ListDir(std::string_view path, std::vector<DirEntry>& entries) const;
-
-	const fs::path& GetPath() const { return m_path; }
-	uint64 GetSize() const { return m_size; }
-
-	// how many readers have been made, the pool's first included
-	uint32 ReadersMade() const { return m_readersMade.load(std::memory_order_relaxed); }
-
-	// whether the octets are lent from the archive's mapping, so that a
-	// file reads with no stream
-	bool IsMapped() const { return m_mapped != nullptr; }
-
-	// What a reader asked for: from the mapping, from the index in memory,
-	// or from @stream
-	size_t Supply(const zar_request_t& req, FileStream* stream) const;
-
-private:
-	friend class ZArchiveFile;
-	ZArchive() = default;
-	zar_t* NewReader() const;
-	// a reader opened on the archive: a free one from the pool, or a new one
-	zar_t* AcquireReader() const;
-	// back to the pool, or freed when the pool is full
-	void ReleaseReader(zar_t* z) const;
-
-	static constexpr size_t READER_POOL = 8;
-	mutable std::atomic<zar_t*> m_readers[READER_POOL]{};
-	mutable std::atomic<uint32> m_readersMade{0};
-
-	fs::path m_path;
-	uint64 m_size{};
-	uint64 m_indexOffset{};
-	std::vector<uint8> m_index;            // unmapped only
-	std::unique_ptr<FileStream> m_mapping;
-	const uint8* m_mapped{};               // m_size octets while m_mapping lives
-};
-
-class ZArchiveFile
+// A directory's entries collected, for a scan that holds on to them (the
+// title list, a title's detection); a game's own listings go a name at a
+// time (fscDeviceWua) and allocate nothing
+struct ZArchiveEntry
 {
-public:
-	ZArchiveFile(const ZArchive& archive, const ZArchive::Node& file) : m_archive(archive), m_file(file) {}
-	~ZArchiveFile();
-	ZArchiveFile(const ZArchiveFile&) = delete;
-	ZArchiveFile& operator=(const ZArchiveFile&) = delete;
-
-	uint64 GetSize() const { return m_file.size; }
-	// Octets read: fewer than @size only at the file's end or on an error
-	uint64 Read(uint64 offset, void* buffer, uint64 size);
-
-private:
-	const ZArchive& m_archive;
-	ZArchive::Node m_file;
-	std::unique_ptr<FileStream> m_stream;  // unmapped only
+	std::string name;
+	zar_file_t node;
 };
+
+inline bool ZArchive_ListDir(const zarchive_t* zar, std::string_view path, std::vector<ZArchiveEntry>& entries)
+{
+	entries.clear();
+	return ZArchive_ForEachEntry(zar, path, [&](std::string_view name, const zar_file_t& node) {
+		entries.push_back({std::string(name), node});
+	});
+}
+
+struct ZArchiveCloser
+{
+	void operator()(zarchive_t* zar) const { zarchive_close(zar); }
+};
+using ZArchivePtr = std::unique_ptr<zarchive_t, ZArchiveCloser>;
+
+// An archive opened for one use, the path as FileStream opens one
+inline ZArchivePtr ZArchive_Open(const fs::path& path, std::string* whyNot = nullptr)
+{
+	char why[512];
+	ZArchivePtr zar(zarchive_open(FileStream::HostPath(path).c_str(), 0, why, sizeof(why)));
+	if (!zar && whyNot)
+		*whyNot = why;
+	return zar;
+}

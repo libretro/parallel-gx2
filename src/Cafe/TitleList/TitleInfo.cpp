@@ -223,22 +223,22 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 			// a Wii U archive file can contain multiple titles but TitleInfo only maps to one
 			// we use the first base title that we find. This is the most intuitive behavior when someone launches "game.wua"
 			std::string whyNot;
-			std::unique_ptr<ZArchive> zar(ZArchive::Open(path, &whyNot));
-			std::vector<ZArchive::DirEntry> rootDir;
+			ZArchivePtr zar = ZArchive_Open(path, &whyNot);
+			std::vector<ZArchiveEntry> rootDir;
 			if (!zar)
 			{
 				m_invalidDetail = "not a Wii U archive: " + whyNot;
 				SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
 				return false;
 			}
-			if (!zar->ListDir("", rootDir))
+			if (!ZArchive_ListDir(zar.get(), "", rootDir))
 			{
 				m_invalidDetail = "the archive's root directory could not be read";
 				SetInvalidReason(InvalidReason::UNKNOWN_FORMAT);
 				return false;
 			}
 			bool foundBase = false;
-			for (const ZArchive::DirEntry& dirEntry : rootDir)
+			for (const ZArchiveEntry& dirEntry : rootDir)
 			{
 				if (!dirEntry.node.dir)
 					continue;
@@ -444,7 +444,7 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 	{
 		if (!m_zarchive)
 		{
-			m_zarchive = ZArchive::AcquireShared(m_fullPath);
+			m_zarchive = ZArchive_AcquireShared(m_fullPath);
 			if (!m_zarchive)
 				return false;
 		}
@@ -452,7 +452,13 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 		if (!r)
 		{
 			cemuLog_log(LogType::Force, "Failed to mount {} to {}", virtualPath, subfolder);
-			ZArchive::ReleaseShared(m_zarchive);
+			// given back only if no other mount holds it, and then forgotten:
+			// the next mount would have used it after it was closed
+			if (m_mountpoints.empty())
+			{
+				ZArchive_ReleaseShared(m_zarchive);
+				m_zarchive = nullptr;
+			}
 			return false;
 		}
 	}
@@ -468,8 +474,12 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 		if (!r)
 		{
 			cemuLog_log(LogType::Force, "Failed to mount {} to {}", virtualPath, subfolder);
-			wuhb_close(m_wuhbreader);
-			m_wuhbreader = nullptr;
+			// closed only if no other mount reads it
+			if (m_mountpoints.empty())
+			{
+				wuhb_close(m_wuhbreader);
+				m_wuhbreader = nullptr;
+			}
 			return false;
 		}
 	}
@@ -500,9 +510,8 @@ void TitleInfo::Unmount(std::string_view virtualPath)
 			}
             if (m_zarchive)
             {
-                ZArchive::ReleaseShared(m_zarchive);
-                if (m_mountpoints.empty())
-                    m_zarchive = nullptr;
+                ZArchive_ReleaseShared(m_zarchive);
+                m_zarchive = nullptr;
             }
 			if (m_wuhbreader)
 			{

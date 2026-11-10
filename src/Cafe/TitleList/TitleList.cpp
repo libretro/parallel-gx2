@@ -335,15 +335,16 @@ void CafeTitleList::AddTitleFromPath(fs::path path)
 {
 	if (path.has_extension() && boost::iequals(_pathToUtf8(path.extension()), ".wua"))
 	{
-		std::unique_ptr<ZArchive> zar(ZArchive::Open(path));
-		std::vector<ZArchive::DirEntry> rootDir;
-		if (!zar || !zar->ListDir("", rootDir))
+		ZArchivePtr zar = ZArchive_Open(path);
+		std::vector<ZArchiveEntry> rootDir;
+		if (!zar || !ZArchive_ListDir(zar.get(), "", rootDir))
 		{
 			cemuLog_log(LogType::Force, "Found {} but it is not a valid Wii U archive file", _pathToUtf8(path));
 			return;
 		}
 		// enumerate all contained titles
-		for (const ZArchive::DirEntry& dirEntry : rootDir)
+		zar.reset();
+		for (const ZArchiveEntry& dirEntry : rootDir)
 		{
 			if(!dirEntry.node.dir)
 				continue;

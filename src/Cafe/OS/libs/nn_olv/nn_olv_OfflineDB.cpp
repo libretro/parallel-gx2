@@ -7,60 +7,61 @@
 #include "Cafe/CafeSystem.h"
 #include "util/xml/Xml.h"
 #include "util/helpers/Deflate.h"
-#include "Cafe/Filesystem/ZArchiveVFS.h"
+#include "Cafe/Filesystem/zarchive.h"
+#include "Common/FileStream.h"
+#include "util/helpers/OnceGate.h"
 
 namespace nn
 {
 	namespace olv
 	{
-		std::mutex g_offlineDBMutex;
-		bool g_offlineDBInitialized = false;
-		ZArchive* g_offlineDBArchive{nullptr};
+		// Opened once, by the first game call that wants it (OnceGate: one at a
+		// time waits for it rather than a lock), and closed with the module
+		OnceGate g_offlineDBOpened;
+		zarchive_t* g_offlineDBArchive{nullptr};
 
 		void OfflineDB_LazyInit()
 		{
-			std::scoped_lock _l(g_offlineDBMutex);
-			if(g_offlineDBInitialized)
-				return;
-			// open archive
-			g_offlineDBArchive = ZArchive::Open(ActiveSettings::GetUserDataPath("resources/miiverse/OfflineDB.zar"));
-			if(!g_offlineDBArchive)
-				cemuLog_log(LogType::Force, "Offline miiverse posts are not available");
-			g_offlineDBInitialized = true;
+			g_offlineDBOpened.Run([] {
+				g_offlineDBArchive = zarchive_open(FileStream::HostPath(ActiveSettings::GetUserDataPath("resources/miiverse/OfflineDB.zar")).c_str(), 0, nullptr, 0);
+				if (!g_offlineDBArchive)
+					cemuLog_log(LogType::Force, "Offline miiverse posts are not available");
+			});
 		}
 
+		// when the module is unloaded: nothing of the game's runs then
 		void OfflineDB_Shutdown()
 		{
-			std::scoped_lock _l(g_offlineDBMutex);
-			if(!g_offlineDBInitialized)
+			if (!g_offlineDBOpened.IsDone())
 				return;
-			delete g_offlineDBArchive;
+			zarchive_close(g_offlineDBArchive);
 			g_offlineDBArchive = nullptr;
-			g_offlineDBInitialized = false;
+			g_offlineDBOpened.Reset();
+		}
+
+		static bool LookUpOfflineDBFile(const char* filePath, zar_file_t& file)
+		{
+			return g_offlineDBArchive && zarchive_lookup(g_offlineDBArchive, filePath, strlen(filePath), &file) && !file.dir;
 		}
 
 		bool CheckForOfflineDBFile(const char* filePath, uint32* fileSize)
 		{
-			if(!g_offlineDBArchive)
-				return false;
-			const std::optional<ZArchive::Node> file = g_offlineDBArchive->LookUp(filePath);
-			if (!file || file->dir)
+			zar_file_t file;
+			if (!LookUpOfflineDBFile(filePath, file))
 				return false;
 			if(fileSize)
-				*fileSize = (uint32)file->size;
+				*fileSize = (uint32)file.size;
 			return true;
 		}
 
 		bool LoadOfflineDBFile(const char* filePath, std::vector<uint8>& fileData)
 		{
 			fileData.clear();
-			if(!g_offlineDBArchive)
+			zar_file_t file;
+			if (!LookUpOfflineDBFile(filePath, file))
 				return false;
-			const std::optional<ZArchive::Node> file = g_offlineDBArchive->LookUp(filePath);
-			if (!file || file->dir)
-				return false;
-			fileData.resize(file->size);
-			return ZArchiveFile(*g_offlineDBArchive, *file).Read(0, fileData.data(), fileData.size()) == fileData.size();
+			fileData.resize(file.size);
+			return zarchive_read(g_offlineDBArchive, &file, 0, fileData.data(), fileData.size()) == fileData.size();
 		}
 
 		void TryLoadCompressedMemoImage(DownloadedPostData& downloadedPostData)

@@ -2,7 +2,8 @@
 # folders mounted at the base and a patch priority (fscDeviceHostFS.cpp):
 # which mount a file comes from, a file read in chunks, and a directory
 # listed through both; and a homebrew bundle mounted, listed and read
-# (fscDeviceWuhb.cpp, WUHB/wuhb.c) (run_tests.sh). SANITIZER=thread or
+# (fscDeviceWuhb.cpp, WUHB/wuhb.c), and a Wii U archive (fscDeviceWua.cpp,
+# zarchive.c) (run_tests.sh). SANITIZER=thread or
 # SANITIZER=address,undefined for the sanitizer runs.
 LRC := ../../dependencies/libretro-common
 SRC := ../../src
@@ -23,13 +24,15 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
-C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
+C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c \
+	$(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c $(LRC)/encodings/encoding_rzstd.c \
+	$(LRC)/encodings/encoding_xxh64.c $(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c
 CXX_SRCS := fsc_test.cpp $(SRC)/Cafe/Filesystem/fsc.cpp $(SRC)/Cafe/Filesystem/fscDeviceHostFS.cpp \
-	$(SRC)/Cafe/Filesystem/fscDeviceWuhb.cpp $(FILE_IO_CXX)
+	$(SRC)/Cafe/Filesystem/fscDeviceWuhb.cpp $(SRC)/Cafe/Filesystem/fscDeviceWua.cpp $(FILE_IO_CXX)
 # the bundle reader and the file reader under it, C89
-CORE_C_SRCS := $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(SRC)/Common/shared_file.c
+CORE_C_SRCS := $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(SRC)/Common/shared_file.c $(SRC)/Cafe/Filesystem/zarchive.c
 
-fsc_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUHB/wuhb.h ../disc_image/romfs_image.h $(SRC)/Cafe/Filesystem/fsc.h $(SRC)/Cafe/Filesystem/fscDeviceHostFS.h $(SRC)/Cafe/RPXHash.h stub/config/ActiveSettings.h
+fsc_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUHB/wuhb.h $(SRC)/Cafe/Filesystem/zarchive.h ../disc_image/romfs_image.h $(SRC)/Cafe/Filesystem/fsc.h $(SRC)/Cafe/Filesystem/fscDeviceHostFS.h $(SRC)/Cafe/RPXHash.h stub/config/ActiveSettings.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@

@@ -90,18 +90,19 @@ bool TitleInfo::ParseWuaTitleFolderName(std::string_view name, TitleId& titleIdO
 	return false;
 }
 
-// no .wua in this test
-ZArchive* ZArchive::Open(const fs::path& path, std::string* whyNot)
+// no .wua in this test: none opens
+extern "C" zarchive_t* zarchive_open(const char* path, unsigned flags, char* whyNot, size_t whyCap)
 {
+	if (whyNot && whyCap)
+		whyNot[0] = '\0';
 	return nullptr;
 }
 
-bool ZArchive::ListDir(std::string_view path, std::vector<DirEntry>& out) const
-{
-	return false;
-}
-
-ZArchive::~ZArchive() {}
+extern "C" void zarchive_close(zarchive_t* ar) {}
+extern "C" bool zarchive_dir_open(const zarchive_t* ar, zarchive_dir_t* dir, const char* path, size_t len) { dir->z = nullptr; return false; }
+extern "C" bool zarchive_dir_next(zarchive_dir_t* dir, const char** name, size_t* len, zar_file_t* node) { return false; }
+extern "C" bool zarchive_dir_failed(const zarchive_dir_t* dir) { return true; }
+extern "C" void zarchive_dir_close(zarchive_dir_t* dir) {}
 
 // helpers.cpp's, for ConvertString, which reads the cache file's numbers
 std::string_view& ltrim(std::string_view& str, const std::string& chars)

@@ -2119,10 +2119,10 @@ static void libretro_collect_wua_destinations(bool force = false)
 		// What this .wua itself holds, by title id and version: its title
 		// folders, read from the archive, as the title list reads them
 		std::map<TitleId, uint16> inWua;
-		std::vector<ZArchive::DirEntry> root;
-		if (std::unique_ptr<ZArchive> zar{ZArchive::Open(contentPath)}; zar && zar->ListDir("", root))
+		std::vector<ZArchiveEntry> root;
+		if (ZArchivePtr zar = ZArchive_Open(contentPath); zar && ZArchive_ListDir(zar.get(), "", root))
 		{
-			for (const ZArchive::DirEntry& entry : root)
+			for (const ZArchiveEntry& entry : root)
 			{
 				TitleId id;
 				uint16 version;
