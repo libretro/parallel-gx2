@@ -349,26 +349,12 @@ namespace iosu
 		char filePath[FSA_CMD_PATH_MAX_LENGTH];
 		sprintf(filePath, "%smeta/bootMovie.h264", titlePath);
 
-		// bootMovie.h264
-		uint32 metaBootMovieSize = 0;
-		uint8* metaBootMovieData = fsc_extractFile(filePath, &metaBootMovieSize);
-		if (metaBootMovieData)
-		{
-			memcpy(acpMetaData->bootMovie, metaBootMovieData, std::min<uint32>(metaBootMovieSize, sizeof(acpMetaData->bootMovie)));
-			free(metaBootMovieData);
-		}
-		else
+		// bootMovie.h264, read where it goes
+		if (fsc_readFileInto(filePath, acpMetaData->bootMovie, sizeof(acpMetaData->bootMovie)) < 0)
 			cemuLog_log(LogType::Force, "ACPGetTitleMetaData(): Unable to load \"{}\"", filePath);
 		// bootLogoTex.tga
 		sprintf(filePath, "%smeta/bootLogoTex.tga", titlePath);
-		uint32 metaBootLogoSize = 0;
-		uint8* metaBootLogoData = fsc_extractFile(filePath, &metaBootLogoSize);
-		if (metaBootLogoData)
-		{
-			memcpy(acpMetaData->bootLogoTex, metaBootLogoData, std::min<uint32>(metaBootLogoSize, sizeof(acpMetaData->bootLogoTex)));
-			free(metaBootLogoData);
-		}
-		else
+		if (fsc_readFileInto(filePath, acpMetaData->bootLogoTex, sizeof(acpMetaData->bootLogoTex)) < 0)
 			cemuLog_log(LogType::Force, "ACPGetTitleMetaData(): Unable to load \"{}\"", filePath);
 
 

@@ -6,6 +6,9 @@
 //    blocks kept as they are and compressed ones;
 //  - threads share one archive, each with its own ZArchiveFile, and read and
 //    look up at once (run under ThreadSanitizer by CI);
+//  - the archive's readers are lent and given back: on one thread every
+//    lookup, listing and read of every file shares one, and four threads
+//    at once make no more than four;
 //  - an archive that maps is read from its mapping alone: once open, no
 //    lookup, listing or read of any file opens a stream or reads one; one
 //    that does not map (FileStream refusing, as a frontend's VFS file does)
@@ -477,7 +480,9 @@ int main()
 		const uint32 opens = s_opens, reads = s_reads;
 		TestIndex(*zar, files);
 		TestReads(*zar, files);
+		CHECK(zar->ReadersMade() == 1);
 		TestThreads(*zar, files);
+		CHECK(zar->ReadersMade() <= 4);
 		// mapped, every octet came from the pages; else each file its stream
 		if (map)
 			CHECK(s_opens == opens && s_reads == reads);

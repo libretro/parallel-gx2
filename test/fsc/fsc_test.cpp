@@ -9,6 +9,8 @@
 //    than it, in order, and the RPX hash taken over the pieces is the hash
 //    the whole file had as CafeSystem took it; it says no for what is not
 //    there;
+//  - fsc_readFileInto reads up to what fits, at the priority asked, and says
+//    -1 for what is not there;
 //  - a directory listed through both mounts has every name once, with the
 //    sizes and types the host's directory read gave.
 #include "Cafe/Filesystem/fsc.h"
@@ -97,6 +99,14 @@ int main()
 	}
 	uint8 small[16];
 	CHECK(!fsc_readFileInChunks("/t/code/none.bin", FSC_PRIORITY_MAX, small, sizeof(small), [](const uint8*, uint32) {}));
+
+	// read straight into a buffer, as much as fits
+	uint8 into[5000];
+	memset(into, 0xEE, sizeof(into));
+	CHECK(fsc_readFileInto("/t/code/base.bin", into, 100) == 100 && memcmp(into, onlyBase.data(), 100) == 0 && into[100] == 0xEE);
+	CHECK(fsc_readFileInto("/t/code/base.bin", into, sizeof(into)) == (sint64)onlyBase.size() && memcmp(into, onlyBase.data(), onlyBase.size()) == 0);
+	CHECK(fsc_readFileInto("/t/code/game.rpx", into, 64, FSC_PRIORITY_BASE) == 64 && memcmp(into, baseRpx.data(), 64) == 0);
+	CHECK(fsc_readFileInto("/t/code/none.bin", into, 1) == -1);
 
 	// both mounts' entries, each name once
 	sint32 status;

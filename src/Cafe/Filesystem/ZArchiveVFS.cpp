@@ -95,6 +95,7 @@ zar_t* ZArchive::NewReader() const
 	zar_t* z = zar_new(m_size);
 	if (!z)
 		return nullptr;
+	m_readersMade.fetch_add(1, std::memory_order_relaxed);
 	zar_request_t req;
 	int err;
 	while ((err = zar_open_step(z, &req)) == ZAR_PENDING)
@@ -107,12 +108,70 @@ zar_t* ZArchive::NewReader() const
 	return z;
 }
 
+ZArchive::~ZArchive()
+{
+	for (std::atomic<zar_t*>& slot : m_readers)
+		zar_free(slot.exchange(nullptr, std::memory_order_acquire));
+}
+
+zar_t* ZArchive::AcquireReader() const
+{
+	for (std::atomic<zar_t*>& slot : m_readers)
+	{
+		if (slot.load(std::memory_order_relaxed) == nullptr)
+			continue;
+		if (zar_t* z = slot.exchange(nullptr, std::memory_order_acquire))
+			return z;
+	}
+	return NewReader();
+}
+
+void ZArchive::ReleaseReader(zar_t* z) const
+{
+	if (!z)
+		return;
+	for (std::atomic<zar_t*>& slot : m_readers)
+	{
+		zar_t* empty = nullptr;
+		if (slot.load(std::memory_order_relaxed) == nullptr
+			&& slot.compare_exchange_strong(empty, z, std::memory_order_release, std::memory_order_relaxed))
+			return;
+	}
+	zar_free(z);
+}
+
+// A path zar can take, NUL-terminated: on the stack when it is short
+class ZArchivePath
+{
+public:
+	explicit ZArchivePath(std::string_view path)
+	{
+		if (path.size() < sizeof(m_short))
+		{
+			memcpy(m_short, path.data(), path.size());
+			m_short[path.size()] = '\0';
+			m_str = m_short;
+		}
+		else
+		{
+			m_long.assign(path);
+			m_str = m_long.c_str();
+		}
+	}
+	const char* c_str() const { return m_str; }
+
+private:
+	char m_short[512];
+	std::string m_long;
+	const char* m_str;
+};
+
 std::optional<ZArchive::Node> ZArchive::LookUp(std::string_view path) const
 {
-	zar_t* z = NewReader();
+	zar_t* z = AcquireReader();
 	if (!z)
 		return std::nullopt;
-	const std::string p(path); // zar wants it NUL-terminated
+	const ZArchivePath p(path); // zar wants it NUL-terminated
 	Node node{};
 	zar_request_t req;
 	int err = zar_lookup_begin(z, p.c_str());
@@ -121,7 +180,7 @@ std::optional<ZArchive::Node> ZArchive::LookUp(std::string_view path) const
 		while ((err = zar_lookup_step(z, &req, &node)) == ZAR_PENDING)
 			zar_feed(z, Supply(req, nullptr));
 	}
-	zar_free(z);
+	ReleaseReader(z);
 	if (err != ZAR_OK)
 		return std::nullopt;
 	return node;
@@ -130,10 +189,10 @@ std::optional<ZArchive::Node> ZArchive::LookUp(std::string_view path) const
 bool ZArchive::ListDir(std::string_view path, std::vector<DirEntry>& entries) const
 {
 	entries.clear();
-	zar_t* z = NewReader();
+	zar_t* z = AcquireReader();
 	if (!z)
 		return false;
-	const std::string p(path);
+	const ZArchivePath p(path);
 	zar_dirent_t e;
 	zar_request_t req;
 	int err = zar_dir_begin(z, p.c_str());
@@ -144,48 +203,34 @@ bool ZArchive::ListDir(std::string_view path, std::vector<DirEntry>& entries) co
 		if (err == ZAR_OK)
 			entries.push_back({std::string(e.name, e.len), e.file});
 	}
-	zar_free(z);
+	ReleaseReader(z);
 	return err == ZAR_END;
 }
 
-ZArchiveFile::~ZArchiveFile()
-{
-	zar_free(m_reader);
-}
+ZArchiveFile::~ZArchiveFile() = default;
 
 uint64 ZArchiveFile::Read(uint64 offset, void* buffer, uint64 size)
 {
 	if (m_file.dir || offset >= m_file.size)
 		return 0;
-	if (!m_reader)
-	{
-		m_reader = zar_new(m_archive.GetSize());
-		if (!m_reader)
-			return 0;
-		zar_request_t req;
-		int err;
-		while ((err = zar_open_step(m_reader, &req)) == ZAR_PENDING)
-			zar_feed(m_reader, m_archive.Supply(req, nullptr));
-		if (err != ZAR_OK)
-		{
-			zar_free(m_reader);
-			m_reader = nullptr;
-			return 0;
-		}
-	}
 	if (!m_stream && !m_archive.IsMapped())
 	{
 		m_stream.reset(FileStream::openFile2(m_archive.GetPath()));
 		if (!m_stream)
 			return 0;
 	}
+	zar_t* reader = m_archive.AcquireReader();
+	if (!reader)
+		return 0;
 	size = std::min<uint64>(size, m_file.size - offset);
 	zar_request_t req;
-	int err = zar_read_begin(m_reader, &m_file, offset, buffer, (size_t)size);
+	int err = zar_read_begin(reader, &m_file, offset, buffer, (size_t)size);
 	if (err == ZAR_OK)
 	{
-		while ((err = zar_read_step(m_reader, &req)) == ZAR_PENDING)
-			zar_feed(m_reader, m_archive.Supply(req, m_stream.get()));
+		while ((err = zar_read_step(reader, &req)) == ZAR_PENDING)
+			zar_feed(reader, m_archive.Supply(req, m_stream.get()));
 	}
-	return zar_read_progress(m_reader);
+	const uint64 read = zar_read_progress(reader);
+	m_archive.ReleaseReader(reader);
+	return read;
 }

@@ -206,6 +206,9 @@ uint32 fsc_writeFile(FSCVirtualFile* fscFile, void* buffer, uint32 size);
 uint8* fsc_extractFile(const char* path, uint32* fileSize, sint32 maxPriority = FSC_PRIORITY_MAX);
 std::optional<std::vector<uint8>> fsc_extractFile(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 bool fsc_doesFileExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
+// Up to capacity octets from a file's start, read straight into dst: how many,
+// or -1 when it is not there
+sint64 fsc_readFileInto(const char* path, void* dst, uint32 capacity, sint32 maxPriority = FSC_PRIORITY_MAX);
 // the priority of the mount a file is opened from at maxPriority, -1 if none
 sint32 fsc_getFilePriority(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);
 bool fsc_doesDirectoryExist(const char* path, sint32 maxPriority = FSC_PRIORITY_MAX);

@@ -641,6 +641,18 @@ uint32 fsc_writeFile(FSCVirtualFile* fscFile, void* buffer, uint32 size)
 	return fscStatus;
 }
 
+sint64 fsc_readFileInto(const char* path, void* dst, uint32 capacity, sint32 maxPriority)
+{
+	sint32 fscStatus = FSC_STATUS_UNDEFINED;
+	FSCVirtualFile* file = fsc_open(path, FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &fscStatus, maxPriority);
+	if (!file)
+		return -1;
+	// every device stops a read at the file's end
+	const uint32 got = capacity ? fsc_readFile(file, dst, capacity) : 0;
+	fsc_close(file);
+	return got;
+}
+
 sint32 fsc_getFilePriority(const char* path, sint32 maxPriority)
 {
 	std::string devicePath;
