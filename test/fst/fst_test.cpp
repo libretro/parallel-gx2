@@ -20,7 +20,7 @@
 //    lent from the volume's pool, from a source that lends and one that
 //    does not (run under ThreadSanitizer by CI).
 #include "Cafe/Filesystem/FST/FST.h"
-#include "Cafe/Filesystem/FST/FSTDataSource.h"
+#include "test_source.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
 #include "Cemu/Logging/CemuLogging.h"
 #include "util/crypto/aes128.h"
@@ -130,7 +130,7 @@ static void HashedBlockCipher(uint64 block, uint8* out, bool corrupt)
 
 // The disc: the FST as a vector, the clusters made as they are read. Lends
 // what it holds when lend is set, and counts what it reads.
-class MadeSource : public FSTDataSource
+class MadeSource : public TestSource
 {
 public:
 	std::vector<uint8> fst;
@@ -294,7 +294,7 @@ static std::unique_ptr<FSTVolume> Open(bool lend, MadeSource*& source)
 	NCrypto::AesKey key;
 	memcpy(key.b, KEY, 16);
 	const uint32 fstSize = (uint32)source->fst.size();
-	return std::unique_ptr<FSTVolume>(FSTVolume::OpenFromDataSource(std::move(src), 0, fstSize, key));
+	return std::unique_ptr<FSTVolume>(FSTVolume::OpenFromDataSource(AsSource(src.release(), true), 0, fstSize, key));
 }
 
 // A block in the cache is not read again; whole blocks in a read of more than
@@ -414,7 +414,7 @@ static void TestCorrupt()
 
 // The source's octets made as they are read, safe from more than one thread:
 // a block made for each read, not kept between them
-class SharedMadeSource : public FSTDataSource
+class SharedMadeSource : public TestSource
 {
 public:
 	std::vector<uint8> fst;
@@ -456,7 +456,7 @@ static void TestThreads()
 	NCrypto::AesKey key;
 	memcpy(key.b, KEY, 16);
 	const uint32 fstSize = (uint32)src->fst.size();
-	std::unique_ptr<FSTVolume> vol(FSTVolume::OpenFromDataSource(std::move(src), 0, fstSize, key));
+	std::unique_ptr<FSTVolume> vol(FSTVolume::OpenFromDataSource(AsSource(src.release(), true), 0, fstSize, key));
 	CHECK(vol != nullptr);
 	if (!vol)
 		return;

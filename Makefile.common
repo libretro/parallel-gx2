@@ -50,6 +50,7 @@ endif
 # The core
 # ----------------------------------------------------------------------------
 CORE_SOURCES_C := \
+	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_source.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/wuhb.c \
 	$(CORE_DIR)/src/Common/shared_file.c \
@@ -61,7 +62,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/Account/Account.cpp \
 	$(CORE_DIR)/src/Cafe/CafeSystem.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/FST.cpp \
-	$(CORE_DIR)/src/Cafe/Filesystem/FST/FSTDataSource.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/KeyCache.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fsc.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceHostFS.cpp \

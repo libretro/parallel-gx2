@@ -4,6 +4,7 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- What disc images and a title's `.app` files are read through for decryption is now C (`fst_source.c`), where it was a C++ class for each kind of file. Nothing changes in how they are read.
 - Disc images and title content are decrypted with libretro-common's AES, which runs on the CPU's AES instructions on ARM too (Android, Apple silicon, Linux on ARM), where the core's own AES fell back to a software table implementation. On x86 it decrypts several blocks at once, about a third faster for a 64 KiB block than before. A CTR stream whose length is not a whole number of blocks (BOSS data, NFC tags) no longer writes past its end.
 - A homebrew bundle (`.wuhb`) is read by a reader in C. A game opening a file in one no longer builds a path object and a string for each part of the file's path. Listing a folder in one no longer allocates a string for each entry: the name is read straight into the listing. A name longer than the listing holds is cut and ended rather than left without its end.
 - Disc images (`.wud`, `.wux`), a title's `.app` files and homebrew bundles (`.wuhb`) are read through one small reader in C over libretro-common's filestream, where each had a C++ stream pool of its own. A file that cannot be mapped keeps a few streams and lends one to each read; mapped, nothing changes. A `.wux` whose header gives an image size its file has no room for is refused when opened, where its sector table was read past its end.

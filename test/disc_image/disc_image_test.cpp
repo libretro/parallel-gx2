@@ -10,7 +10,7 @@
 //  - wud_lend lends a range from the mapping where it lies in one piece, and
 //    nothing where it crosses into a .wux sector stored elsewhere, runs past
 //    the end, or the file is not mapped;
-//  - FSTDataSource decrypts an unhashed block (CBC, the IV given, the next
+//  - fst_source decrypts an unhashed block (CBC, the IV given, the next
 //    block's IV the last 16 encrypted octets) and a hashed one (hashes with
 //    no IV, then the data with its H0 hash as the IV) from a disc image and
 //    from .app files, the same mapped as not; mapped, a block in one piece
@@ -28,7 +28,7 @@
 // The disc image reader (wud.c) and the file reader under all three
 // (shared_file.c) are built as C89, as the C89 lane builds them.
 #include "Cafe/Filesystem/WUD/wud.h"
-#include "Cafe/Filesystem/FST/FSTDataSource.h"
+#include "../fst/test_source.h"
 #include "Common/FileStream.h"
 #include "util/crypto/aes128.h"
 #include "Cafe/Filesystem/WUHB/wuhb.h"
@@ -267,7 +267,7 @@ static Encrypted RawCluster(uint32 blocks, uint32 blockSize, const uint8* iv0, s
 // encrypted with the block's own, blockIndex % 16
 static Encrypted HashedCluster(uint32 blocks, std::mt19937& rng)
 {
-	const uint32 B = FSTDataSource::HASHED_BLOCK_SIZE, H = FSTDataSource::HASHED_BLOCK_HASH_SIZE;
+	const uint32 B = FST_HASHED_BLOCK_SIZE, H = FST_HASHED_BLOCK_HASH_SIZE;
 	Encrypted e;
 	e.plain.resize((size_t)blocks * B);
 	for (uint8& b : e.plain)
@@ -287,7 +287,7 @@ static Encrypted HashedCluster(uint32 blocks, std::mt19937& rng)
 
 // Every block of a raw cluster at clusterOffset decrypts, each with the IV
 // the one before gave, in order and then out of it (an IV from the file)
-static bool RawReadsBack(FSTDataSource& ds, uint16 cluster, uint64 clusterOffset, const Encrypted& e, uint32 blockSize, const uint8* iv0)
+static bool RawReadsBack(fst_source_t* ds, uint16 cluster, uint64 clusterOffset, const Encrypted& e, uint32 blockSize, const uint8* iv0)
 {
 	std::vector<uint8> block(blockSize);
 	uint8 iv[16], next[16];
@@ -295,7 +295,7 @@ static bool RawReadsBack(FSTDataSource& ds, uint16 cluster, uint64 clusterOffset
 	const uint32 blocks = (uint32)(e.plain.size() / blockSize);
 	for (uint32 i = 0; i < blocks; i++)
 	{
-		if (!ds.ReadRawBlock(cluster, clusterOffset, (uint64)i * blockSize, block.data(), blockSize, KEY, iv, next))
+		if (!fst_source_read_raw_block(ds, cluster, clusterOffset, (uint64)i * blockSize, block.data(), blockSize, KEY, iv, next))
 			return false;
 		if (memcmp(block.data(), e.plain.data() + (size_t)i * blockSize, blockSize) != 0)
 			return false;
@@ -306,52 +306,62 @@ static bool RawReadsBack(FSTDataSource& ds, uint16 cluster, uint64 clusterOffset
 	for (uint32 i = blocks; i-- > 1;)
 	{
 		uint8 prev[16];
-		const uint8* p = ds.Fetch(cluster, clusterOffset, (uint64)i * blockSize - 16, prev, 16);
-		if (!p || !ds.ReadRawBlock(cluster, clusterOffset, (uint64)i * blockSize, block.data(), blockSize, KEY, p, next))
+		const uint8* p = fst_source_fetch(ds, cluster, clusterOffset, (uint64)i * blockSize - 16, prev, 16);
+		if (!p || !fst_source_read_raw_block(ds, cluster, clusterOffset, (uint64)i * blockSize, block.data(), blockSize, KEY, p, next))
 			return false;
 		if (memcmp(block.data(), e.plain.data() + (size_t)i * blockSize, blockSize) != 0)
 			return false;
 	}
 	// a block past the cluster's file, or not a whole number of AES blocks
-	return !ds.ReadRawBlock(cluster, clusterOffset, e.plain.size() + (cluster ? 0x100000 : 0x10000000), block.data(), blockSize, KEY, iv, next)
-		&& !ds.ReadRawBlock(cluster, clusterOffset, 0, block.data(), 24, KEY, iv, next);
+	return !fst_source_read_raw_block(ds, cluster, clusterOffset, e.plain.size() + (cluster ? 0x100000 : 0x10000000), block.data(), blockSize, KEY, iv, next)
+		&& !fst_source_read_raw_block(ds, cluster, clusterOffset, 0, block.data(), 24, KEY, iv, next);
 }
 
-static bool HashedReadsBack(FSTDataSource& ds, uint16 cluster, uint64 clusterOffset, const Encrypted& e)
+static bool HashedReadsBack(fst_source_t* ds, uint16 cluster, uint64 clusterOffset, const Encrypted& e)
 {
-	const uint32 B = FSTDataSource::HASHED_BLOCK_SIZE;
+	const uint32 B = FST_HASHED_BLOCK_SIZE;
 	std::vector<uint8> block(B);
 	for (uint32 i = 0; i < e.plain.size() / B; i++)
 	{
-		if (!ds.ReadHashedBlock(cluster, clusterOffset, (uint64)i * B, block.data(), KEY, i % 16))
+		if (!fst_source_read_hashed_block(ds, cluster, clusterOffset, (uint64)i * B, block.data(), block.data() + FST_HASHED_BLOCK_HASH_SIZE, KEY, i % 16))
 			return false;
 		if (memcmp(block.data(), e.plain.data() + (size_t)i * B, B) != 0)
 			return false;
 	}
-	return !ds.ReadHashedBlock(cluster, clusterOffset, 0, block.data(), KEY, 16);
+	return !fst_source_read_hashed_block(ds, cluster, clusterOffset, 0, block.data(), block.data() + FST_HASHED_BLOCK_HASH_SIZE, KEY, 16);
 }
 
 // A source through another, counting the octets it had to read rather than
 // lend
-class Counting : public FSTDataSource
+class Counting : public TestSource
 {
 public:
-	explicit Counting(FSTDataSource& inner) : m_inner(inner) {}
+	explicit Counting(fst_source_t* inner) : m_inner(inner), m_source(AsSource(this, false)) {}
+	~Counting() override { fst_source_close(m_source); }
 	uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) override
 	{
-		const uint64 n = m_inner.readData(clusterIndex, clusterOffset, offset, data, size);
+		const uint64 n = fst_source_read(m_inner, clusterIndex, clusterOffset, offset, data, size);
 		read += n;
 		return n;
 	}
 	const uint8* Lend(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint64 size) override
 	{
-		return m_inner.Lend(clusterIndex, clusterOffset, offset, size);
+		return fst_source_lend(m_inner, clusterIndex, clusterOffset, offset, size);
 	}
+	// the source over this
+	fst_source_t* Source() const { return m_source; }
 	uint64 read = 0;
 
 private:
-	FSTDataSource& m_inner;
+	fst_source_t* m_inner;
+	fst_source_t* m_source;
 };
+
+struct SourceCloser
+{
+	void operator()(fst_source_t* s) const { fst_source_close(s); }
+};
+using SourcePtr = std::unique_ptr<fst_source_t, SourceCloser>;
 
 static void TestDiscSource()
 {
@@ -376,24 +386,25 @@ static void TestDiscSource()
 	{
 		for (const fs::path& path : {wudPath, wuxPath})
 		{
-			std::unique_ptr<FSTDataSourceWUD> ds(FSTDataSourceWUD::Open(path, map));
+			SourcePtr ds(fst_source_open_disc(path.string().c_str(), map ? 0 : FST_SOURCE_NO_MAP));
 			CHECK(ds != nullptr);
 			if (!ds)
 				continue;
 			// the partition's base and the cluster's offset both count
-			ds->SetBaseOffset(0x8000);
-			Counting c(*ds);
-			CHECK(RawReadsBack(c, 1, 0x8000, raw, SECTOR, iv0));
+			fst_source_set_base_offset(ds.get(), 0x8000);
+			CHECK(fst_source_get_base_offset(ds.get()) == 0x8000);
+			Counting c(ds.get());
+			CHECK(RawReadsBack(c.Source(), 1, 0x8000, raw, SECTOR, iv0));
 			// mapped, raw blocks lie in one sector: decrypted from the pages
 			CHECK(map ? c.read == 0 : c.read > 0);
-			CHECK(HashedReadsBack(c, 2, 0x40000, hashed));
+			CHECK(HashedReadsBack(c.Source(), 2, 0x40000, hashed));
 			// a .wux's hashed blocks lie across sectors stored apart: their
 			// data read, from the pages where it is mapped, their hashes
 			// (in one sector) lent
 			const bool lent = map && path == wudPath;
 			CHECK(lent ? c.read == 0 : c.read > 0);
 			if (map && !lent)
-				CHECK(c.read == 3 * (FSTDataSource::HASHED_BLOCK_SIZE - FSTDataSource::HASHED_BLOCK_HASH_SIZE));
+				CHECK(c.read == 3 * (FST_HASHED_BLOCK_SIZE - FST_HASHED_BLOCK_HASH_SIZE));
 		}
 	}
 	fs::remove(wudPath);
@@ -413,39 +424,56 @@ static void TestAppSource()
 	WriteFile(dir / "00000000.app", fst.cipher);
 	WriteFile(dir / "0000000a.app", raw.cipher);
 	WriteFile(dir / "0000001b.app", hashed.cipher);
-	const FSTDataSourceApp::Content contents[] = {{0, 0x0}, {1, 0xa}, {2, 0x1b}};
+	auto Open = [&](std::initializer_list<std::pair<uint16, const char*>> contents, bool map) {
+		std::vector<std::string> paths;
+		std::vector<const char*> ptrs;
+		std::vector<uint16> clusters;
+		for (const auto& c : contents)
+		{
+			paths.push_back((dir / c.second).string());
+			clusters.push_back(c.first);
+		}
+		for (const std::string& p : paths)
+			ptrs.push_back(p.c_str());
+		return SourcePtr(fst_source_open_app(ptrs.data(), clusters.data(), clusters.size(), map ? 0 : FST_SOURCE_NO_MAP));
+	};
 
 	for (bool map : {true, false})
 	{
-		std::unique_ptr<FSTDataSourceApp> ds(FSTDataSourceApp::Open(dir, contents, map));
+		SourcePtr ds = Open({{0, "00000000.app"}, {1, "0000000a.app"}, {2, "0000001b.app"}}, map);
 		CHECK(ds != nullptr);
 		if (!ds)
 			continue;
-		Counting c(*ds);
+		Counting c(ds.get());
 		// the cluster's offset is not the file's: each file is its cluster
-		CHECK(RawReadsBack(c, 0, 0x123456, fst, SECTOR, iv0));
-		CHECK(RawReadsBack(c, 1, 0x8000, raw, SECTOR, iv1));
-		CHECK(HashedReadsBack(c, 2, 0x10000, hashed));
+		CHECK(RawReadsBack(c.Source(), 0, 0x123456, fst, SECTOR, iv0));
+		CHECK(RawReadsBack(c.Source(), 1, 0x8000, raw, SECTOR, iv1));
+		CHECK(HashedReadsBack(c.Source(), 2, 0x10000, hashed));
 		// mapped, every block decrypted from the pages
 		CHECK(map ? c.read == 0 : c.read > 0);
 		// lent where it lies, mapped
-		const uint8* p = ds->Lend(1, 0, 0x100, 0x2000);
+		const uint8* p = fst_source_lend(ds.get(), 1, 0, 0x100, 0x2000);
 		CHECK(map ? p && memcmp(p, raw.cipher.data() + 0x100, 0x2000) == 0 : !p);
-		CHECK(!ds->Lend(1, 0, raw.cipher.size() - 4, 8));
-		CHECK(!ds->Lend(3, 0, 0, 1));
+		CHECK(!fst_source_lend(ds.get(), 1, 0, raw.cipher.size() - 4, 8));
+		CHECK(!fst_source_lend(ds.get(), 3, 0, 0, 1));
 		// read, from the pages or the file, short at the end
 		std::vector<uint8> got(0x300);
-		CHECK(ds->readData(2, 0, hashed.cipher.size() - 0x100, got.data(), got.size()) == 0x100);
+		CHECK(fst_source_read(ds.get(), 2, 0, hashed.cipher.size() - 0x100, got.data(), got.size()) == 0x100);
 		CHECK(memcmp(got.data(), hashed.cipher.data() + hashed.cipher.size() - 0x100, 0x100) == 0);
-		CHECK(ds->readData(2, 0, hashed.cipher.size(), got.data(), 1) == 0);
-		CHECK(ds->readData(7, 0, 0, got.data(), 1) == 0);
+		CHECK(fst_source_read(ds.get(), 2, 0, hashed.cipher.size(), got.data(), 1) == 0);
+		CHECK(fst_source_read(ds.get(), 7, 0, 0, got.data(), 1) == 0);
+		// clusters with no file between them read nothing
+		SourcePtr sparse = Open({{0, "00000000.app"}, {5, "0000000a.app"}}, map);
+		CHECK(sparse && fst_source_read(sparse.get(), 3, 0, 0, got.data(), 1) == 0
+			&& !fst_source_lend(sparse.get(), 3, 0, 0, 1)
+			&& fst_source_read(sparse.get(), 5, 0, 0, got.data(), 16) == 16
+			&& memcmp(got.data(), raw.cipher.data(), 16) == 0);
 	}
 
 	// a file missing, a cluster twice
-	const FSTDataSourceApp::Content missing[] = {{0, 0x0}, {1, 0xc}};
-	CHECK(FSTDataSourceApp::Open(dir, missing) == nullptr);
-	const FSTDataSourceApp::Content twice[] = {{0, 0x0}, {0, 0xa}};
-	CHECK(FSTDataSourceApp::Open(dir, twice) == nullptr);
+	CHECK(Open({{0, "00000000.app"}, {1, "0000000c.app"}}, true) == nullptr);
+	CHECK(Open({{0, "00000000.app"}, {0, "0000000a.app"}}, true) == nullptr);
+	CHECK(Open({}, true) != nullptr);
 	fs::remove_all(dir);
 }
 
@@ -622,8 +650,10 @@ static void TestThreadsUnmapped()
 
 	wud_t* wud = wud_open(wudPath.string().c_str(), WUD_OPEN_NO_MAP);
 	wud_t* wx = wud_open(wuxPath.string().c_str(), WUD_OPEN_NO_MAP);
-	const FSTDataSourceApp::Content contents[] = {{0, 5}};
-	std::unique_ptr<FSTDataSourceApp> app(FSTDataSourceApp::Open(appDir, contents, false));
+	const std::string appPath = (appDir / "00000005.app").string();
+	const char* appPaths[] = {appPath.c_str()};
+	const uint16 appClusters[] = {0};
+	SourcePtr app(fst_source_open_app(appPaths, appClusters, 1, FST_SOURCE_NO_MAP));
 	wuhb_t* wuhb = wuhb_open(wuhbPath.string().c_str(), WUHB_OPEN_NO_MAP);
 	CHECK(wud && wx && app && wuhb);
 	if (wud && wx && app && wuhb)
@@ -650,7 +680,7 @@ static void TestThreadsUnmapped()
 						bad++;
 					if (wud_readData(wx, got.data(), (uint32)n, (long long)at) != n || memcmp(got.data(), wuxImage.data() + at, n) != 0)
 						bad++;
-					if (app->readData(0, 0, at, got.data(), n) != n || memcmp(got.data(), image.data() + at, n) != 0)
+					if (fst_source_read(app.get(), 0, 0, at, got.data(), n) != n || memcmp(got.data(), image.data() + at, n) != 0)
 						bad++;
 					const size_t k = r() % files.size();
 					const std::vector<uint8>& fd = files[k].data;

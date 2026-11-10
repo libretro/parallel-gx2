@@ -49,8 +49,9 @@ public:
 	static FSTVolume* OpenFromDiscImage(const fs::path& path, ErrorCode* errorCodeOut = nullptr);
 	static FSTVolume* OpenFromContentFolder(fs::path folderPath, ErrorCode* errorCodeOut = nullptr);
 	// An FST of fstSize octets at fstOffset of cluster 0, in a source of the
-	// caller's, decrypted with key: what the reads see, without a title around
-	static FSTVolume* OpenFromDataSource(std::unique_ptr<class FSTDataSource> dataSource, uint64 fstOffset, uint32 fstSize, const NCrypto::AesKey& key);
+	// caller's, decrypted with key: what the reads see, without a title around.
+	// The volume takes the source, and closes it on failure too.
+	static FSTVolume* OpenFromDataSource(struct fst_source* dataSource, uint64 fstOffset, uint32 fstSize, const NCrypto::AesKey& key);
 
 	~FSTVolume();
 
@@ -190,7 +191,7 @@ private:
 		};
 	};
 
-	class FSTDataSource* m_dataSource;
+	struct fst_source* m_dataSource; // fst_source.h
 	bool m_sourceIsOwned{};
 	uint32 m_sectorSize{}; // for cluster offsets
 	uint32 m_offsetFactor{}; // for file offsets
@@ -344,8 +345,8 @@ private:
 
 	static_assert(sizeof(FSTHeader_FileEntry) == 0x10);
 
-	static FSTVolume* OpenFST(FSTDataSource* dataSource, uint64 fstOffset, uint32 fstSize, NCrypto::AesKey* partitionTitleKey, ClusterHashMode fstHashMode, NCrypto::TMDParser* optionalTMD);
-	static FSTVolume* OpenFST(std::unique_ptr<FSTDataSource> dataSource, uint64 fstOffset, uint32 fstSize, NCrypto::AesKey* partitionTitleKey, ClusterHashMode fstHashMode, NCrypto::TMDParser* optionalTMD);
+	// takeSource: the volume closes the source, also when it does not open
+	static FSTVolume* OpenFST(struct fst_source* dataSource, bool takeSource, uint64 fstOffset, uint32 fstSize, NCrypto::AesKey* partitionTitleKey, ClusterHashMode fstHashMode, NCrypto::TMDParser* optionalTMD);
 	static bool ProcessFST(FSTHeader_FileEntry* fileTable, uint32 numFileEntries, uint32 numCluster, std::vector<char>& nameStringTable, std::vector<FSTEntry>& fstEntries);
 
 	bool MatchFSTEntryName(FSTEntry& entry, std::string_view comparedName)

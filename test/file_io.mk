@@ -13,9 +13,11 @@ ifeq (,$(findstring mingw,$(CC)))
    FILE_IO_FLAGS += -DHAVE_MMAP
 endif
 # The core's own C over it - disc images (wud.c) on the shared file reader
-# (shared_file.c) - for the tests that link it, built as the C89 lane builds
+# (shared_file.c), and an FST volume's sources over both (fst_source.c,
+# which wants AES_C) - for the tests that link it, built as the C89 lane builds
 # it: a C99 or C++ habit fails the build.
-DISC_IMAGE_C := $(SRC)/Cafe/Filesystem/WUD/wud.c $(SRC)/Common/shared_file.c
+DISC_IMAGE_C := $(SRC)/Cafe/Filesystem/WUD/wud.c $(SRC)/Common/shared_file.c \
+	$(SRC)/Cafe/Filesystem/FST/fst_source.c
 C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement \
 	-Wno-long-long -Wno-variadic-macros -Wall -Werror
 # The core's AES-128 (C89, built with C89_FLAGS) and libretro-common's

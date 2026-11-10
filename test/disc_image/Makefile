@@ -1,5 +1,5 @@
 # The core's disc image, title content and homebrew bundle readers
-# (src/Cafe/Filesystem/WUD, C89, src/Cafe/Filesystem/FST/FSTDataSource.cpp,
+# (src/Cafe/Filesystem/WUD, C89, src/Cafe/Filesystem/FST/fst_source.c,
 # src/Cafe/Filesystem/WUHB): .wud, .wux and .app files read and their blocks
 # decrypted, .wuhb files looked up and read, mapped and not (run_tests.sh). SANITIZER=thread
 # or SANITIZER=address,undefined for the sanitizer runs.
@@ -26,9 +26,9 @@ FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(AES_LRC_C)
 CORE_C_SRCS := $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(AES_C)
-CXX_SRCS := disc_image_test.cpp $(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp
+CXX_SRCS := disc_image_test.cpp
 
-disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Common/shared_file.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h \
+disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Common/shared_file.h $(SRC)/Cafe/Filesystem/FST/fst_source.h ../fst/test_source.h \
 	$(SRC)/Cafe/Filesystem/WUHB/wuhb.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
