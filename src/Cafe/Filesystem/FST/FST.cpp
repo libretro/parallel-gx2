@@ -4,12 +4,11 @@
 #include "Cemu/ncrypto/ncrypto.h"
 #include "Cafe/Filesystem/FST/fst_source.h"
 #include "util/crypto/aes128.h"
-#include "fstUtil.h"
+#include "fstUtil.h" // FSTPathUnitTest
 
 #include "FST.h"
 #include "KeyCache.h"
 
-#include "boost/range/adaptor/reversed.hpp"
 
 #define SET_FST_ERROR(__code) 	if (errorCodeOut) *errorCodeOut = ErrorCode::__code
 
@@ -361,49 +360,46 @@ FSTVolume* FSTVolume::OpenFST(fst_source_t* dataSource, bool takeSource, uint64 
 	// a source it takes is closed if the volume does not open
 	std::unique_ptr<fst_source_t, decltype(&fst_source_close)> owned(takeSource ? dataSource : nullptr, fst_source_close);
 	cemu_assert_debug(fstHashMode != ClusterHashMode::RAW || fstHashMode != ClusterHashMode::RAW_STREAM);
-	if (fstSize < sizeof(FSTHeader))
+	if (fstSize < FST_TABLE_HEADER_SIZE)
 		return nullptr;
 	constexpr uint64 FST_CLUSTER_OFFSET = 0;
 	uint32 fstSizePadded = (fstSize + 15) & ~15; // pad to AES block size
-	// read FST data and decrypt
-	std::vector<uint8> fstData(fstSizePadded);
-	const uint8* fstEncrypted = fst_source_fetch(dataSource, 0, FST_CLUSTER_OFFSET, fstOffset, fstData.data(), fstSizePadded);
+	// read the FST and decrypt it, for the table to be made from; let go then
+	std::unique_ptr<uint8, decltype(&free)> fstData((uint8*)malloc(fstSizePadded), free);
+	if (!fstData)
+		return nullptr;
+	const uint8* fstEncrypted = fst_source_fetch(dataSource, 0, FST_CLUSTER_OFFSET, fstOffset, fstData.get(), fstSizePadded);
 	if (!fstEncrypted)
 		return nullptr;
 	uint8 iv[16]{};
-	AES128_CBC_decrypt(fstData.data(), fstEncrypted, fstSizePadded, partitionTitleKey->b, iv);
-	// validate header
-	FSTHeader* fstHeader = (FSTHeader*)fstData.data();
-	const void* fstEnd = fstData.data() + fstSize;
-	if (fstHeader->magic != 0x46535400 || fstHeader->numCluster >= 0x1000)
+	AES128_CBC_decrypt(fstData.get(), fstEncrypted, fstSizePadded, partitionTitleKey->b, iv);
+	std::unique_ptr<fst_table_t, decltype(&fst_table_free)> table(fst_table_parse(fstData.get(), fstSize), fst_table_free);
+	fstData.reset();
+	if (!table)
 	{
-		cemuLog_log(LogType::Force, "FST has invalid header");
+		cemuLog_log(LogType::Force, "FST is not valid");
 		return nullptr;
 	}
-	// load cluster table
-	uint32 numCluster = fstHeader->numCluster;
-	FSTHeader_ClusterEntry* clusterDataTable = (FSTHeader_ClusterEntry*)(fstData.data() + sizeof(FSTHeader));
-	if ((clusterDataTable + numCluster) > fstEnd)
+	const uint32 numCluster = fst_table_cluster_count(table.get());
+	std::unique_ptr<FSTCluster[]> clusterTable(new (std::nothrow) FSTCluster[numCluster ? numCluster : 1]);
+	if (!clusterTable)
 		return nullptr;
-	std::vector<FSTCluster> clusterTable;
-	clusterTable.resize(numCluster);
-	for (size_t i = 0; i < numCluster; i++)
+	for (uint32 i = 0; i < numCluster; i++)
 	{
-		clusterTable[i].offset = clusterDataTable[i].offset;
-		clusterTable[i].size = clusterDataTable[i].size;
-		clusterTable[i].hashMode = static_cast<FSTVolume::ClusterHashMode>((uint8)clusterDataTable[i].hashMode);
-		clusterTable[i].hasContentHash = false; // from the TMD file (H4?)
+		const fst_table_cluster_t* c = fst_table_cluster(table.get(), i);
+		clusterTable[i].offset = c->offset;
+		clusterTable[i].hashMode = static_cast<FSTVolume::ClusterHashMode>(c->hash_mode);
 	}
 	// if the TMD is available (when opening .app files) we can use the extra info from it to validate unhashed clusters
 	// each content entry in the TMD corresponds to one cluster used by the FST
 	if(optionalTMD)
 	{
-		if(numCluster != optionalTMD->GetContentList().size())
+		auto& contentList = optionalTMD->GetContentList();
+		if(numCluster != contentList.size())
 		{
 			cemuLog_log(LogType::Force, "FST: Number of clusters does not match TMD content list");
 			return nullptr;
 		}
-		auto& contentList = optionalTMD->GetContentList();
 		for(size_t i=0; i<contentList.size(); i++)
 		{
 			auto& cluster = clusterTable[i];
@@ -420,36 +416,14 @@ FSTVolume* FSTVolume::OpenFST(fst_source_t* dataSource, bool takeSource, uint64 
 			}
 		}
 	}
-	// preprocess FST table
-	FSTHeader_FileEntry* fileTable = (FSTHeader_FileEntry*)(clusterDataTable + numCluster);
-	if ((fileTable + 1) > fstEnd)
-		return nullptr;
-	if (fileTable[0].GetType() != FSTHeader_FileEntry::TYPE::DIRECTORY)
-		return nullptr;
-	uint32 numFileEntries = fileTable[0].size;
-	if (numFileEntries == 0 || (fileTable + numFileEntries) > fstEnd)
-		return nullptr;
-	// load name string table
-	ptrdiff_t nameLookupTableSize = ((const uint8*)fstEnd - (const uint8*)(fileTable + numFileEntries));
-	if (nameLookupTableSize < 1)
-		return nullptr;
-	std::vector<char> nameStringTable(nameLookupTableSize);
-	std::memcpy(nameStringTable.data(), (fileTable + numFileEntries), nameLookupTableSize);
-	// process FST
-	std::vector<FSTEntry> fstEntries;
-	if (!ProcessFST(fileTable, numFileEntries, numCluster, nameStringTable, fstEntries))
-		return nullptr;
 	// construct FSTVolume from the processed data
 	FSTVolume* fstVolume = new FSTVolume();
 	fstVolume->m_dataSource = dataSource;
 	fstVolume->m_sourceIsOwned = owned.release() != nullptr;
-	fstVolume->m_offsetFactor = fstHeader->offsetFactor;
 	fstVolume->m_sectorSize = DISC_SECTOR_SIZE;
 	fstVolume->m_partitionTitlekey = *partitionTitleKey;
-	fstVolume->m_hashIsDisabled = fstHeader->hashIsDisabled != 0;
+	fstVolume->m_table = table.release();
 	fstVolume->m_cluster = std::move(clusterTable);
-	fstVolume->m_entries = std::move(fstEntries);
-	fstVolume->m_nameStringTable = std::move(nameStringTable);
 	return fstVolume;
 }
 
@@ -459,262 +433,71 @@ FSTVolume* FSTVolume::OpenFromDataSource(fst_source_t* dataSource, uint64 fstOff
 	return OpenFST(dataSource, true, fstOffset, fstSize, &k, ClusterHashMode::RAW, nullptr);
 }
 
-bool FSTVolume::ProcessFST(FSTHeader_FileEntry* fileTable, uint32 numFileEntries, uint32 numCluster, std::vector<char>& nameStringTable, std::vector<FSTEntry>& fstEntries)
-{
-	struct DirHierachyInfo
-	{
-		DirHierachyInfo(uint32 parentIndex, uint32 endIndex) : parentIndex(parentIndex), endIndex(endIndex) {};
-
-		uint32 parentIndex;
-		uint32 endIndex;
-	};
-	std::vector<DirHierachyInfo> currentDirEnd;
-	currentDirEnd.reserve(32);
-	currentDirEnd.emplace_back(0, numFileEntries); // create a fake parent for the root directory, the root's parent index is zero (referencing itself)
-	uint32 currentIndex = 0;
-	FSTHeader_FileEntry* pFileIn = fileTable + currentIndex;
-	fstEntries.resize(numFileEntries);
-	FSTEntry* pFileOut = fstEntries.data();
-	// validate root directory
-	if (pFileIn->GetType() != FSTHeader_FileEntry::TYPE::DIRECTORY || pFileIn->GetDirectoryEndIndex() != numFileEntries || pFileIn->GetDirectoryParent() != 0)
-	{
-		cemuLog_log(LogType::Force, "FSTVolume::ProcessFST() - root node is invalid");
-		return false;
-	}
-	for (; currentIndex < numFileEntries; currentIndex++)
-	{
-		while (currentIndex >= currentDirEnd.back().endIndex)
-			currentDirEnd.pop_back();
-		// process entry name
-		uint32 nameOffset = pFileIn->GetNameOffset();
-		uint32 pos = nameOffset;
-		while (true)
-		{
-			if (pos >= nameStringTable.size())
-				return false; // name exceeds string table
-			if (nameStringTable[pos] == '\0')
-				break;
-			pos++;
-		}
-		uint32 nameLen = pos - nameOffset;
-		pFileOut->nameOffset = nameOffset;
-		pFileOut->nameHash = _QuickNameHash(nameStringTable.data() + nameOffset, nameLen);
-		// parent directory index
-		pFileOut->parentDirIndex = currentDirEnd.back().parentIndex;
-		//if (currentDirEnd.back().parentIndex == 0)
-		//	pFileOut->parentDirIndex = std::numeric_limits<uint32>::max();
-		//else
-		//	pFileOut->parentDirIndex = currentDirEnd.back().parentIndex;
-		// process type specific data
-		auto entryType = pFileIn->GetType();
-
-		uint8 flags = 0;
-		if (pFileIn->HasFlagLink())
-			flags |= FSTEntry::FLAG_LINK;
-		if (pFileIn->HasUknFlag02())
-			flags |= FSTEntry::FLAG_UKN02;
-		pFileOut->SetFlags((FSTEntry::FLAGS)flags);
-
-		if (entryType == FSTHeader_FileEntry::TYPE::FILE)
-		{
-			bool isSysLink = entryType == FSTHeader_FileEntry::TYPE::FILE;
-			if (pFileIn->clusterIndex >= numCluster)
-			{
-				cemuLog_log(LogType::Force, "FST: File references cluster out of range");
-				return false;
-			}
-			cemu_assert_debug(pFileIn->flagsOrPermissions != 0x4004);
-			pFileOut->SetType(FSTEntry::TYPE::FILE);
-			pFileOut->fileInfo.fileOffset = pFileIn->offset;
-			pFileOut->fileInfo.fileSize = pFileIn->size;
-			pFileOut->fileInfo.clusterIndex = pFileIn->clusterIndex;
-		}
-		else if (entryType == FSTHeader_FileEntry::TYPE::DIRECTORY)
-		{
-			cemu_assert_debug(pFileIn->flagsOrPermissions != 0x4004);
-			pFileOut->SetType(FSTEntry::TYPE::DIRECTORY);
-			uint32 endIndex = pFileIn->GetDirectoryEndIndex();
-			uint32 parentIndex = pFileIn->GetDirectoryParent();
-			if (endIndex < currentIndex || endIndex > currentDirEnd.back().endIndex)
-			{
-				cemuLog_log(LogType::Force, "FST: Directory range out of bounds");
-				return false; // dir index out of range
-			}
-			if (parentIndex != currentDirEnd.back().parentIndex)
-			{
-				cemuLog_log(LogType::Force, "FST: Parent index does not match");
-				cemu_assert_debug(false);
-				return false;
-			}
-			currentDirEnd.emplace_back(currentIndex, endIndex);
-			pFileOut->dirInfo.endIndex = endIndex;
-		}
-		else
-		{
-			cemuLog_log(LogType::Force, "FST: Encountered node with unknown type");
-			cemu_assert_debug(false);
-			return false;
-		}
-		pFileIn++;
-		pFileOut++;
-	}
-	// end remaining directory hierarchy with final index
-	cemu_assert_debug(currentIndex == numFileEntries);
-	while (!currentDirEnd.empty() && currentIndex >= currentDirEnd.back().endIndex)
-		currentDirEnd.pop_back();
-	cemu_assert_debug(currentDirEnd.empty()); // no entries should remain
-	return true;
-}
-
 uint32 FSTVolume::GetFileCount() const
 {
-	uint32 fileCount = 0;
-	for (auto& itr : m_entries)
-	{
-		if (itr.GetType() == FSTEntry::TYPE::FILE)
-			fileCount++;
-	}
-	return fileCount;
+	return fst_table_file_count(m_table);
 }
 
 bool FSTVolume::OpenFile(std::string_view path, FSTFileHandle& fileHandleOut, bool openOnlyFiles)
 {
-	FSCPath fscPath(path);
-	if (fscPath.GetNodeCount() == 0)
-	{
-		// empty path pointers to root directory
-		if(openOnlyFiles)
-			return false;
-		fileHandleOut.m_fstIndex = 0;
-		return true;
-	}
-
-	// scan directory and find sub folder or file
-	// skips iterating subdirectories
-	auto findSubentry = [this](size_t firstIndex, size_t lastIndex, std::string_view nodeName) -> sint32
-	{
-		uint16 nodeHash = _QuickNameHash(nodeName.data(), nodeName.size());
-		size_t index = firstIndex;
-		while (index < lastIndex)
-		{
-			if (m_entries[index].nameHash == nodeHash && MatchFSTEntryName(m_entries[index], nodeName))
-				return (sint32)index;
-			if (m_entries[index].GetType() == FSTEntry::TYPE::DIRECTORY)
-				index = m_entries[index].dirInfo.endIndex;
-			else
-				index++;
-		}
-		return -1;
-	};
-
-	// current FST range we iterate, starting with root directory which covers all entries
-	uint32 parentIndex = std::numeric_limits<uint32>::max();
-	size_t curDirStart = 1; // skip root directory
-	size_t curDirEnd = m_entries[0].dirInfo.endIndex;
-
-	// find the subdirectory
-	for (size_t nodeIndex = 0; nodeIndex < fscPath.GetNodeCount() - 1; nodeIndex++)
-	{
-		// get hash of node name
-		sint32 fstIndex = findSubentry(curDirStart, curDirEnd, fscPath.GetNodeName(nodeIndex));
-		if (fstIndex < 0)
-			return false;
-		if (m_entries[fstIndex].GetType() != FSTEntry::TYPE::DIRECTORY)
-			return false;
-		parentIndex = fstIndex;
-		curDirStart = fstIndex + 1;
-		curDirEnd = m_entries[fstIndex].dirInfo.endIndex;
-	}
-	// find the entry
-	sint32 fstIndex = findSubentry(curDirStart, curDirEnd, fscPath.GetNodeName(fscPath.GetNodeCount() - 1));
-	if (fstIndex < 0)
+	const uint32 index = fst_table_lookup(m_table, path.data(), path.size(), openOnlyFiles);
+	if (index == FST_TABLE_NONE)
 		return false;
-	if (openOnlyFiles && m_entries[fstIndex].GetType() != FSTEntry::TYPE::FILE)
-		return false;
-	fileHandleOut.m_fstIndex = fstIndex;
+	fileHandleOut.m_fstIndex = index;
 	return true;
 }
 
 bool FSTVolume::IsDirectory(const FSTFileHandle& fileHandle) const
 {
-	cemu_assert_debug(fileHandle.m_fstIndex < m_entries.size());
-	return m_entries[fileHandle.m_fstIndex].GetType() == FSTEntry::TYPE::DIRECTORY;
-};
+	return fst_table_is_dir(m_table, fileHandle.m_fstIndex);
+}
 
 bool FSTVolume::IsFile(const FSTFileHandle& fileHandle) const
 {
-	cemu_assert_debug(fileHandle.m_fstIndex < m_entries.size());
-	return m_entries[fileHandle.m_fstIndex].GetType() == FSTEntry::TYPE::FILE;
-};
+	return fst_table_is_file(m_table, fileHandle.m_fstIndex);
+}
 
 bool FSTVolume::HasLinkFlag(const FSTFileHandle& fileHandle) const
 {
-	cemu_assert_debug(fileHandle.m_fstIndex < m_entries.size());
-	return HAS_FLAG(m_entries[fileHandle.m_fstIndex].GetFlags(), FSTEntry::FLAGS::FLAG_LINK);
-};
+	return fst_table_is_link(m_table, fileHandle.m_fstIndex);
+}
 
 std::string_view FSTVolume::GetName(const FSTFileHandle& fileHandle) const
 {
-	if (fileHandle.m_fstIndex > m_entries.size())
-		return "";
-	const char* entryName = m_nameStringTable.data() + m_entries[fileHandle.m_fstIndex].nameOffset;
-	return entryName;
+	return fst_table_name(m_table, fileHandle.m_fstIndex);
 }
 
 std::string FSTVolume::GetPath(const FSTFileHandle& fileHandle) const
 {
-	std::string path;
-	auto& entry = m_entries[fileHandle.m_fstIndex];
-	// get parent chain
-	boost::container::small_vector<uint32, 8> parentChain;
-	if (entry.HasNonRootNodeParent())
-	{
-		parentChain.emplace_back(entry.parentDirIndex);
-		auto* parentItr = &m_entries[entry.parentDirIndex];
-		while (parentItr->HasNonRootNodeParent())
-		{
-			cemu_assert_debug(parentItr->GetType() == FSTEntry::TYPE::DIRECTORY);
-			parentChain.emplace_back(parentItr->parentDirIndex);
-			parentItr = &m_entries[parentItr->parentDirIndex];
-		}
-	}
-	// build path
-	cemu_assert_debug(parentChain.size() <= 1); // test this case
-	for (auto& itr : parentChain | boost::adaptors::reversed)
-	{
-		const char* name = m_nameStringTable.data() + m_entries[itr].nameOffset;
-		path.append(name);
-		path.push_back('/');
-	}
-	// append node name
-	const char* name = m_nameStringTable.data() + entry.nameOffset;
-	path.append(name);
+	std::string path(fst_table_path(m_table, fileHandle.m_fstIndex, nullptr, 0), '\0');
+	fst_table_path(m_table, fileHandle.m_fstIndex, path.data(), path.size() + 1);
 	return path;
 }
 
 uint32 FSTVolume::GetFileSize(const FSTFileHandle& fileHandle) const
 {
-	if (m_entries[fileHandle.m_fstIndex].GetType() != FSTEntry::TYPE::FILE)
+	fst_table_file_t file;
+	if (!fst_table_file(m_table, fileHandle.m_fstIndex, &file))
 		return 0;
-	return m_entries[fileHandle.m_fstIndex].fileInfo.fileSize;
+	return file.size;
 }
 
 uint32 FSTVolume::ReadFile(FSTFileHandle& fileHandle, uint32 offset, uint32 size, void* dataOut)
 {
-	FSTEntry& entry = m_entries[fileHandle.m_fstIndex];
-	if (entry.GetType() != FSTEntry::TYPE::FILE)
+	fst_table_file_t file;
+	if (!fst_table_file(m_table, fileHandle.m_fstIndex, &file))
 		return 0;
-	cemu_assert_debug(!HAS_FLAG(entry.GetFlags(), FSTEntry::FLAGS::FLAG_LINK));
-	FSTCluster& cluster = m_cluster[entry.fileInfo.clusterIndex];
+	cemu_assert_debug(!fst_table_is_link(m_table, fileHandle.m_fstIndex));
+	FSTCluster& cluster = m_cluster[file.cluster];
 	// a cache of this reader's own for the read
 	BlockCache* cache = AcquireCache();
 	if (!cache)
 		return 0;
 	uint32 read = 0;
 	if (cluster.hashMode == ClusterHashMode::RAW || cluster.hashMode == ClusterHashMode::RAW_STREAM)
-		read = ReadFile_HashModeRaw(*cache, entry.fileInfo.clusterIndex, entry, offset, size, dataOut);
+		read = ReadFile_HashModeRaw(*cache, file.cluster, file, offset, size, dataOut);
 	else if (cluster.hashMode == ClusterHashMode::HASH_INTERLEAVED)
-		read = ReadFile_HashModeHashed(*cache, entry.fileInfo.clusterIndex, entry, offset, size, dataOut);
+		read = ReadFile_HashModeHashed(*cache, file.cluster, file, offset, size, dataOut);
 	else
 		cemu_assert_debug(false);
 	ReleaseCache(cache);
@@ -874,7 +657,7 @@ bool FSTVolume::DecryptRawBlock(BlockCache& cache, uint32 clusterIndex, uint32 b
 	// does, any other goes on, and the next block waits for the next reader
 	if(cluster.hasContentHash)
 	{
-		std::atomic<uint32>& next = cluster.singleHashNumBlocksHashed.v;
+		std::atomic<uint32>& next = cluster.singleHashNumBlocksHashed;
 		uint32 expected = blockIndex;
 		if(next.load(std::memory_order_acquire) == blockIndex
 			&& next.compare_exchange_strong(expected, blockIndex | 0x80000000u, std::memory_order_acquire, std::memory_order_relaxed))
@@ -963,14 +746,14 @@ const uint8* FSTVolume::GetDecryptedHashedBlockData(BlockCache& cache, uint32 cl
 	return data + BLOCK_HASH_SIZE;
 }
 
-uint32 FSTVolume::ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut)
+uint32 FSTVolume::ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, const fst_table_file_t& file, uint32 readOffset, uint32 readSize, void* dataOut)
 {
 	uint8* dataOutU8 = (uint8*)dataOut;
-	if (readOffset >= entry.fileInfo.fileSize)
+	// not past the file's end (readOffset + readSize may not fit 32 bits)
+	if (readOffset >= file.size)
 		return 0;
-	else if ((readOffset + readSize) >= entry.fileInfo.fileSize)
-		readSize = (entry.fileInfo.fileSize - readOffset);
-	uint64 absFileOffset = (uint64)entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
+	readSize = std::min(readSize, file.size - readOffset);
+	uint64 absFileOffset = (uint64)file.offset * fst_table_offset_factor(m_table) + readOffset;
 	uint32 remainingReadSize = readSize;
 	while (remainingReadSize > 0)
 	{
@@ -1001,7 +784,7 @@ uint32 FSTVolume::ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, F
 	return readSize - remainingReadSize;
 }
 
-uint32 FSTVolume::ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut)
+uint32 FSTVolume::ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex, const fst_table_file_t& file, uint32 readOffset, uint32 readSize, void* dataOut)
 {
 	/*
 		Data is divided into 0x10000 (64KiB) blocks
@@ -1031,10 +814,10 @@ uint32 FSTVolume::ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex
 	*/
 
 	// not past the file's end, as for raw clusters
-	if (readOffset >= entry.fileInfo.fileSize)
+	if (readOffset >= file.size)
 		return 0;
-	readSize = std::min(readSize, entry.fileInfo.fileSize - readOffset);
-	uint64 fileReadOffset = (uint64)entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
+	readSize = std::min(readSize, file.size - readOffset);
+	uint64 fileReadOffset = (uint64)file.offset * fst_table_offset_factor(m_table) + readOffset;
 	uint32 blockIndex = (uint32)(fileReadOffset / BLOCK_FILE_SIZE);
 	uint32 bytesRemaining = readSize;
 	uint32 offsetWithinBlock = (uint32)(fileReadOffset % BLOCK_FILE_SIZE);
@@ -1069,29 +852,18 @@ bool FSTVolume::OpenDirectoryIterator(std::string_view path, FSTDirectoryIterato
 	FSTFileHandle fileHandle;
 	if (!OpenFile(path, fileHandle, false))
 		return false;
-	if (!IsDirectory(fileHandle))
+	if (!fst_table_dir_open(m_table, fileHandle.m_fstIndex, &directoryIteratorOut.entries))
 		return false;
-	auto const& fstEntry = m_entries[fileHandle.m_fstIndex];
 	directoryIteratorOut.dirHandle = fileHandle;
-	directoryIteratorOut.startIndex = fileHandle.m_fstIndex + 1;
-	directoryIteratorOut.endIndex = fstEntry.dirInfo.endIndex;
-	directoryIteratorOut.currentIndex = directoryIteratorOut.startIndex;
 	return true;
 }
 
 bool FSTVolume::Next(FSTDirectoryIterator& directoryIterator, FSTFileHandle& fileHandleOut)
 {
-	if (directoryIterator.currentIndex >= directoryIterator.endIndex)
+	const uint32 index = fst_table_dir_next(m_table, &directoryIterator.entries);
+	if (index == FST_TABLE_NONE)
 		return false;
-	auto const& fstEntry = m_entries[directoryIterator.currentIndex];
-	fileHandleOut.m_fstIndex = directoryIterator.currentIndex;
-	if (fstEntry.GetType() == FSTEntry::TYPE::DIRECTORY)
-	{
-		cemu_assert_debug(fstEntry.dirInfo.endIndex > directoryIterator.currentIndex);
-		directoryIterator.currentIndex = fstEntry.dirInfo.endIndex;
-	}
-	else
-		directoryIterator.currentIndex++;
+	fileHandleOut.m_fstIndex = index;
 	return true;
 }
 
@@ -1101,6 +873,7 @@ FSTVolume::~FSTVolume()
 		delete slot.exchange(nullptr, std::memory_order_acquire);
 	if (m_sourceIsOwned)
 		fst_source_close(m_dataSource);
+	fst_table_free(m_table);
 }
 
 bool FSTVerifier::VerifyContentFile(FileStream* fileContent, const NCrypto::AesKey* key, uint32 contentIndex, uint32 contentSize, uint32 contentSizePadded, bool isSHA1, const uint8* tmdContentHash)

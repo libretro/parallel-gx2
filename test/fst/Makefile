@@ -24,9 +24,9 @@ C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(LRC)/ha
 CXX_SRCS := fst_test.cpp $(SRC)/Cafe/Filesystem/FST/FST.cpp \
 	$(SRC)/util/helpers/MappedFile.cpp $(FILE_IO_CXX)
 
-fst_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(DISC_IMAGE_C) $(AES_C) $(SRC)/Cafe/Filesystem/FST/FST.h $(SRC)/Cafe/Filesystem/FST/fst_source.h test_source.h
+fst_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(DISC_IMAGE_C) $(AES_C) $(FST_TABLE_C) $(SRC)/Cafe/Filesystem/FST/FST.h $(SRC)/Cafe/Filesystem/FST/fst_table.h $(SRC)/Cafe/Filesystem/FST/fst_source.h test_source.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
-	for f in $(DISC_IMAGE_C) $(AES_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(DISC_IMAGE_C) $(AES_C) $(FST_TABLE_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

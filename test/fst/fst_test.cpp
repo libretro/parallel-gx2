@@ -382,6 +382,31 @@ static void TestVolume(bool lend)
 	}
 	CHECK(all);
 
+	// entries through the table: paths, listings, what is not there
+	{
+		FSTFileHandle h;
+		CHECK(vol->GetFileCount() == 6);
+		CHECK(vol->OpenFile("H\\D.BIN", h, true) && vol->GetPath(h) == "h/d.bin" && vol->GetName(h) == "d.bin");
+		CHECK(!vol->OpenFile("h", h, true) && vol->OpenFile("/h/", h, false) && vol->IsDirectory(h) && !vol->IsFile(h));
+		CHECK(!vol->OpenFile("raw/c.bin", h, false) && !vol->OpenFile("raw/a.bin/x", h, false));
+		FSTDirectoryIterator it;
+		int listed = 0;
+		CHECK(vol->OpenDirectoryIterator("raw", it));
+		while (vol->Next(it, h))
+			listed += vol->IsFile(h) && !vol->HasLinkFlag(h) ? 1 : 100;
+		CHECK(listed == 3);
+		CHECK(!vol->OpenDirectoryIterator("raw/a.bin", it));
+		// a lookup and a listing allocate nothing, however long the path
+		const uint64 before = s_allocs;
+		bool found = vol->OpenFile("./raw/./././././././././././././././a.bin", h, true)
+			&& !vol->OpenFile("raw/a-name-longer-than-any-path-kept-without-allocating-would-be.bin", h, false)
+			&& !vol->OpenFile("h/1/2/3/4/5/6/7/8/9/10/11/12", h, false);
+		CHECK(vol->OpenDirectoryIterator("h", it));
+		while (vol->Next(it, h))
+			found = found && !vol->GetName(h).empty();
+		CHECK(found && s_allocs == before);
+	}
+
 	// warm: no allocation for any read, cached or straight through
 	FSTFileHandle a, c;
 	CHECK(vol->OpenFile("raw/a.bin", a, true) && vol->OpenFile("h/c.bin", c, true));

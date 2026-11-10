@@ -493,6 +493,18 @@ test-rcu-cell:
     - make -C test/rcu_cell clean
     - SANITIZER=address,undefined ./test/rcu_cell/run_tests.sh
 
+# The C (C89) a volume's entries are looked up, listed and named in.
+test-fst-table:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/fst_table/run_tests.sh
+    - make -C test/fst_table clean
+    - SANITIZER=address,undefined ./test/fst_table/run_tests.sh
+
 # The core's reader of disc and title content volumes, over one the test
 # makes. The core's precompiled header wants fmt and glm.
 test-fst:

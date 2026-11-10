@@ -1,6 +1,7 @@
 #pragma once
 #include "Cemu/ncrypto/ncrypto.h"
 #include "util/crypto/sha.h"
+#include "Cafe/Filesystem/FST/fst_table.h"
 
 struct FSTFileHandle
 {
@@ -18,10 +19,8 @@ struct FSTDirectoryIterator
 		return dirHandle;
 	}
 private:
-    FSTFileHandle dirHandle;
-	uint32 startIndex;
-	uint32 endIndex;
-	uint32 currentIndex;
+	FSTFileHandle dirHandle;
+	fst_table_dir_t entries;
 };
 
 class FSTVolume
@@ -101,110 +100,34 @@ private:
 		HASH_INTERLEAVED = 2, // hashes + raw interleaved in 0x10000 blocks (0x400 bytes of hashes at the beginning, followed by 0xFC00 bytes of data)
 	};
 
+	// what a read of a cluster wants besides what the table says of it
 	struct FSTCluster
 	{
-		FSTCluster() = default;
-
-		uint32 offset;
-		uint32 size;
+		uint32 offset; // in sectors
 		ClusterHashMode hashMode;
 		// extra data if TMD is available
-		bool hasContentHash;
+		bool hasContentHash{};
 		uint8 contentHash32[32];
-		bool contentHashIsSHA1; // if true then it's SHA1 (with extra bytes zeroed out), otherwise it's SHA256
-		uint64 contentSize; // size of the content (in blocks)
+		bool contentHashIsSHA1{}; // if true then it's SHA1 (with extra bytes zeroed out), otherwise it's SHA256
+		uint64 contentSize{}; // size of the content (in blocks)
 		// hash context for single hash mode (content hash must be available)
-		std::unique_ptr<ShaStream> singleHashCtx; // unique_ptr to make this move-only
+		std::unique_ptr<ShaStream> singleHashCtx;
 		// the next block to hash, its top bit set while a reader hashes it:
-		// one reader hashes each block, the others go on (moved only while
-		// the volume is made)
-		struct MovableAtomicU32
-		{
-			std::atomic<uint32> v{0};
-			MovableAtomicU32() = default;
-			MovableAtomicU32(MovableAtomicU32&& o) noexcept : v(o.v.load(std::memory_order_relaxed)) {}
-			MovableAtomicU32& operator=(MovableAtomicU32&& o) noexcept { v.store(o.v.load(std::memory_order_relaxed), std::memory_order_relaxed); return *this; }
-		};
-		MovableAtomicU32 singleHashNumBlocksHashed;
-	};
-
-	struct FSTEntry
-	{
-		enum class TYPE : uint8
-		{
-			FILE,
-			DIRECTORY,
-		};
-
-		enum FLAGS : uint8
-		{
-			FLAG_NONE = 0x0,
-			FLAG_LINK = 0x1,
-			FLAG_UKN02 = 0x2, // seen in Super Mario Galaxy. Used for vWii files?
-		};
-
-		uint32 nameOffset;
-		uint32 parentDirIndex; // index of parent directory
-		uint16 nameHash;
-		uint8 typeAndFlags;
-
-		TYPE GetType() const
-		{
-			return (TYPE)(typeAndFlags & 0xF);
-		}
-
-		void SetType(TYPE t)
-		{
-			typeAndFlags &= ~0x0F;
-			typeAndFlags |= ((uint8)t);
-		}
-
-		FLAGS GetFlags() const
-		{
-			return (FLAGS)(typeAndFlags >> 4);
-		}
-
-		void SetFlags(FLAGS flags)
-		{
-			typeAndFlags &= ~0xF0;
-			typeAndFlags |= ((uint8)flags << 4);
-		}
-
-		// note: The root node is not considered a valid parent
-		bool HasNonRootNodeParent() const
-		{
-			return parentDirIndex != 0;
-		}
-
-		union
-		{
-			struct
-			{
-				uint32 endIndex;
-			}dirInfo;
-			struct
-			{
-				uint32 fileOffset;
-				uint32 fileSize;
-				uint16 clusterIndex;
-			}fileInfo;
-		};
+		// one reader hashes each block, the others go on
+		std::atomic<uint32> singleHashNumBlocksHashed{0};
 	};
 
 	struct fst_source* m_dataSource; // fst_source.h
 	bool m_sourceIsOwned{};
 	uint32 m_sectorSize{}; // for cluster offsets
-	uint32 m_offsetFactor{}; // for file offsets
-	bool m_hashIsDisabled{}; // disables hash verification (for all clusters of this volume?)
-	std::vector<FSTCluster> m_cluster;
-	std::vector<FSTEntry> m_entries;
-	std::vector<char> m_nameStringTable;
+	fst_table_t* m_table{}; // fst_table.h: the entries, their names, the clusters
+	std::unique_ptr<FSTCluster[]> m_cluster;
 	NCrypto::AesKey m_partitionTitlekey;
 	std::atomic<bool> m_detectedCorruption{false};
 
 	bool HashIsDisabled() const
 	{
-		return m_hashIsDisabled;
+		return fst_table_hash_disabled(m_table);
 	}
 
 	/* Decrypted blocks kept for the reads that follow: a fixed set of slots,
@@ -256,137 +179,11 @@ private:
 	const uint8* GetDecryptedHashedBlockData(BlockCache& cache, uint32 clusterIndex, uint32 blockIndex);
 
 	/* File reading */
-	uint32 ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
-	uint32 ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);
-
-	/* FST parsing */
-	struct FSTHeader
-	{
-		/* +0x00 */ uint32be magic;
-		/* +0x04 */ uint32be offsetFactor;
-		/* +0x08 */ uint32be numCluster;
-		/* +0x0C */ uint8be hashIsDisabled;
-		/* +0x0D */ uint8be ukn0D;
-		/* +0x0E */ uint8be ukn0E;
-		/* +0x0F */ uint8be ukn0F;
-		/* +0x10 */ uint32be ukn10;
-		/* +0x14 */ uint32be ukn14;
-		/* +0x18 */ uint32be ukn18;
-		/* +0x1C */ uint32be ukn1C;
-	};
-
-	static_assert(sizeof(FSTHeader) == 0x20);
-
-	struct FSTHeader_ClusterEntry
-	{
-		/* +0x00 */ uint32be offset;
-		/* +0x04 */ uint32be size;
-		/* +0x08 */ uint64be ownerTitleId;
-		/* +0x10 */ uint32be groupId;
-		/* +0x14 */ uint8be  hashMode;
-		/* +0x15 */ uint8be  padding[0xB]; // ?
-	};
-	static_assert(sizeof(FSTHeader_ClusterEntry) == 0x20);
-
-	struct FSTHeader_FileEntry
-	{
-		enum class TYPE : uint8
-		{
-			FILE = 0,
-			DIRECTORY = 1,
-		};
-
-		/* +0x00 */ uint32be typeAndNameOffset;
-		/* +0x04 */ uint32be offset; // for directories: parent directory index
-		/* +0x08 */ uint32be size; // for directories: end index
-		/* +0x0C */ uint16be flagsOrPermissions; // three entries, each one shifted by 4. (so 0xXYZ). Possible bits per value seem to be 0x1 and 0x4 ? These are probably permissions
-		/* +0x0E */ uint16be clusterIndex;
-
-		TYPE GetType()
-		{
-			uint8 v = GetTypeFlagField();
-			cemu_assert_debug((v & ~0x83) == 0); // unknown type/flag
-			return static_cast<TYPE>(v & 0x01);
-		}
-
-		bool HasFlagLink()
-		{
-			uint8 v = GetTypeFlagField();
-			return (v & 0x80) != 0;
-		}
-
-		bool HasUknFlag02()
-		{
-			uint8 v = GetTypeFlagField();
-			return (v & 0x02) != 0;
-		}
-
-		uint32 GetNameOffset()
-		{
-			return (uint32)typeAndNameOffset & 0xFFFFFF;
-		}
-
-		uint32 GetDirectoryParent()
-		{
-			return offset;
-		}
-
-		uint32 GetDirectoryEndIndex()
-		{
-			return size;
-		}
-
-	private:
-		uint8 GetTypeFlagField()
-		{
-			return static_cast<uint8>((typeAndNameOffset >> 24) & 0xFF);
-		}
-	};
-
-	static_assert(sizeof(FSTHeader_FileEntry) == 0x10);
+	uint32 ReadFile_HashModeRaw(BlockCache& cache, uint32 clusterIndex, const fst_table_file_t& file, uint32 readOffset, uint32 readSize, void* dataOut);
+	uint32 ReadFile_HashModeHashed(BlockCache& cache, uint32 clusterIndex, const fst_table_file_t& file, uint32 readOffset, uint32 readSize, void* dataOut);
 
 	// takeSource: the volume closes the source, also when it does not open
 	static FSTVolume* OpenFST(struct fst_source* dataSource, bool takeSource, uint64 fstOffset, uint32 fstSize, NCrypto::AesKey* partitionTitleKey, ClusterHashMode fstHashMode, NCrypto::TMDParser* optionalTMD);
-	static bool ProcessFST(FSTHeader_FileEntry* fileTable, uint32 numFileEntries, uint32 numCluster, std::vector<char>& nameStringTable, std::vector<FSTEntry>& fstEntries);
-
-	bool MatchFSTEntryName(FSTEntry& entry, std::string_view comparedName)
-	{
-		const char* entryName = m_nameStringTable.data() + entry.nameOffset;
-		const char* comparedNameCur = comparedName.data();
-		const char* comparedNameEnd = comparedName.data() + comparedName.size();
-		while (comparedNameCur < comparedNameEnd)
-		{
-			uint8 c1 = *entryName;
-			uint8 c2 = *comparedNameCur;
-			if (c1 >= (uint8)'A' && c1 <= (uint8)'Z')
-				c1 = c1 - ((uint8)'A' - (uint8)'a');
-			if (c2 >= (uint8)'A' && c2 <= (uint8)'Z')
-				c2 = c2 - ((uint8)'A' - (uint8)'a');
-			if (c1 != c2)
-				return false;
-			entryName++;
-			comparedNameCur++;
-		}
-		return *entryName == '\0'; // all the characters match, check for same length
-	}
-
-	// we utilize hashes to accelerate string comparisons when doing path lookups
-	static uint16 _QuickNameHash(const char* fileName, size_t len)
-	{
-		uint16 v = 0;
-		const char* fileNameEnd = fileName + len;
-		while (fileName < fileNameEnd)
-		{
-			uint8 c = (uint8)*fileName;
-			if (c >= (uint8)'A' && c <= (uint8)'Z')
-				c = c - ((uint8)'A' - (uint8)'a');
-			v += (uint16)c;
-			v = (v >> 3) | (v << 13);
-			fileName++;
-		}
-		return v;
-	}
-
 };
 
 class FSTVerifier

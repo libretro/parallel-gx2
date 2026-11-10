@@ -350,6 +350,16 @@ jobs:
           make -C test/rcu_cell clean
           SANITIZER=address,undefined ./test/rcu_cell/run_tests.sh
 
+      - name: "FST tables"
+        # the C (C89) a volume's entries are looked up, listed and named in:
+        # tables made right and made wrong, and made wrong at random, which
+        # are turned away or walked to their end; plain and under ASan +
+        # UBSan
+        run: |
+          ./test/fst_table/run_tests.sh
+          make -C test/fst_table clean
+          SANITIZER=address,undefined ./test/fst_table/run_tests.sh
+
       - name: "FST volumes"
         # the core's reader of disc and title content volumes: files from
         # unhashed and hashed clusters of a volume the test makes, through
