@@ -1,4 +1,5 @@
 #include "Cafe/Filesystem/ZArchiveVFS.h"
+#include "util/helpers/RcuCell.h"
 
 // What the last 144 octets of a file say, against what an archive's footer
 // has there: its magic, its version, and the archive's size, which has to be
@@ -233,4 +234,101 @@ uint64 ZArchiveFile::Read(uint64 offset, void* buffer, uint64 size)
 	const uint64 read = zar_read_progress(reader);
 	m_archive.ReleaseReader(reader);
 	return read;
+}
+
+// --- archives shared by path ----------------------------------------------------
+
+struct ZArchiveShared
+{
+	fs::path path;
+	ZArchive* archive;
+	uint32 holders;
+};
+
+static RcuCell<std::vector<ZArchiveShared>> s_zarchiveShared;
+
+ZArchive* ZArchive::AcquireShared(const fs::path& path)
+{
+	// held already: one more holder
+	ZArchive* found = nullptr;
+	auto hold = [&]() {
+		s_zarchiveShared.Write([&] {
+			std::vector<ZArchiveShared> table = *s_zarchiveShared.Read();
+			for (ZArchiveShared& e : table)
+			{
+				if (e.path == path)
+				{
+					e.holders++;
+					found = e.archive;
+					break;
+				}
+			}
+			return table;
+		});
+	};
+	bool there = false;
+	{
+		// not held while writing: a writer waits for the readers before it
+		auto table = s_zarchiveShared.Read();
+		for (const ZArchiveShared& e : *table)
+			there = there || e.path == path;
+	}
+	if (there)
+		hold();
+	if (found)
+		return found;
+	// opening one can take a while: done outside the table's writer's turn
+	ZArchive* opened = ZArchive::Open(path);
+	if (!opened)
+		return nullptr;
+	s_zarchiveShared.Write([&] {
+		std::vector<ZArchiveShared> table = *s_zarchiveShared.Read();
+		for (ZArchiveShared& e : table)
+		{
+			if (e.path == path)
+			{
+				// opened by another meanwhile: that one is shared
+				e.holders++;
+				found = e.archive;
+				return table;
+			}
+		}
+		table.push_back({path, opened, 1});
+		found = opened;
+		return table;
+	});
+	if (found != opened)
+		delete opened;
+	return found;
+}
+
+void ZArchive::ReleaseShared(ZArchive* zar)
+{
+	if (!zar)
+		return;
+	bool last = false;
+	s_zarchiveShared.Write([&] {
+		std::vector<ZArchiveShared> table = *s_zarchiveShared.Read();
+		for (size_t i = 0; i < table.size(); i++)
+		{
+			if (table[i].archive != zar)
+				continue;
+			cemu_assert(table[i].holders > 0);
+			if (--table[i].holders == 0)
+			{
+				table.erase(table.begin() + i);
+				last = true;
+			}
+			return table;
+		}
+		cemu_assert(false); // not shared
+		return table;
+	});
+	if (last)
+		delete zar;
+}
+
+size_t ZArchive::SharedCount()
+{
+	return s_zarchiveShared.Read()->size();
 }

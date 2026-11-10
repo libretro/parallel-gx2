@@ -8,14 +8,19 @@
 //    some other disc's is named as not this one's;
 //  - keys.txt (CRLF lines, comments, dashes) is read once, and again on
 //    reload: a key added after the first read counts at the next load, and
-//    one taken out no longer does.
+//    one taken out no longer does;
+//  - keys.txt read again on one thread while others search: each search
+//    finds the key or does not, as the set it read says, with no lock
+//    (run under ThreadSanitizer by CI).
 #include "Cafe/Filesystem/FST/KeyCache.h"
 #include "Cemu/Logging/CemuLogging.h"
 #include "config/ActiveSettings.h"
 #include "util/crypto/aes128.h"
 
 #include <cstdio>
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 static int s_failures = 0;
 #define CHECK(cond) \
@@ -127,6 +132,49 @@ int main()
 	CHECK(!KeyCache_FindDiscKey(image, header, key, &search) && search.keysTxt == 1);
 	why = KeyCache_DescribeMissing(image, keysTxt, search);
 	CHECK(Contains(why, "None of the 1 key in"));
+
+	// searches on three threads while keys.txt is read again, with the key and
+	// without it by turns
+	{
+		const std::string withKey = "0f1e2d3c4b5a69788796a5b4c3d2e1f0\r\n";
+		const std::string without = "01020304050607080910111213141516\r\n";
+		std::atomic<bool> stop{false};
+		std::atomic<int> found{0}, notFound{0}, bad{0};
+		std::vector<std::thread> threads;
+		for (int t = 0; t < 3; t++)
+		{
+			threads.emplace_back([&]() {
+				while (!stop.load(std::memory_order_relaxed))
+				{
+					uint8 k[16];
+					KeyCacheSearch se;
+					if (KeyCache_FindDiscKey(image, header, k, &se))
+					{
+						found++;
+						if (memcmp(k, KEY, 16) != 0 || se.keysTxt != 1)
+							bad++;
+					}
+					else
+					{
+						notFound++;
+						if (se.keysTxt != 1)
+							bad++;
+					}
+				}
+			});
+		}
+		for (int i = 0; i < 200 || found == 0 || notFound == 0; i++)
+		{
+			WriteText(keysTxt, (i & 1) ? withKey : without);
+			KeyCache_Prepare(true);
+			if (i > 20000)
+				break;
+		}
+		stop = true;
+		for (std::thread& t : threads)
+			t.join();
+		CHECK(bad == 0 && found > 0 && notFound > 0);
+	}
 
 	fs::remove_all(dir);
 	if (s_failures)

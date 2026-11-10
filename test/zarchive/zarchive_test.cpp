@@ -9,6 +9,9 @@
 //  - the archive's readers are lent and given back: on one thread every
 //    lookup, listing and read of every file shares one, and four threads
 //    at once make no more than four;
+//  - an archive shared by path: asked for twice, the same one, kept until
+//    the last holder gives it back; asked for and given back by four threads
+//    at once, never more than one for the path, and none once all are back;
 //  - an archive that maps is read from its mapping alone: once open, no
 //    lookup, listing or read of any file opens a stream or reads one; one
 //    that does not map (FileStream refusing, as a frontend's VFS file does)
@@ -463,6 +466,64 @@ static void TestUnordered()
 	fs::remove(path);
 }
 
+static void TestShared(const fs::path& path, const std::vector<TestFile>& files)
+{
+	CHECK(ZArchive::SharedCount() == 0);
+	ZArchive* a = ZArchive::AcquireShared(path);
+	const uint32 opens = s_opens;
+	ZArchive* b = ZArchive::AcquireShared(path); // not opened again
+	CHECK(a && a == b && ZArchive::SharedCount() == 1 && s_opens == opens);
+	ZArchive::ReleaseShared(a);
+	CHECK(ZArchive::SharedCount() == 1 && b->LookUp(files[0].path));
+	ZArchive::ReleaseShared(b);
+	CHECK(ZArchive::SharedCount() == 0);
+	CHECK(ZArchive::AcquireShared(fs::temp_directory_path() / "parallel_gx2_no_such.wua") == nullptr);
+	CHECK(ZArchive::SharedCount() == 0);
+
+	std::atomic<int> bad{0};
+	std::vector<std::thread> threads;
+	ZArchive* held = ZArchive::AcquireShared(path); // one kept throughout
+	for (int t = 0; t < 4; t++)
+	{
+		threads.emplace_back([&, t]() {
+			std::mt19937 rng(t + 11);
+			for (int i = 0; i < 50; i++)
+			{
+				ZArchive* z = ZArchive::AcquireShared(path);
+				if (!z || z != held || ZArchive::SharedCount() != 1)
+					bad++;
+				if (z && !ReadsBack(*z, files[rng() % files.size()], rng))
+					bad++;
+				ZArchive::ReleaseShared(z);
+			}
+		});
+	}
+	for (std::thread& t : threads)
+		t.join();
+	ZArchive::ReleaseShared(held);
+	CHECK(bad == 0 && ZArchive::SharedCount() == 0);
+	// and with none held between: opened and deleted as they come and go
+	threads.clear();
+	for (int t = 0; t < 4; t++)
+	{
+		threads.emplace_back([&, t]() {
+			std::mt19937 rng(t + 21);
+			for (int i = 0; i < 20; i++)
+			{
+				ZArchive* z = ZArchive::AcquireShared(path);
+				if (!z || ZArchive::SharedCount() != 1)
+					bad++;
+				if (z && !ReadsBack(*z, files[rng() % files.size()], rng))
+					bad++;
+				ZArchive::ReleaseShared(z);
+			}
+		});
+	}
+	for (std::thread& t : threads)
+		t.join();
+	CHECK(bad == 0 && ZArchive::SharedCount() == 0);
+}
+
 int main()
 {
 	TestMetaXml();
@@ -490,6 +551,7 @@ int main()
 			CHECK(s_opens > opens && s_reads > reads);
 	}
 	s_noMap = false;
+	TestShared(path, files);
 	TestBroken(path);
 	fs::remove(path);
 	if (s_failures)

@@ -1,4 +1,3 @@
-#include <mutex>
 #include "util/helpers/MappedFile.h"
 #include <fstream>
 
@@ -9,17 +8,21 @@
 #include "Common/FileStream.h"
 #include "util/helpers/StringHelpers.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
+#include "util/helpers/RcuCell.h"
 
 #include <retro_dirent.h>
 
-std::mutex mtxKeyCache;
-
-struct KeyCacheEntry
+// What keys.txt holds, read whole and swapped in whole: a search reads the
+// set in place when it starts, with no lock, and a reload (each load, so an
+// edit counts without a restart) builds a new one beside it.
+struct KeySet
 {
-	uint8 aes128key[16];
+	std::vector<std::array<uint8, 16>> keys;
+	size_t keysTxt = 0; // the example the file is created with not counted
+	bool prepared = false;
 };
 
-std::vector<KeyCacheEntry> g_keyCache;
+static RcuCell<KeySet> s_keySet;
 
 bool strishex(std::string_view str)
 {
@@ -33,28 +36,6 @@ bool strishex(std::string_view str)
 	return true;
 }
 
-/*
- * Returns AES-128 key from the key cache
- * nullptr is returned if index >= max_keys
- */
-uint8* KeyCache_GetAES128(sint32 index)
-{
-	if( index < 0 || index >= (sint32)g_keyCache.size())
-		return nullptr;
-	KeyCacheEntry* keyCacheEntry = &g_keyCache[index];
-	return keyCacheEntry->aes128key;
-}
-
-void KeyCache_AddKey128(uint8* key)
-{
-	KeyCacheEntry newEntry = {0};
-	memcpy(newEntry.aes128key, key, 16);
-	g_keyCache.emplace_back(newEntry);
-}
-
-bool sKeyCachePrepared = false;
-// keys from keys.txt, the example the file is created with not counted
-size_t sKeysTxtKeys = 0;
 
 static const uint8 sExampleKey[16] = {0x54, 0x1b, 0x98, 0x89, 0x51, 0x9b, 0x27, 0xd3, 0x63, 0xcd, 0x21, 0x60, 0x4b, 0x97, 0xc6, 0x7a};
 
@@ -65,16 +46,23 @@ void KeyCache_Prepare(bool reload)
 
 void KeyCache_Load(const fs::path& keysPath, bool reload)
 {
-	mtxKeyCache.lock();
-	if (sKeyCachePrepared && !reload)
+	if (!reload)
 	{
-		cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: already prepared (keys_loaded={})", (sint32)g_keyCache.size());
-		mtxKeyCache.unlock();
-		return;
+		auto current = s_keySet.Read();
+		if (current->prepared)
+		{
+			cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: already prepared (keys_loaded={})", (sint32)current->keys.size());
+			return;
+		}
 	}
-	sKeyCachePrepared = true;
-	g_keyCache.clear();
-	sKeysTxtKeys = 0;
+	KeySet set;
+	set.prepared = true;
+	// published however the reading ends
+	struct Publish
+	{
+		KeySet& set;
+		~Publish() { s_keySet.Write([this] { return std::move(set); }); }
+	} publish{set};
 	// load keys
 	cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: keysPath='{}'", keysPath.generic_string());
 	FileStream* fs_keys = FileStream::openFile2(keysPath);
@@ -96,7 +84,6 @@ void KeyCache_Load(const fs::path& keysPath, bool reload)
 			cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: createFile2 failed");
 			WindowSystem::ShowErrorDialog(_tr("Unable to create file keys.txt\nThis can happen if Cemu does not have write permission to its own directory, the disk is full or if anti-virus software is blocking Cemu."), _tr("Error"), WindowSystem::ErrorCategory::KEYS_TXT_CREATION);
 		}
-		mtxKeyCache.unlock();
 		return;
 	}
 	cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare: opened keys.txt successfully");
@@ -140,11 +127,12 @@ void KeyCache_Load(const fs::path& keysPath, bool reload)
 			// 128-bit key
 			uint8 keyData128[16];
 			StringHelpers::ParseHexString(line, keyData128, 16);
-			KeyCache_AddKey128(keyData128);
+			std::array<uint8, 16>& key = set.keys.emplace_back();
+			memcpy(key.data(), keyData128, 16);
 			if (memcmp(keyData128, sExampleKey, 16) != 0)
-				sKeysTxtKeys++;
-			if ((g_keyCache.size() <= 10) || ((g_keyCache.size() % 500) == 0))
-				cemuLog_log(LogType::Force, "[KeyCache] Parsed AES-128 key (line={}, total_keys_loaded={})", lineNumber, (sint32)g_keyCache.size());
+				set.keysTxt++;
+			if ((set.keys.size() <= 10) || ((set.keys.size() % 500) == 0))
+				cemuLog_log(LogType::Force, "[KeyCache] Parsed AES-128 key (line={}, total_keys_loaded={})", lineNumber, (sint32)set.keys.size());
 		}
 		else
 		{
@@ -153,11 +141,10 @@ void KeyCache_Load(const fs::path& keysPath, bool reload)
 		}
 	}
 	delete fs_keys;
-	cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare done (lines_read={}, total_keys_loaded={})", lineNumber, (sint32)g_keyCache.size());
-	mtxKeyCache.unlock();
+	cemuLog_log(LogType::Force, "[KeyCache] KeyCache_Prepare done (lines_read={}, total_keys_loaded={})", lineNumber, (sint32)set.keys.size());
 }
 
-KeyCacheFile KeyCache_AddKeyFile(const fs::path& keyPath)
+KeyCacheFile KeyCache_ReadKeyFile(const fs::path& keyPath, uint8* keyOut)
 {
 	if (!FileStream::IsRegularFile(keyPath))
 		return KeyCacheFile::ABSENT;
@@ -189,12 +176,7 @@ KeyCacheFile KeyCache_AddKeyFile(const fs::path& keyPath)
 		}
 		StringHelpers::ParseHexString(std::string_view(hex, n), key, 16);
 	}
-	std::lock_guard lock(mtxKeyCache);
-	for (const auto& entry : g_keyCache)
-		if (memcmp(entry.aes128key, key, 16) == 0)
-			return KeyCacheFile::KEY;
-	KeyCache_AddKey128(key);
-	cemuLog_log(LogType::Force, "[KeyCache] disc key added from {}", _pathToUtf8(keyPath));
+	memcpy(keyOut, key, 16);
 	return KeyCacheFile::KEY;
 }
 
@@ -208,16 +190,18 @@ bool KeyCache_FindDiscKey(const fs::path& image, const uint8* header48, uint8* k
 	KeyCacheSearch local;
 	KeyCacheSearch& s = search ? *search : local;
 	s = {};
-	{
-		std::lock_guard lock(mtxKeyCache);
-		s.keysTxt = sKeysTxtKeys;
-	}
 	// the image's own <name>.key first, then any other .key in its folder: a
-	// dumper writes the disc's key as game.key beside game.wux
+	// dumper writes the disc's key as game.key beside game.wux. Tried for
+	// this image only, not kept.
+	std::vector<std::array<uint8, 16>> beside;
 	auto add = [&](const fs::path& keyPath) {
-		switch (KeyCache_AddKeyFile(keyPath))
+		std::array<uint8, 16> key;
+		switch (KeyCache_ReadKeyFile(keyPath, key.data()))
 		{
-		case KeyCacheFile::KEY: s.beside.push_back(_pathToUtf8(keyPath.filename())); break;
+		case KeyCacheFile::KEY:
+			beside.push_back(key);
+			s.beside.push_back(_pathToUtf8(keyPath.filename()));
+			break;
 		case KeyCacheFile::NOT_A_KEY: s.notKeys.push_back(_pathToUtf8(keyPath.filename())); break;
 		case KeyCacheFile::ABSENT: break;
 		}
@@ -244,17 +228,32 @@ bool KeyCache_FindDiscKey(const fs::path& image, const uint8* header48, uint8* k
 		retro_closedir(dir);
 	}
 
-	uint8 decrypted[32];
-	for (sint32 i = 0;; i++)
+	auto fits = [&](const std::array<uint8, 16>& key) {
+		uint8 decrypted[32];
+		AES128_CBC_decrypt(decrypted, header48 + 16, sizeof(decrypted), key.data(), header48);
+		if (!std::all_of(decrypted, decrypted + sizeof(decrypted), [](uint8 v) { return v == 0; }))
+			return false;
+		memcpy(keyOut, key.data(), 16);
+		return true;
+	};
 	{
-		const uint8* key128 = KeyCache_GetAES128(i);
-		if (!key128)
-			break;
-		AES128_CBC_decrypt(decrypted, header48 + 16, sizeof(decrypted), key128, header48);
-		if (std::all_of(decrypted, decrypted + sizeof(decrypted), [](uint8 v) { return v == 0; }))
+		// keys.txt as it is now: read in place, not copied
+		auto set = s_keySet.Read();
+		s.keysTxt = set->keysTxt;
+		for (size_t i = 0; i < set->keys.size(); i++)
 		{
-			cemuLog_log(LogType::Force, "[KeyCache] disc key found, the key cache's {}", i);
-			memcpy(keyOut, key128, 16);
+			if (fits(set->keys[i]))
+			{
+				cemuLog_log(LogType::Force, "[KeyCache] disc key found, keys.txt's {}", i);
+				return true;
+			}
+		}
+	}
+	for (size_t i = 0; i < beside.size(); i++)
+	{
+		if (fits(beside[i]))
+		{
+			cemuLog_log(LogType::Force, "[KeyCache] disc key found, {} beside the image", s.beside[i]);
 			return true;
 		}
 	}

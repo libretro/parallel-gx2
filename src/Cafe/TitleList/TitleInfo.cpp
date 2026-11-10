@@ -394,53 +394,6 @@ void TitleInfo::SetInvalidReason(InvalidReason reason)
 		m_invalidReason = reason; // only update reason when it hasn't been set before
 }
 
-std::mutex sZArchivePoolMtx;
-std::map<fs::path, std::pair<uint32, ZArchive*>> sZArchivePool;
-
-ZArchive* _ZArchivePool_AcquireInstance(const fs::path& path)
-{
-	std::unique_lock _lock(sZArchivePoolMtx);
-	auto it = sZArchivePool.find(path);
-	if (it != sZArchivePool.end())
-	{
-		it->second.first++; // increment ref count
-		return it->second.second;
-	}
-	_lock.unlock();
-	// opening wua files can be expensive, so we do it outside of the lock
-	ZArchive* zar = ZArchive::Open(path);
-	if (!zar)
-		return nullptr;
-	_lock.lock();
-	// check if another instance was allocated in the meantime
-	it = sZArchivePool.find(path);
-	if (it != sZArchivePool.end())
-	{
-		delete zar;
-		it->second.first++; // increment ref count
-		return it->second.second;
-	}
-	sZArchivePool.emplace(std::piecewise_construct,
-		std::forward_as_tuple(path),
-		std::forward_as_tuple(1, zar)
-	);
-	return zar;
-}
-
-void _ZArchivePool_ReleaseInstance(const fs::path& path, ZArchive* zar)
-{
-	std::unique_lock _lock(sZArchivePoolMtx);
-	auto it = sZArchivePool.find(path);
-	cemu_assert(it != sZArchivePool.end());
-	cemu_assert(it->second.second == zar);
-	it->second.first--; // decrement ref count
-	if (it->second.first == 0)
-	{
-		delete it->second.second;
-		sZArchivePool.erase(it);
-	}
-}
-
 bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, sint32 mountPriority)
 {
 	cemu_assert_debug(subfolder.empty() || (subfolder.front() != '/' || subfolder.front() != '\\')); // only relative subfolder allowed
@@ -491,7 +444,7 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 	{
 		if (!m_zarchive)
 		{
-			m_zarchive = _ZArchivePool_AcquireInstance(m_fullPath);
+			m_zarchive = ZArchive::AcquireShared(m_fullPath);
 			if (!m_zarchive)
 				return false;
 		}
@@ -499,7 +452,7 @@ bool TitleInfo::Mount(std::string_view virtualPath, std::string_view subfolder, 
 		if (!r)
 		{
 			cemuLog_log(LogType::Force, "Failed to mount {} to {}", virtualPath, subfolder);
-			_ZArchivePool_ReleaseInstance(m_fullPath, m_zarchive);
+			ZArchive::ReleaseShared(m_zarchive);
 			return false;
 		}
 	}
@@ -547,7 +500,7 @@ void TitleInfo::Unmount(std::string_view virtualPath)
 			}
             if (m_zarchive)
             {
-                _ZArchivePool_ReleaseInstance(m_fullPath, m_zarchive);
+                ZArchive::ReleaseShared(m_zarchive);
                 if (m_mountpoints.empty())
                     m_zarchive = nullptr;
             }

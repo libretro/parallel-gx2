@@ -38,6 +38,14 @@ public:
 	// nullptr if it cannot be read as an archive, and then in @whyNot, if
 	// given, what was found instead
 	static ZArchive* Open(const fs::path& path, std::string* whyNot = nullptr);
+	// The one archive open for a path, shared by whatever holds it: opened by
+	// the first to ask (two at once may both open it; one is kept), deleted
+	// when the last gives it back. No lock: the table of shared archives is
+	// replaced whole (RcuCell).
+	static ZArchive* AcquireShared(const fs::path& path);
+	static void ReleaseShared(ZArchive* zar);
+	// archives shared now
+	static size_t SharedCount();
 	~ZArchive();
 	ZArchive(const ZArchive&) = delete;
 	ZArchive& operator=(const ZArchive&) = delete;

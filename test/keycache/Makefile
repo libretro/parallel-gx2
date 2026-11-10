@@ -8,7 +8,7 @@ SRC := ../../src
 CXX ?= g++
 CC ?= gcc
 DEP := ../../dependencies
-FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar
+FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -Wno-multichar -DHAVE_THREADS
 # stub/ first: ActiveSettings and WindowSystem as the test has them
 CXXFLAGS_CORE := -iquote stub -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY \
 	-include $(SRC)/Common/precompiled.h
@@ -22,7 +22,8 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
-C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
+C_SRCS := $(FILE_IO_C) $(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c \
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := keycache_test.cpp $(SRC)/Cafe/Filesystem/FST/KeyCache.cpp $(SRC)/util/helpers/MappedFile.cpp \
 	$(FILE_IO_CXX) $(SRC)/util/crypto/aes128.cpp $(SRC)/Common/cpu_features.cpp
 

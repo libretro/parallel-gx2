@@ -6,17 +6,14 @@ void KeyCache_Prepare(bool reload = false);
 // The same, from keysPath
 void KeyCache_Load(const fs::path& keysPath, bool reload);
 
-uint8* KeyCache_GetAES128(sint32 index);
-
-// A disc key kept in a file: 16 bytes, or 32 hex digits as text. Added to the
-// key cache (once), so the image is found without its key in keys.txt.
+// A disc key kept in a file: 16 bytes, or 32 hex digits as text, into keyOut
 enum class KeyCacheFile
 {
 	ABSENT,
 	KEY,
 	NOT_A_KEY,
 };
-KeyCacheFile KeyCache_AddKeyFile(const fs::path& keyPath);
+KeyCacheFile KeyCache_ReadKeyFile(const fs::path& keyPath, uint8* keyOut);
 
 // What a disc key was looked for in
 struct KeyCacheSearch

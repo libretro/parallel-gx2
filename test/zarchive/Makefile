@@ -7,7 +7,7 @@ SRC := ../../src
 CXX ?= g++
 CC ?= gcc
 DEP := ../../dependencies
-FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_RZSTD -DENABLE_VULKAN
+FLAGS := -O1 -g -I$(SRC) -I$(LRC)/include -DHAVE_RZSTD -DENABLE_VULKAN -DHAVE_THREADS
 # what the core's precompiled header, which FileStream.h includes, wants
 CXXFLAGS_CORE := -I$(DEP)/boost-compat -I$(DEP)/fmt/include -I$(DEP)/glm -DFMT_HEADER_ONLY
 ifneq ($(SANITIZER),)
@@ -28,7 +28,8 @@ C_SRCS := $(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c \
 	$(LRC)/string/stdstring.c $(LRC)/string/rstrtod.c \
 	$(LRC)/encodings/encoding_utf.c $(LRC)/compat/compat_strl.c \
 	$(LRC)/compat/compat_posix_string.c $(LRC)/compat/fopen_utf8.c \
-	$(LRC)/time/rtime.c $(LRC)/formats/xml/rxml.c
+	$(LRC)/time/rtime.c $(LRC)/formats/xml/rxml.c \
+	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := zarchive_test.cpp $(SRC)/Cafe/Filesystem/ZArchiveVFS.cpp $(SRC)/util/xml/Xml.cpp
 
 zarchive_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(SRC)/Cafe/Filesystem/ZArchiveVFS.h $(SRC)/Cafe/TitleList/ParsedMetaXml.h $(SRC)/util/xml/Xml.h
