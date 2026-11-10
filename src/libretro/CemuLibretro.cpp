@@ -41,7 +41,6 @@
 #include "Cafe/TitleList/TitleList.h"
 #include "Cafe/TitleList/TitleInfo.h"
 #include "Cafe/Filesystem/fsc.h"
-#include "Cafe/TitleList/SaveList.h"
 #include "Cafe/TitleList/TitleConverter.h"
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
@@ -4768,23 +4767,25 @@ static void libretro_request_install()
 		std::string titlesPrefix = _pathToUtf8(titlesDir.lexically_normal());
 		if (!titlesPrefix.empty() && titlesPrefix.back() != (char)fs::path::preferred_separator)
 			titlesPrefix += (char)fs::path::preferred_separator;
-		for (TitleInfo* title : CafeTitleList::AcquireInternalList())
 		{
-			const std::string p = _pathToUtf8(title->GetPath().lexically_normal());
-			if (!title->IsValid() || p.size() <= titlesPrefix.size() || p.compare(0, titlesPrefix.size(), titlesPrefix) != 0)
-				continue;
-			const auto type = TitleIdParser(title->GetAppTitleId()).GetType();
-			if (type != TitleIdParser::TITLE_TYPE::BASE_TITLE_UPDATE && type != TitleIdParser::TITLE_TYPE::AOC)
-				continue;
-			auto same = std::find_if(found.begin(), found.end(), [&](const TitleInfo& other) {
-				return other.GetAppTitleId() == title->GetAppTitleId();
-			});
-			if (same == found.end())
-				found.emplace_back(*title);
-			else if (title->GetAppTitleVersion() > same->GetAppTitleVersion())
-				*same = *title;
+			auto titleList = CafeTitleList::ReadList();
+			for (const auto& title : titleList->titles)
+			{
+				const std::string p = _pathToUtf8(title->GetPath().lexically_normal());
+				if (!title->IsValid() || p.size() <= titlesPrefix.size() || p.compare(0, titlesPrefix.size(), titlesPrefix) != 0)
+					continue;
+				const auto type = TitleIdParser(title->GetAppTitleId()).GetType();
+				if (type != TitleIdParser::TITLE_TYPE::BASE_TITLE_UPDATE && type != TitleIdParser::TITLE_TYPE::AOC)
+					continue;
+				auto same = std::find_if(found.begin(), found.end(), [&](const TitleInfo& other) {
+					return other.GetAppTitleId() == title->GetAppTitleId();
+				});
+				if (same == found.end())
+					found.emplace_back(*title);
+				else if (title->GetAppTitleVersion() > same->GetAppTitleVersion())
+					*same = *title;
+			}
 		}
-		CafeTitleList::ReleaseInternalList();
 		if (found.empty())
 		{
 			libretro_set_convert_status(fmt::format("Nothing to install: no title updates or DLC in {}", _pathToUtf8(titlesDir)));
@@ -4856,17 +4857,19 @@ static bool libretro_request_install_game()
 		if (!titlesPrefix.empty() && titlesPrefix.back() != (char)fs::path::preferred_separator)
 			titlesPrefix += (char)fs::path::preferred_separator;
 		std::vector<fs::path> gamePaths;
-		for (TitleInfo* title : CafeTitleList::AcquireInternalList())
 		{
-			const std::string p = _pathToUtf8(title->GetPath().lexically_normal());
-			if (!title->IsValid() || p.size() <= titlesPrefix.size() || p.compare(0, titlesPrefix.size(), titlesPrefix) != 0)
-				continue;
-			if (TitleIdParser(title->GetAppTitleId()).GetType() != TitleIdParser::TITLE_TYPE::BASE_TITLE)
-				continue;
-			if (std::find(gamePaths.begin(), gamePaths.end(), title->GetPath()) == gamePaths.end())
-				gamePaths.push_back(title->GetPath());
+			auto titleList = CafeTitleList::ReadList();
+			for (const auto& title : titleList->titles)
+			{
+				const std::string p = _pathToUtf8(title->GetPath().lexically_normal());
+				if (!title->IsValid() || p.size() <= titlesPrefix.size() || p.compare(0, titlesPrefix.size(), titlesPrefix) != 0)
+					continue;
+				if (TitleIdParser(title->GetAppTitleId()).GetType() != TitleIdParser::TITLE_TYPE::BASE_TITLE)
+					continue;
+				if (std::find(gamePaths.begin(), gamePaths.end(), title->GetPath()) == gamePaths.end())
+					gamePaths.push_back(title->GetPath());
+			}
 		}
-		CafeTitleList::ReleaseInternalList();
 
 		// Everything each one holds, the newest version of each title.
 		std::vector<TitleInfo> found;

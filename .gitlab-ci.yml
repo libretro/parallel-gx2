@@ -435,6 +435,24 @@ test-fsc:
     - make -C test/fsc clean
     - SANITIZER=address,undefined ./test/fsc/run_tests.sh
 
+# The core's list of titles, over stand-in titles in a folder. The core's
+# precompiled header wants fmt and glm.
+test-titlelist:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/titlelist/run_tests.sh
+    - make -C test/titlelist clean
+    - SANITIZER=thread ./test/titlelist/run_tests.sh
+    - make -C test/titlelist clean
+    - SANITIZER=address,undefined ./test/titlelist/run_tests.sh
+
 # The core's reader of disc and title content volumes, over one the test
 # makes. The core's precompiled header wants fmt and glm.
 test-fst:

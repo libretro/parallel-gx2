@@ -26,6 +26,7 @@
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
+#include "util/helpers/OnceGate.h"
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Common/FileStream.h"
 #include "GamePatch.h"
@@ -1269,10 +1270,22 @@ namespace CafeSystem
 	}
 
 	// /vol/storage_mlc01/<usr or sys>/title/<titleIdHigh>/<titleIdLow>
+	size_t FormatMlcStoragePath(TitleId titleId, char* out, size_t outSize)
+	{
+		if (outSize == 0)
+			return 0;
+		TitleIdParser tip(titleId);
+		auto r = fmt::format_to_n(out, outSize - 1, "/vol/storage_mlc01/{}/title/{:08x}/{:08x}", tip.IsSystemTitle() ? "sys" : "usr", (uint32)(titleId >> 32), (uint32)(titleId & 0xFFFFFFFF));
+		const size_t len = std::min<size_t>(r.size, outSize - 1);
+		out[len] = '\0';
+		return len;
+	}
+
 	std::string GetMlcStoragePath(TitleId titleId)
 	{
-		TitleIdParser tip(titleId);
-		return fmt::format("/vol/storage_mlc01/{}/title/{:08x}/{:08x}", tip.IsSystemTitle() ? "sys" : "usr", (uint32)(titleId >> 32), (uint32)(titleId & 0xFFFFFFFF));
+		char path[64];
+		const size_t len = FormatMlcStoragePath(titleId, path, sizeof(path));
+		return std::string(path, len);
 	}
 
 	std::map<TitleId, TitleInfo*> m_mlcMountedTitles;
@@ -1308,11 +1321,21 @@ namespace CafeSystem
 		MlcStorageMountTitle(titleInfo);
 	}
 
+	// Every title in the list, mounted once per title run: MCP and NIM ask
+	// for it from threads of their own, and one that comes while the other is
+	// mounting waits for it. Unmounting all the titles undoes it, so the
+	// next title run mounts them again - it used to be a flag in iosu_mcp
+	// that nothing cleared, and from the second title on, the titles MCP
+	// listed were not there at the paths it gave for them.
+	static OnceGate s_mlcAllTitlesMounted;
+
 	void MlcStorageMountAllTitles()
 	{
-		std::vector<uint64> titleIds = CafeTitleList::GetAllTitleIds();
-		for (auto& it : titleIds)
-			MlcStorageMountTitle(it);
+		s_mlcAllTitlesMounted.Run([] {
+			std::vector<uint64> titleIds = CafeTitleList::GetAllTitleIds();
+			for (auto& it : titleIds)
+				MlcStorageMountTitle(it);
+		});
 	}
 
     void MlcStorageUnmountAllTitles()
@@ -1323,6 +1346,7 @@ namespace CafeSystem
             it.second->Unmount(mlcStoragePath);
         }
         m_mlcMountedTitles.clear();
+        s_mlcAllTitlesMounted.Reset();
     }
 
 	uint32 GetRPXHashBase()

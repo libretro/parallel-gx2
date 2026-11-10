@@ -254,12 +254,26 @@ public:
 	static bool ParseWuaTitleFolderName(std::string_view name, TitleId& titleIdOut, uint16& titleVersionOut);
 
 private:
+	// Also what an assignment does, so what this held goes first: a title
+	// assigned over another - GameInfo2::SetBase, for a base title the list
+	// holds twice - leaked the other's parsed XML, and kept its cos.xml and
+	// cached info where this one had none. The location (the UID) comes
+	// along, so a copy is still equal by location to what it was copied from.
 	void Copy(const TitleInfo& other)
 	{
+		delete m_parsedMetaXml;
+		delete m_parsedAppXml;
+		delete m_parsedCosXml;
+		delete m_cachedInfo;
+		m_parsedCosXml = nullptr;
+		m_cachedInfo = nullptr;
 		m_isValid = other.m_isValid;
 		m_titleFormat = other.m_titleFormat;
 		m_fullPath = other.m_fullPath;
 		m_subPath = other.m_subPath;
+		m_uid = other.m_uid;
+		m_invalidReason = other.m_invalidReason;
+		m_invalidDetail = other.m_invalidDetail;
 		m_hasParsedXmlFiles = other.m_hasParsedXmlFiles;
 		m_parsedMetaXml = nullptr;
 		m_parsedAppXml = nullptr;

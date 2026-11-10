@@ -61,6 +61,8 @@ namespace CafeSystem
 
 
 	std::string GetMlcStoragePath(TitleId titleId);
+	// the same path into out, cut to fit and NUL-terminated; its length
+	size_t FormatMlcStoragePath(TitleId titleId, char* out, size_t outSize);
 	void MlcStorageMountAllTitles();
 
 	std::string GetInternalVirtualCodeFolder();

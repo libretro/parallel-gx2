@@ -19,61 +19,51 @@ namespace iosu
 		bool isInitialized;
 	}iosuMcp = { 0 };
 
-	std::recursive_mutex sTitleInfoMutex;
-
-	bool sHasAllTitlesMounted = false;
-
-	uint32 mcpBuildTitleList(MCPTitleInfo* titleList, uint32 maxTitlesToCopy, std::function<bool(const TitleInfo&)> filterFunc)
+	// The titles the list holds, at most maxTitlesToCopy of them and one per
+	// title id, into titleList - or just counted, with no titleList. Asked
+	// from the MCP and NIM threads at once, and from a game at any time:
+	// the list is read without a lock, and past the first call of a title
+	// run, which mounts the titles, nothing is allocated.
+	template<typename TAccept>
+	uint32 mcpBuildTitleList(MCPTitleInfo* titleList, uint32 maxTitlesToCopy, TAccept accept)
 	{
 		CafeTitleList::WaitForMandatoryScan();
-		std::set<TitleId> titleIdsVisited;
-		auto cafeTitleList = CafeTitleList::AcquireInternalList();
-
 		uint32 numTitlesCopied = 0;
-		for (auto& it : cafeTitleList)
 		{
-			if (numTitlesCopied == maxTitlesToCopy)
-				break;
-			uint64 titleId = it->GetAppTitleId();
-			if (titleIdsVisited.find(titleId) != titleIdsVisited.end())
-				continue;
-			if (!filterFunc(*it))
-				continue;
-			titleIdsVisited.emplace(titleId);
-			if (titleList)
-			{
-				auto& titleOut = titleList[numTitlesCopied];
-				titleOut.titleIdHigh = (uint32)(titleId >> 32);
-				titleOut.titleIdLow = (uint32)(titleId & 0xFFFFFFFF);
-				titleOut.titleVersion = it->GetAppTitleVersion();
-				titleOut.appGroup = it->GetAppGroup();
-				titleOut.appType = it->GetAppType();
+			auto cafeTitleList = CafeTitleList::ReadList();
+			cafeTitleList->ForEachFirstOfId(accept, [&](const TitleInfo& title) {
+				if (numTitlesCopied == maxTitlesToCopy)
+					return false;
+				if (titleList)
+				{
+					const uint64 titleId = title.GetAppTitleId();
+					auto& titleOut = titleList[numTitlesCopied];
+					titleOut.titleIdHigh = (uint32)(titleId >> 32);
+					titleOut.titleIdLow = (uint32)(titleId & 0xFFFFFFFF);
+					titleOut.titleVersion = title.GetAppTitleVersion();
+					titleOut.appGroup = title.GetAppGroup();
+					titleOut.appType = title.GetAppType();
 
-				std::string titlePath = CafeSystem::GetMlcStoragePath(titleId);
-				strcpy(titleOut.appPath, titlePath.c_str());
+					CafeSystem::FormatMlcStoragePath(titleId, titleOut.appPath, sizeof(titleOut.appPath));
 
-				strcpy((char*)titleOut.deviceName, "mlc");
+					strcpy((char*)titleOut.deviceName, "mlc");
 
-				titleOut.osVersion = 0; // todo
-				titleOut.sdkVersion = it->GetAppSDKVersion();
-			}
-
-			numTitlesCopied++;
+					titleOut.osVersion = 0; // todo
+					titleOut.sdkVersion = title.GetAppSDKVersion();
+				}
+				numTitlesCopied++;
+				return true;
+			});
 		}
-		CafeTitleList::ReleaseInternalList();
 
-		if (!sHasAllTitlesMounted)
-		{
-			CafeSystem::MlcStorageMountAllTitles();
-			sHasAllTitlesMounted = true;
-		}
+		// once per title run; whoever comes while it is at it waits for it
+		CafeSystem::MlcStorageMountAllTitles();
 
 		return numTitlesCopied;
 	}
 
 	sint32 mcpGetTitleList(MCPTitleInfo* titleList, uint32 titleListBufferSize, uint32be* titleCount)
 	{
-		std::unique_lock _lock(sTitleInfoMutex);
 		uint32 maxEntryCount = titleListBufferSize / sizeof(MCPTitleInfo);
 		*titleCount = mcpBuildTitleList(titleList, maxEntryCount, [](const TitleInfo& titleInfo) -> bool { return true; });
 		return 0;
@@ -81,13 +71,11 @@ namespace iosu
 
 	sint32 mcpGetTitleCount()
 	{
-		std::unique_lock _lock(sTitleInfoMutex);
 		return mcpBuildTitleList(nullptr, 0xFFFFFFFF, [](const TitleInfo& titleInfo) -> bool { return true; });
 	}
 
 	sint32 mcpGetTitleListByAppType(MCPTitleInfo* titleList, uint32 titleListBufferSize, uint32be* titleCount, uint32 appType)
 	{
-		std::unique_lock _lock(sTitleInfoMutex);
 		uint32 maxEntryCount = titleListBufferSize / sizeof(MCPTitleInfo);
 		*titleCount = mcpBuildTitleList(titleList, maxEntryCount, [appType](const TitleInfo& titleInfo) -> bool { return titleInfo.GetAppType() == appType; });
 		return 0;
@@ -95,7 +83,6 @@ namespace iosu
 
 	sint32 mcpGetTitleListByTitleId(MCPTitleInfo* titleList, uint32 titleListBufferSize, uint32be* titleCount, uint64 titleId)
 	{
-		std::unique_lock _lock(sTitleInfoMutex);
 		uint32 maxEntryCount = titleListBufferSize / sizeof(MCPTitleInfo);
 		*titleCount = mcpBuildTitleList(titleList, maxEntryCount, [titleId](const TitleInfo& titleInfo) -> bool { return titleInfo.GetAppTitleId() == titleId; });
 		return 0;

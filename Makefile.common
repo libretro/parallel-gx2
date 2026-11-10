@@ -301,8 +301,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/OS/libs/zlib125/zlib125.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/zlib125/zlib125_stream.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/GameInfo.cpp \
-	$(CORE_DIR)/src/Cafe/TitleList/SaveInfo.cpp \
-	$(CORE_DIR)/src/Cafe/TitleList/SaveList.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleConverter.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleInfo.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleList.cpp \

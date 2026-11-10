@@ -7,47 +7,148 @@
 
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 
-bool sTLInitialized{ false };
-fs::path sTLCacheFilePath;
+// test/titlelist runs code of its own where a worker has served every
+// Refresh it saw and is about to let go: the moment a Refresh can come in
+// and find it still active
+#ifdef TITLELIST_TEST_HOOKS
+void TitleListTest_LettingGo();
+#define TITLELIST_LETTING_GO() TitleListTest_LettingGo()
+#else
+#define TITLELIST_LETTING_GO() do {} while (0)
+#endif
 
-// lists for tracking known titles
-// note: The list may only contain titles with valid meta data (except for certain system titles). Entries loaded from the cache may not have been parsed yet, but they will use a cached value for titleId and titleVersion
-std::mutex sTLMutex;
-std::vector<TitleInfo*> sTLList;
-std::vector<TitleInfo*> sTLListPending;
-std::unordered_multimap<uint64, TitleInfo*> sTLMap;
-bool sTLCacheDirty{false};
+// The title list, without a lock. What is known is a CafeTitleListSnapshot
+// in an RcuCell: a lookup reads the one in place, from any thread, and never
+// waits; a title found or dropped makes the next list and puts it in place,
+// one change at a time, after the lookups still in the old one have left.
+// The titles themselves are shared by the lists that hold them, so one a
+// scan drops is freed with the last list that had it.
+//
+// Note: The list may only contain titles with valid meta data (except for
+// certain system titles). Entries loaded from the cache may not have been
+// parsed yet, but they will use a cached value for titleId and titleVersion.
 
-// paths
-fs::path sTLMLCPath;
-std::vector<fs::path> sTLScanPaths;
-
-// worker
-std::thread sTLRefreshWorker;
-bool sTLRefreshWorkerActive{false};
-std::atomic_uint32_t sTLRefreshRequests{};
-std::atomic_bool sTLIsScanMandatory{ false };
-// What a wait for the scan sleeps on; the worker notifies as it finishes. Never
-// destroyed, as a worker that outlives a close is detached (Shutdown).
-static ImmortalEventWake sTLScanDone;
-
-// callback list
-struct TitleListCallbackEntry 
+namespace
 {
-	TitleListCallbackEntry(void(*cb)(CafeTitleListCallbackEvent* evt, void* ctx), void* ctx, uint64 uniqueId) :
-		cb(cb), ctx(ctx), uniqueId(uniqueId) {};
-	void (*cb)(CafeTitleListCallbackEvent* evt, void* ctx);
-	void* ctx;
-	uint64 uniqueId;
-};
+	// Built in its own storage and never destroyed: a scan that outlives a
+	// close (Shutdown detaches it) still finds the list as it was.
+	template<typename T>
+	class Immortal
+	{
+	public:
+		Immortal() { new (m_storage) T(); }
+		Immortal(const Immortal&) = delete;
+		Immortal& operator=(const Immortal&) = delete;
+		T& Get() { return *std::launder(reinterpret_cast<T*>(m_storage)); }
+		T* operator->() { return &Get(); }
 
-std::vector<TitleListCallbackEntry> sTLCallbackList;
+	private:
+		alignas(T) unsigned char m_storage[sizeof(T)];
+	};
+
+	struct TitleListPaths
+	{
+		fs::path cacheFile;
+		fs::path mlc;
+		std::vector<fs::path> scan;
+	};
+
+	Immortal<RcuCell<CafeTitleListSnapshot>> sTLState;
+	Immortal<RcuCell<TitleListPaths>> sTLPaths;
+
+	// Where the titles found since the current scan started are, by location
+	// (TitleInfo::GetUID). Only ever touched in a writer's turn of sTLState: a
+	// scan starts by clearing it, and ends by dropping the titles it had then
+	// that are not in it.
+	std::vector<uint64> sTLSeen;
+
+	std::atomic_bool sTLInitialized{false};
+	std::atomic_bool sTLCacheDirty{false};
+	std::atomic_bool sTLIsScanMandatory{false};
+
+	// The worker. Every Refresh is numbered (sTLRefreshRequested), and a scan
+	// takes the number when it starts and, as it ends, says every Refresh up
+	// to it is served (sTLRefreshServed): a wait for a scan waits for the
+	// number its own Refresh was given, not for a flag a worker may clear an
+	// instant before it scans again. Whoever turns sTLRefreshWorkerActive
+	// from false to true starts a worker, or keeps the one it is running
+	// going, and the worker looks for a Refresh it has not served once more
+	// after letting go, so one made as it was finishing is never left
+	// waiting. The thread handle is only touched by the Refresh that started
+	// the worker, and by Shutdown; sTLRefreshWorkerStored says it is in
+	// place, so that a worker never lets go before it is - the next Refresh
+	// would take the handle while it is still being stored.
+	std::atomic_uint64_t sTLRefreshRequested{0};
+	std::atomic_uint64_t sTLRefreshServed{0};
+	std::atomic_bool sTLRefreshWorkerActive{false};
+	std::atomic_bool sTLRefreshWorkerStored{true};
+	std::thread sTLRefreshWorker;
+	// What a wait for the scan sleeps on; the worker notifies as it finishes.
+	ImmortalEventWake sTLScanDone;
+
+	// change() edits a copy of the list, in this writer's turn; the copy
+	// becomes the list
+	template<typename TChange>
+	void UpdateList(TChange change)
+	{
+		sTLState->Write([&] {
+			CafeTitleListSnapshot next;
+			{
+				auto current = sTLState->Read();
+				next = *current;
+			}
+			change(next);
+			return next;
+		});
+	}
+
+	template<typename TChange>
+	void UpdatePaths(TChange change)
+	{
+		sTLPaths->Write([&] {
+			TitleListPaths next;
+			{
+				auto current = sTLPaths->Read();
+				next = *current;
+			}
+			change(next);
+			return next;
+		});
+	}
+
+	TitleListPaths ReadPaths()
+	{
+		auto current = sTLPaths->Read();
+		return *current;
+	}
+
+	// Puts titleInfo in the list unless a title at the same location is there,
+	// taking it either way: a parsed title takes the place of one from the
+	// cache. True if the list changed.
+	bool AddTitleTo(CafeTitleListSnapshot& list, TitleInfo* titleInfo)
+	{
+		auto& titles = list.titles;
+		auto it = std::find_if(titles.begin(), titles.end(), [titleInfo](const std::shared_ptr<TitleInfo>& known) { return known->IsEqualByLocation(*titleInfo); });
+		if (it != titles.end())
+		{
+			if (titleInfo->IsCached() || !(*it)->IsCached())
+			{
+				// title already known
+				delete titleInfo;
+				return false;
+			}
+			// replace cached entry with newly parsed title
+			titles.erase(it);
+		}
+		titles.emplace_back(titleInfo);
+		return true;
+	}
+}
 
 void CafeTitleList::Initialize(const fs::path cacheXmlFile)
 {
-	std::unique_lock _lock(sTLMutex);
+	UpdatePaths([&](TitleListPaths& paths) { paths.cacheFile = cacheXmlFile; });
 	sTLInitialized = true;
-	sTLCacheFilePath = cacheXmlFile;
 	LoadCacheFile();
 }
 
@@ -55,13 +156,13 @@ void CafeTitleList::LoadCacheFile()
 {
 	sTLIsScanMandatory = true;
 	cemu_assert_debug(sTLInitialized);
-	cemu_assert_debug(sTLList.empty());
-	MappedFile xmlData(sTLCacheFilePath);
+	MappedFile xmlData(ReadPaths().cacheFile);
 	if (!xmlData.opened())
 		return;
 	xml::Document doc;
 	if (!doc.load(xmlData.data(), xmlData.size()))
 		return;
+	std::vector<TitleInfo*> cached;
 	for (const auto& titleInfoNode : doc.child("title_list"))
 	{
 		TitleId titleId;
@@ -96,78 +197,88 @@ void CafeTitleList::LoadCacheFile()
 			delete ti;
 			continue;
 		}
-		AddTitle(ti);
+		cached.emplace_back(ti);
 	}
+	bool added = false;
+	UpdateList([&](CafeTitleListSnapshot& list) {
+		for (TitleInfo* ti : cached)
+			added |= AddTitleTo(list, ti);
+	});
+	if (added)
+		sTLCacheDirty = true;
 	sTLIsScanMandatory = false;
 }
 
 void CafeTitleList::StoreCacheFile()
 {
 	cemu_assert_debug(sTLInitialized);
-	if (sTLCacheFilePath.empty())
+	const fs::path cacheFile = ReadPaths().cacheFile;
+	if (cacheFile.empty())
 		return;
-	std::unique_lock _lock(sTLMutex);
 
 	xml::Document doc;
 	auto title_list_node = doc.append_child("title_list");
 
-	for (auto& tiIt : sTLList)
 	{
-		TitleInfo::CachedInfo info = tiIt->MakeCacheEntry();
-		auto titleInfoNode = title_list_node.append_child("title");
-		titleInfoNode.append_attribute("titleId").set_value(fmt::format("{:016x}", info.titleId).c_str());
-		titleInfoNode.append_attribute("version").set_value(fmt::format("{:}", info.titleVersion).c_str());
-		titleInfoNode.append_attribute("sdk_version").set_value(fmt::format("{:}", info.sdkVersion).c_str());
-		titleInfoNode.append_attribute("group_id").set_value(fmt::format("{:08x}", info.group_id).c_str());
-		titleInfoNode.append_attribute("app_type").set_value(fmt::format("{:08x}", info.app_type).c_str());
-		titleInfoNode.append_child("region").text().set(fmt::format("{}", (uint32)info.region).c_str());
-		titleInfoNode.append_child("name").text().set(info.titleName.c_str());
-		titleInfoNode.append_child("format").text().set(fmt::format("{}", (uint32)info.titleDataFormat).c_str());
-		titleInfoNode.append_child("path").text().set(_pathToUtf8(info.path).c_str());
-		if(!info.subPath.empty())
-			titleInfoNode.append_child("sub_path").text().set(_pathToUtf8(info.subPath).c_str());
+		auto list = sTLState->Read();
+		for (const auto& tiIt : list->titles)
+		{
+			TitleInfo::CachedInfo info = tiIt->MakeCacheEntry();
+			auto titleInfoNode = title_list_node.append_child("title");
+			titleInfoNode.append_attribute("titleId").set_value(fmt::format("{:016x}", info.titleId).c_str());
+			titleInfoNode.append_attribute("version").set_value(fmt::format("{:}", info.titleVersion).c_str());
+			titleInfoNode.append_attribute("sdk_version").set_value(fmt::format("{:}", info.sdkVersion).c_str());
+			titleInfoNode.append_attribute("group_id").set_value(fmt::format("{:08x}", info.group_id).c_str());
+			titleInfoNode.append_attribute("app_type").set_value(fmt::format("{:08x}", info.app_type).c_str());
+			titleInfoNode.append_child("region").text().set(fmt::format("{}", (uint32)info.region).c_str());
+			titleInfoNode.append_child("name").text().set(info.titleName.c_str());
+			titleInfoNode.append_child("format").text().set(fmt::format("{}", (uint32)info.titleDataFormat).c_str());
+			titleInfoNode.append_child("path").text().set(_pathToUtf8(info.path).c_str());
+			if(!info.subPath.empty())
+				titleInfoNode.append_child("sub_path").text().set(_pathToUtf8(info.subPath).c_str());
+		}
 	}
 
 	// through a file beside it that then takes its name
 	const std::string out = doc.save(" ");
-	if (!ReplaceFileContents(sTLCacheFilePath, out.data(), out.size()))
-		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(sTLCacheFilePath));
+	if (!ReplaceFileContents(cacheFile, out.data(), out.size()))
+		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(cacheFile));
 }
 
 void CafeTitleList::ClearScanPaths()
 {
-	std::unique_lock _lock(sTLMutex);
-	sTLScanPaths.clear();
+	UpdatePaths([](TitleListPaths& paths) { paths.scan.clear(); });
 }
 
 void CafeTitleList::AddScanPath(fs::path path)
-{	
-	std::unique_lock _lock(sTLMutex);
-	sTLScanPaths.emplace_back(path);
+{
+	UpdatePaths([&](TitleListPaths& paths) { paths.scan.emplace_back(std::move(path)); });
 }
 
 void CafeTitleList::SetMLCPath(fs::path path)
 {
-	std::unique_lock _lock(sTLMutex);
 	if (!FileStream::IsDirectory(path))
 	{
 		cemuLog_log(LogType::Force, "MLC set to invalid path: {}", _pathToUtf8(path));
 		return;
 	}
-	sTLMLCPath = path;
+	UpdatePaths([&](TitleListPaths& paths) { paths.mlc = std::move(path); });
 }
 
 void CafeTitleList::Refresh()
 {
-	std::unique_lock _lock(sTLMutex);
 	cemu_assert_debug(sTLInitialized);
-	sTLRefreshRequests++;
-	if (!sTLRefreshWorkerActive)
+	sTLRefreshRequested.fetch_add(1);
+	if (!sTLRefreshWorkerActive.exchange(true))
 	{
+		// This caller starts the worker. The one before, if any, has let go,
+		// so all it has left is to store the cache: joining it costs at most that.
+		sTLRefreshWorkerStored = false;
 		if (sTLRefreshWorker.joinable())
 			sTLRefreshWorker.join();
-		sTLRefreshWorkerActive = true;
 		sTLRefreshWorker = std::thread(RefreshWorkerThread);
+		sTLRefreshWorkerStored = true;
+		sTLScanDone->Notify(); // the worker, if it is done already
 	}
 	sTLIsScanMandatory = false;
 }
@@ -179,30 +290,27 @@ void CafeTitleList::Refresh()
 // exception" as the process exits.
 void CafeTitleList::Shutdown()
 {
-	std::thread worker;
-	bool stillScanning;
-	{
-		std::unique_lock _lock(sTLMutex);
-		stillScanning = sTLRefreshWorkerActive;
-		worker = std::move(sTLRefreshWorker);
-	}
-	if (!worker.joinable())
+	// whoever started the worker has put its handle in place
+	sTLScanDone->WaitUntil([] { return sTLRefreshWorkerStored.load(); });
+	if (!sTLRefreshWorker.joinable())
 		return;
-	// A scan that is still running can take minutes - the paths it walks may be
-	// a network mount - and waiting for it would hang the frontend on exit. The
-	// worker clears sTLRefreshWorkerActive before it returns, so the usual case
-	// here is a finished scan and a join that costs nothing. Detaching in the
-	// other case at least leaves no joinable thread behind.
-	if (stillScanning)
-		worker.detach();
-	else
-		worker.join();
+	// A scan that is still running can take minutes - the paths it walks may
+	// be a network mount - and waiting for it would hang the frontend on exit.
+	// Detaching it at least leaves no joinable thread behind.
+	if (IsScanning())
+	{
+		sTLRefreshWorker.detach();
+		return;
+	}
+	// The usual case: every Refresh served, and a worker that is letting go -
+	// at most still storing the cache, which this waits for rather than
+	// leaving it writing as the library goes away.
+	sTLRefreshWorker.join();
 }
 
 bool CafeTitleList::IsScanning()
 {
-	std::unique_lock _lock(sTLMutex);
-	return sTLRefreshWorkerActive;
+	return sTLRefreshServed.load() < sTLRefreshRequested.load();
 }
 
 void CafeTitleList::WaitForMandatoryScan()
@@ -217,21 +325,8 @@ void CafeTitleList::WaitForMandatoryScan()
 // nothing on top of the scan
 void CafeTitleList::WaitForScan()
 {
-	sTLScanDone->WaitUntil([] { return !IsScanning(); });
-}
-
-void _RemoveTitleFromMultimap(TitleInfo* titleInfo)
-{
-	auto mapRange = sTLMap.equal_range(titleInfo->GetAppTitleId());
-	for (auto mapIt = mapRange.first; mapIt != mapRange.second; ++mapIt)
-	{
-		if (mapIt->second == titleInfo)
-		{
-			sTLMap.erase(mapIt);
-			return;
-		}
-	}
-	cemu_assert_suspicious();
+	const uint64 requested = sTLRefreshRequested.load();
+	sTLScanDone->WaitUntil([requested] { return sTLRefreshServed.load() >= requested; });
 }
 
 // check if path is a valid title and if it is, permanently add it to the title list
@@ -278,69 +373,67 @@ void CafeTitleList::AddTitleFromPath(fs::path path)
 bool CafeTitleList::RefreshWorkerThread()
 {
 	SetThreadName("TitleListWorker");
-	while (sTLRefreshRequests.load())
+	for (;;)
 	{
-		sTLRefreshRequests.store(0);
-		// create copies of all the paths
-		sTLMutex.lock();
-		fs::path mlcPath = sTLMLCPath;
-		std::vector<fs::path> gamePaths = sTLScanPaths;
-		// remember the current list of known titles
-		// during the scanning process we will erase matches from the pending list
-		// at the end of scanning, we can then use this list to identify and remove any titles that are no longer discoverable
-		sTLListPending = sTLList;
-		sTLMutex.unlock();
-		// scan game paths
-		for (auto& it : gamePaths)
-			ScanGamePath(it);
-		// scan MLC
-		if (!mlcPath.empty())
+		while (sTLRefreshServed.load() < sTLRefreshRequested.load())
 		{
-			for (FileStream::Dir d(mlcPath / "usr/title"); d.Next();)
+			// every Refresh made by now is served by this scan
+			const uint64 serving = sTLRefreshRequested.load();
+			// create copies of all the paths
+			const TitleListPaths paths = ReadPaths();
+			// Remember where the titles known now are, and forget what the
+			// last scan found: whatever this one does not find again is no
+			// longer there, and goes at the end of it.
+			std::vector<uint64> known;
+			UpdateList([&](CafeTitleListSnapshot& list) {
+				sTLSeen.clear();
+				known.reserve(list.titles.size());
+				for (const auto& it : list.titles)
+					known.emplace_back(it->GetUID());
+			});
+			// scan game paths
+			for (auto& it : paths.scan)
+				ScanGamePath(it);
+			// scan MLC
+			if (!paths.mlc.empty())
 			{
-				if (d.IsDirectory())
-					ScanMLCPath(d.Path());
+				for (FileStream::Dir d(paths.mlc / "usr/title"); d.Next();)
+				{
+					if (d.IsDirectory())
+						ScanMLCPath(d.Path());
+				}
+				ScanMLCPath(paths.mlc / "sys/title/00050010");
+				ScanMLCPath(paths.mlc / "sys/title/00050030");
 			}
-			ScanMLCPath(mlcPath / "sys/title/00050010");
-			ScanMLCPath(mlcPath / "sys/title/00050030");
-		}
 
-		// remove any titles that are still pending
-		for (auto& itPending : sTLListPending)
-		{
-			_RemoveTitleFromMultimap(itPending);
-			std::erase(sTLList, itPending);
+			// remove any titles that were known when the scan started and that it did not find
+			bool removed = false;
+			UpdateList([&](CafeTitleListSnapshot& list) {
+				std::sort(known.begin(), known.end());
+				std::sort(sTLSeen.begin(), sTLSeen.end());
+				removed = std::erase_if(list.titles, [&](const std::shared_ptr<TitleInfo>& title) {
+					const uint64 uid = title->GetUID();
+					return std::binary_search(known.begin(), known.end(), uid) && !std::binary_search(sTLSeen.begin(), sTLSeen.end(), uid);
+				}) != 0;
+				sTLSeen.clear();
+			});
+			if (removed)
+				sTLCacheDirty = true;
+			sTLRefreshServed.store(serving);
+			sTLScanDone->Notify(); // WaitForScan
 		}
-		// send notifications for removed titles, but only if there exists no other title with the same titleId and version
-		if (!sTLListPending.empty())
-			sTLCacheDirty = true;
-		for (auto& itPending : sTLListPending)
-		{
-			CafeTitleListCallbackEvent evt;
-			evt.eventType = CafeTitleListCallbackEvent::TYPE::TITLE_REMOVED;
-			evt.titleInfo = itPending;
-			for (auto& it : sTLCallbackList)
-				it.cb(&evt, it.ctx);
-			delete itPending;
-		}
-		sTLListPending.clear();
+		TITLELIST_LETTING_GO();
+		// let go, once the handle of this thread is in place
+		sTLScanDone->WaitUntil([] { return sTLRefreshWorkerStored.load(); });
+		sTLRefreshWorkerActive = false;
+		if (sTLCacheDirty.exchange(false))
+			StoreCacheFile();
+		// A Refresh that came in after the last look, and found this worker
+		// still active, left itself to it: serve it, unless another Refresh
+		// has started a worker for it already.
+		if (sTLRefreshServed.load() >= sTLRefreshRequested.load() || sTLRefreshWorkerActive.exchange(true))
+			return true;
 	}
-	sTLMutex.lock();
-	sTLRefreshWorkerActive = false;
-	// send notification that scanning finished
-	CafeTitleListCallbackEvent evt;
-	evt.eventType = CafeTitleListCallbackEvent::TYPE::SCAN_FINISHED;
-	evt.titleInfo = nullptr;
-	for (auto& it : sTLCallbackList)
-		it.cb(&evt, it.ctx);
-	sTLMutex.unlock();
-	sTLScanDone->Notify(); // WaitForScan
-	if (sTLCacheDirty)
-	{
-		StoreCacheFile();
-		sTLCacheDirty = false;
-	}
-	return true;
 }
 
 bool _IsKnownFileNameOrExtension(const fs::path& path)
@@ -469,99 +562,23 @@ void CafeTitleList::ScanMLCPath(const fs::path& path)
 void CafeTitleList::AddDiscoveredTitle(TitleInfo* titleInfo)
 {
 	cemu_assert_debug(titleInfo->ParseXmlInfo());
-	std::unique_lock _lock(sTLMutex);
-	// remove from pending list
-	auto pendingIt = std::find_if(sTLListPending.begin(), sTLListPending.end(), [titleInfo](const TitleInfo* it) { return it->IsEqualByLocation(*titleInfo); });
-	if (pendingIt != sTLListPending.end())
-		sTLListPending.erase(pendingIt);
-	AddTitle(titleInfo);	
-}
-
-void CafeTitleList::AddTitle(TitleInfo* titleInfo)
-{
-	// check if title is already known
-	if (titleInfo->IsCached())
-	{
-		bool isKnown = std::any_of(sTLList.cbegin(), sTLList.cend(), [&titleInfo](const TitleInfo* ti) { return titleInfo->IsEqualByLocation(*ti); });
-		if (isKnown)
-		{
-			delete titleInfo;
-			return;
-		}
-	}
-	else
-	{
-		auto it = std::find_if(sTLList.begin(), sTLList.end(), [titleInfo](const TitleInfo* it) { return it->IsEqualByLocation(*titleInfo); });
-		if (it != sTLList.end())
-		{
-			if ((*it)->IsCached())
-			{
-				// replace cached entry with newly parsed title
-				TitleInfo* deletedInfo = *it;
-				sTLList.erase(it);
-				_RemoveTitleFromMultimap(deletedInfo);
-				delete deletedInfo;
-			}
-			else
-			{
-				// title already known
-				delete titleInfo;
-				return;
-			}
-		}
-	}
-	sTLList.emplace_back(titleInfo);
-	sTLMap.emplace(titleInfo->GetAppTitleId(), titleInfo);
-	// send out notification
-	CafeTitleListCallbackEvent evt;
-	evt.eventType = CafeTitleListCallbackEvent::TYPE::TITLE_DISCOVERED;
-	evt.titleInfo = titleInfo;
-	for (auto& it : sTLCallbackList)
-		it.cb(&evt, it.ctx);
-	sTLCacheDirty = true;
-}
-
-uint64 CafeTitleList::RegisterCallback(void(*cb)(CafeTitleListCallbackEvent* evt, void* ctx), void* ctx)
-{
-	static std::atomic<uint64_t> sCallbackIdGen = 1;
-	uint64 id = sCallbackIdGen.fetch_add(1);
-	std::unique_lock _lock(sTLMutex);
-	sTLCallbackList.emplace_back(cb, ctx, id);
-	// immediately notify of all known titles
-	for (auto& it : sTLList)
-	{
-		CafeTitleListCallbackEvent evt;
-		evt.eventType = CafeTitleListCallbackEvent::TYPE::TITLE_DISCOVERED;
-		evt.titleInfo = it;
-		cb(&evt, ctx);
-	}
-	// if not scanning then send out scan finished notification
-	if (!sTLRefreshWorkerActive)
-	{
-		CafeTitleListCallbackEvent evt;
-		evt.eventType = CafeTitleListCallbackEvent::TYPE::SCAN_FINISHED;
-		evt.titleInfo = nullptr;
-		for (auto& it : sTLCallbackList)
-			it.cb(&evt, it.ctx);
-	}
-	return id;
-}
-
-void CafeTitleList::UnregisterCallback(uint64 id)
-{
-	std::unique_lock _lock(sTLMutex);
-	auto it = std::find_if(sTLCallbackList.begin(), sTLCallbackList.end(), [id](auto& e) { return e.uniqueId == id; });
-	cemu_assert(it != sTLCallbackList.end()); // must be a valid callback
-	sTLCallbackList.erase(it);
+	const uint64 uid = titleInfo->GetUID();
+	bool added = false;
+	UpdateList([&](CafeTitleListSnapshot& list) {
+		// found by the scan, if one is running
+		sTLSeen.emplace_back(uid);
+		added = AddTitleTo(list, titleInfo);
+	});
+	if (added)
+		sTLCacheDirty = true;
 }
 
 bool CafeTitleList::HasTitle(TitleId titleId, uint16& versionOut)
 {
-	// todo - optimize?
 	bool matchFound = false;
 	versionOut = 0;
-	std::unique_lock _lock(sTLMutex);
-	for (auto& it : sTLList)
+	auto list = sTLState->Read();
+	for (const auto& it : list->titles)
 	{
 		if (it->GetAppTitleId() == titleId)
 		{
@@ -576,8 +593,8 @@ bool CafeTitleList::HasTitle(TitleId titleId, uint16& versionOut)
 
 bool CafeTitleList::HasTitleAndVersion(TitleId titleId, uint16 version)
 {
-	std::unique_lock _lock(sTLMutex);
-	for (auto& it : sTLList)
+	auto list = sTLState->Read();
+	for (const auto& it : list->titles)
 	{
 		if (it->GetAppTitleId() == titleId && it->GetAppTitleVersion() == version)
 			return true;
@@ -587,41 +604,33 @@ bool CafeTitleList::HasTitleAndVersion(TitleId titleId, uint16 version)
 
 std::vector<TitleId> CafeTitleList::GetAllTitleIds()
 {
-	std::unordered_set<TitleId> visitedTitleIds;
-	std::unique_lock _lock(sTLMutex);
 	std::vector<TitleId> titleIds;
-	titleIds.reserve(sTLList.size());
-	for (auto& it : sTLList)
+	auto list = sTLState->Read();
+	titleIds.reserve(list->titles.size());
+	for (const auto& it : list->titles)
 	{
 		TitleId tid = it->GetAppTitleId();
-		if (visitedTitleIds.find(tid) != visitedTitleIds.end())
-			continue;
-		titleIds.emplace_back(tid);
-		visitedTitleIds.emplace(tid);
+		if (std::find(titleIds.begin(), titleIds.end(), tid) == titleIds.end())
+			titleIds.emplace_back(tid);
 	}
 	return titleIds;
 }
 
-std::span<TitleInfo*> CafeTitleList::AcquireInternalList()
+CafeTitleList::ListRef CafeTitleList::ReadList()
 {
-	sTLMutex.lock();
-	return { sTLList.data(), sTLList.size() };
-}
-
-void CafeTitleList::ReleaseInternalList()
-{
-	sTLMutex.unlock();
+	return sTLState->Read();
 }
 
 bool CafeTitleList::GetFirstByTitleId(TitleId titleId, TitleInfo& titleInfoOut)
 {
-	std::unique_lock _lock(sTLMutex);
-	auto it = sTLMap.find(titleId);
-	if (it != sTLMap.end())
+	auto list = sTLState->Read();
+	for (const auto& it : list->titles)
 	{
-		cemu_assert_debug(it->first == titleId);
-		titleInfoOut = *it->second;
-		return true;
+		if (it->GetAppTitleId() == titleId)
+		{
+			titleInfoOut = *it;
+			return true;
+		}
 	}
 	return false;
 }
@@ -661,8 +670,8 @@ GameInfo2 CafeTitleList::GetGameInfo(TitleId titleId)
 	if (hasSeparateUpdateTitleId)
 		updateTitleId = tip.GetSeparateUpdateTitleId();	
 	// scan the title list for base and update
-	std::unique_lock _lock(sTLMutex);
-	for (auto& it : sTLList)
+	auto list = sTLState->Read();
+	for (const auto& it : list->titles)
 	{
 		TitleId appTitleId = it->GetAppTitleId();
 		if (appTitleId == baseTitleId)
@@ -681,7 +690,7 @@ GameInfo2 CafeTitleList::GetGameInfo(TitleId titleId)
 	if (tip.CanHaveSeparateUpdateTitleId())
 	{
 		uint64 aocTitleId = baseTitleId | 0xC00000000;
-		for (auto& it : sTLList)
+		for (const auto& it : list->titles)
 		{
 			TitleId appTitleId = it->GetAppTitleId();
 			if (appTitleId == aocTitleId)
@@ -696,8 +705,8 @@ GameInfo2 CafeTitleList::GetGameInfo(TitleId titleId)
 TitleInfo CafeTitleList::GetTitleInfoByUID(uint64 uid)
 {
 	TitleInfo titleInfo;
-	std::unique_lock _lock(sTLMutex);
-	for (auto& it : sTLList)
+	auto list = sTLState->Read();
+	for (const auto& it : list->titles)
 	{
 		if (it->GetUID() == uid)
 		{

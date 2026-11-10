@@ -305,6 +305,20 @@ jobs:
           make -C test/fsc clean
           SANITIZER=address,undefined ./test/fsc/run_tests.sh
 
+      - name: "Title list"
+        # the core's list of titles over stand-in titles in a folder: scans,
+        # the cache file, a wait for a scan that never misses one, and the
+        # list read with no lock while scans change it; plain, under
+        # ThreadSanitizer, under ASan + UBSan. The core's precompiled header
+        # wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/titlelist/run_tests.sh
+          make -C test/titlelist clean
+          SANITIZER=thread ./test/titlelist/run_tests.sh
+          make -C test/titlelist clean
+          SANITIZER=address,undefined ./test/titlelist/run_tests.sh
+
       - name: "FST volumes"
         # the core's reader of disc and title content volumes: files from
         # unhashed and hashed clusters of a volume the test makes, through

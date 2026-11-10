@@ -13,7 +13,6 @@
 
 #include "Cafe/CafeSystem.h"
 #include "Cafe/TitleList/TitleList.h"
-#include "Cafe/TitleList/SaveList.h"
 
 #include "Common/ExceptionHandler/ExceptionHandler.h"
 #include "Common/cpu_features.h"
@@ -154,14 +153,11 @@ void CemuCommonInit()
 		CafeTitleList::SetMLCPath(mlcPath);
 	CEMU_INIT_STAGE("title list scan");
 	CafeTitleList::Refresh();
-	// init save list
-	CEMU_INIT_STAGE("save list");
-	CafeSaveList::Initialize();
-	if (!mlcPath.empty())
-	{
-		CafeSaveList::SetMLCPath(mlcPath);
-		CafeSaveList::Refresh();
-	}
+	// Cemu also walked the saves in the MLC here, on a thread it left
+	// detached, reading every save's meta.xml into a list for its save
+	// manager. The core has none, and nothing read the list: all that came
+	// of it was a folder walk on every start, and a thread still reading
+	// files as the core was unloaded.
 	CEMU_INIT_STAGE("done");
 }
 
