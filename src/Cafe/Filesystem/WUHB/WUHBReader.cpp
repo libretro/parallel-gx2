@@ -1,14 +1,15 @@
 #include "WUHBReader.h"
 #include "Common/FileStream.h"
-WUHBReader::WUHBReader(FileStream* fileIn, const fs::path& path) : m_fileIn(fileIn)
+#include "Common/shared_file.h"
+WUHBReader::WUHBReader(shared_file_t* file) : m_file(file)
 {
-	cemu_assert_debug(fileIn != nullptr);
-	m_mapped = m_fileIn->MappedSpan();
-	if (m_mapped.size() != m_fileIn->GetSize())
-	{
-		m_mapped = {};
-		m_streams = std::make_unique<FileStreamPool>(path, m_fileIn.release());
-	}
+	if (const uint8* m = shared_file_mapped(file))
+		m_mapped = {m, (size_t)shared_file_size(file)};
+}
+
+WUHBReader::~WUHBReader()
+{
+	shared_file_close(m_file);
 }
 
 bool WUHBReader::ReadAt(uint64 offset, void* dst, uint64 len) const
@@ -20,21 +21,16 @@ bool WUHBReader::ReadAt(uint64 offset, void* dst, uint64 len) const
 		memcpy(dst, m_mapped.data() + offset, (size_t)len);
 		return true;
 	}
-	if (len > 0xFFFFFFFF)
-		return false;
-	FileStream* fs = m_streams->Acquire();
-	const bool ok = fs && (fs->SetPosition(offset), fs->readData(dst, (uint32)len) == len);
-	m_streams->Release(fs);
-	return ok;
+	return len <= 0x7FFFFFFFFFFFFFFFull && shared_file_read_at(m_file, dst, (int64_t)len, offset) == (int64_t)len;
 }
 
-WUHBReader* WUHBReader::FromPath(const fs::path& path)
+WUHBReader* WUHBReader::FromPath(const fs::path& path, bool map)
 {
-	FileStream* fileIn{FileStream::openFileMapped(path)};
-	if (!fileIn)
+	shared_file_t* file = shared_file_open(FileStream::HostPath(path).c_str(), map ? 0 : SHARED_FILE_NO_MAP);
+	if (!file)
 		return nullptr;
 
-	WUHBReader* ret = new WUHBReader(fileIn, path);
+	WUHBReader* ret = new WUHBReader(file);
 	if (!ret->CheckMagicValue())
 	{
 		delete ret;
@@ -171,15 +167,8 @@ uint64 WUHBReader::ReadFromFile(uint32 entryOffset, uint64 fileOffset, uint64 le
 		memcpy(buffer, m_mapped.data() + wuhbOffset, (size_t)readAmount);
 		return readAmount;
 	}
-	FileStream* fs = m_streams->Acquire();
-	uint64 got = 0;
-	if (fs)
-	{
-		fs->SetPosition(wuhbOffset);
-		got = fs->readData(buffer, (uint32)std::min<uint64>(readAmount, 0xFFFFFFFF));
-	}
-	m_streams->Release(fs);
-	return got;
+	const int64_t got = shared_file_read_at(m_file, buffer, (int64_t)std::min<uint64>(readAmount, 0x7FFFFFFFFFFFFFFFull), wuhbOffset);
+	return got > 0 ? (uint64)got : 0;
 }
 
 uint32 WUHBReader::GetHashTableEntryOffset(uint32 hash, bool isFile) const

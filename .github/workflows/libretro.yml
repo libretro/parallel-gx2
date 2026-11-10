@@ -319,6 +319,17 @@ jobs:
           make -C test/titlelist clean
           SANITIZER=address,undefined ./test/titlelist/run_tests.sh
 
+      - name: "Shared files"
+        # the core's file read from many threads at once (C89): mapped and
+        # not, its streams kept and lent; plain, under ThreadSanitizer,
+        # under ASan + UBSan
+        run: |
+          ./test/shared_file/run_tests.sh
+          make -C test/shared_file clean
+          SANITIZER=thread ./test/shared_file/run_tests.sh
+          make -C test/shared_file clean
+          SANITIZER=address,undefined ./test/shared_file/run_tests.sh
+
       - name: "FST volumes"
         # the core's reader of disc and title content volumes: files from
         # unhashed and hashed clusters of a volume the test makes, through

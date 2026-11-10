@@ -1,5 +1,5 @@
 # The core's disc image, title content and homebrew bundle readers
-# (src/Cafe/Filesystem/WUD, src/Cafe/Filesystem/FST/FSTDataSource.cpp,
+# (src/Cafe/Filesystem/WUD, C89, src/Cafe/Filesystem/FST/FSTDataSource.cpp,
 # src/Cafe/Filesystem/WUHB): .wud, .wux and .app files read and their blocks
 # decrypted, .wuhb files looked up and read, mapped and not (run_tests.sh). SANITIZER=thread
 # or SANITIZER=address,undefined for the sanitizer runs.
@@ -26,13 +26,15 @@ FLAGS += $(FILE_IO_FLAGS)
 # filestream only: FileStream is the test's own, counting reads
 C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c
-CXX_SRCS := disc_image_test.cpp $(SRC)/Cafe/Filesystem/WUD/wud.cpp $(SRC)/Common/FileStreamPool.cpp \
+CORE_C_SRCS := $(DISC_IMAGE_C)
+CXX_SRCS := disc_image_test.cpp \
 	$(SRC)/Cafe/Filesystem/FST/FSTDataSource.cpp $(SRC)/util/crypto/aes128.cpp \
 	$(SRC)/Common/cpu_features.cpp $(SRC)/Cafe/Filesystem/WUHB/WUHBReader.cpp
 
-disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h \
+disc_image_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/WUD/wud.h $(SRC)/Common/shared_file.h $(SRC)/Cafe/Filesystem/FST/FSTDataSource.h \
 	$(SRC)/Cafe/Filesystem/WUHB/WUHBReader.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

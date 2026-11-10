@@ -39,13 +39,18 @@ static fs::path findPathCI(const fs::path& path)
 }
 #endif
 
-FileStream* FileStream::Open(const fs::path& path, unsigned mode, unsigned hints)
+std::string FileStream::HostPath(const fs::path& path)
 {
 #ifdef _WIN32
-	const std::string p = _pathToUtf8(path);
+	return _pathToUtf8(path);
 #else
-	const std::string p = _pathToUtf8(findPathCI(path));
+	return _pathToUtf8(findPathCI(path));
 #endif
+}
+
+FileStream* FileStream::Open(const fs::path& path, unsigned mode, unsigned hints)
+{
+	const std::string p = HostPath(path);
 	// a directory is not a file: the host file system device asks this to
 	// tell them apart, and some opens succeed on one
 	if (path_is_directory(p.c_str()))

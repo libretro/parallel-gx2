@@ -49,7 +49,9 @@ endif
 # ----------------------------------------------------------------------------
 # The core
 # ----------------------------------------------------------------------------
-CORE_SOURCES_C :=
+CORE_SOURCES_C := \
+	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \
+	$(CORE_DIR)/src/Common/shared_file.c
 CORE_SOURCES_CXX :=
 CORE_SOURCES_ASM :=
 CORE_SOURCES_OBJCXX :=
@@ -59,7 +61,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/FST.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/FSTDataSource.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/KeyCache.cpp \
-	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/WUHBReader.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fsc.cpp \
 	$(CORE_DIR)/src/Cafe/Filesystem/fscDeviceHostFS.cpp \
@@ -323,7 +324,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ExceptionHandler.cpp \
 	$(CORE_DIR)/src/Common/SysAllocator.cpp \
 	$(CORE_DIR)/src/Common/FileStream.cpp \
-	$(CORE_DIR)/src/Common/FileStreamPool.cpp \
 	$(CORE_DIR)/src/Common/cpu_features.cpp \
 	$(CORE_DIR)/src/Common/precompiled.cpp \
 	$(CORE_DIR)/src/audio/IAudioAPI.cpp \

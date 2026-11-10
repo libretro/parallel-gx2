@@ -1,5 +1,6 @@
 #include "Cafe/Filesystem/FST/FSTDataSource.h"
 #include "Cafe/Filesystem/WUD/wud.h"
+#include "Common/shared_file.h"
 #include "Common/FileStream.h"
 #include "util/crypto/aes128.h"
 
@@ -51,9 +52,9 @@ bool FSTDataSource::ReadHashedBlock(uint16 clusterIndex, uint64 clusterOffset, u
 
 // --- a disc image -----------------------------------------------------------
 
-FSTDataSourceWUD* FSTDataSourceWUD::Open(const fs::path& path)
+FSTDataSourceWUD* FSTDataSourceWUD::Open(const fs::path& path, bool map)
 {
-	wud_t* wudFile = wud_open(path);
+	wud_t* wudFile = wud_open(FileStream::HostPath(path).c_str(), map ? 0 : WUD_OPEN_NO_MAP);
 	if (!wudFile)
 		return nullptr;
 	FSTDataSourceWUD* ds = new FSTDataSourceWUD();
@@ -83,7 +84,7 @@ const uint8* FSTDataSourceWUD::Lend(uint16 clusterIndex, uint64 clusterOffset, u
 
 // --- a title's content files ------------------------------------------------
 
-FSTDataSourceApp* FSTDataSourceApp::Open(const fs::path& path, std::span<const Content> contents)
+FSTDataSourceApp* FSTDataSourceApp::Open(const fs::path& path, std::span<const Content> contents, bool map)
 {
 	uint32 maxIndex = 0;
 	for (const Content& c : contents)
@@ -92,66 +93,40 @@ FSTDataSourceApp* FSTDataSourceApp::Open(const fs::path& path, std::span<const C
 	ds->m_cluster.resize(maxIndex + 1);
 	for (const Content& c : contents)
 	{
-		Cluster& cluster = ds->m_cluster[c.index];
-		if (cluster.file || cluster.streams)
+		shared_file_t*& file = ds->m_cluster[c.index];
+		if (file)
 			return nullptr; // a cluster twice
 		const fs::path appPath = path / fmt::format("{:08x}.app", c.contentId);
-		cluster.file = FileStream::openFileMapped(appPath);
-		if (!cluster.file)
+		file = shared_file_open(FileStream::HostPath(appPath).c_str(), map ? 0 : SHARED_FILE_NO_MAP);
+		if (!file)
 			return nullptr;
-		cluster.mapped = cluster.file->MappedSpan();
-		if (cluster.mapped.size() != cluster.file->GetSize())
-		{
-			cluster.mapped = {};
-			cluster.streams = new FileStreamPool(appPath, cluster.file);
-			cluster.file = nullptr;
-		}
 	}
 	return ds.release();
 }
 
 FSTDataSourceApp::~FSTDataSourceApp()
 {
-	for (Cluster& c : m_cluster)
-	{
-		delete c.file;
-		delete c.streams;
-	}
+	for (shared_file_t* file : m_cluster)
+		shared_file_close(file);
 }
 
 uint64 FSTDataSourceApp::readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size)
 {
 	// clusterOffset is not used: each file starts at its cluster's start
-	if (clusterIndex >= m_cluster.size() || (!m_cluster[clusterIndex].file && !m_cluster[clusterIndex].streams) || size > 0xFFFFFFFF)
+	if (clusterIndex >= m_cluster.size() || !m_cluster[clusterIndex] || size > 0xFFFFFFFF)
 		return 0;
-	Cluster& c = m_cluster[clusterIndex];
-	if (!c.mapped.empty())
-	{
-		if (offset >= c.mapped.size())
-			return 0;
-		const size_t n = (size_t)std::min<uint64>(size, c.mapped.size() - offset);
-		memcpy(data, c.mapped.data() + offset, n);
-		return n;
-	}
-	if (!c.streams)
-		return 0; // an empty file
-	FileStream* fs = c.streams->Acquire();
-	uint64 got = 0;
-	if (fs)
-	{
-		fs->SetPosition(offset);
-		got = fs->readData(data, (uint32)size);
-	}
-	c.streams->Release(fs);
-	return got;
+	const int64_t got = shared_file_read_at(m_cluster[clusterIndex], data, (int64_t)size, offset);
+	return got > 0 ? (uint64)got : 0;
 }
 
 const uint8* FSTDataSourceApp::Lend(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint64 size)
 {
-	if (clusterIndex >= m_cluster.size())
+	if (clusterIndex >= m_cluster.size() || !m_cluster[clusterIndex])
 		return nullptr;
-	const std::span<const uint8> m = m_cluster[clusterIndex].mapped;
-	if (offset > m.size() || m.size() - offset < size || m.empty())
+	shared_file_t* file = m_cluster[clusterIndex];
+	const uint8* m = shared_file_mapped(file);
+	const uint64 fileSize = shared_file_size(file);
+	if (!m || offset > fileSize || fileSize - offset < size)
 		return nullptr;
-	return m.data() + offset;
+	return m + offset;
 }

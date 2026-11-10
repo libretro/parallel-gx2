@@ -1,44 +1,43 @@
-#pragma once
+#ifndef CAFE_FILESYSTEM_WUD_H
+#define CAFE_FILESYSTEM_WUD_H
 
-struct wuxHeader_t
-{
-	unsigned int		magic0;
-	unsigned int		magic1;
-	unsigned int		sectorSize;
-	unsigned long long	uncompressedSize;
-	unsigned int		flags;
-};
+/* A Wii U disc image, .wud (the disc as it is) or .wux (its sectors stored
+ * once each, behind a table of where each one is), read over
+ * libretro-common's filestream. Mapped where it can be: then a read is one
+ * copy from the pages, and a range in one piece is lent (wud_lend). Where
+ * it cannot be (a file only the frontend's VFS reaches), each reader at
+ * once reads through a stream of its own, lent from a few the image keeps.
+ * Any number of threads read at once, with no lock. */
 
-struct wud_t
-{
-	class FileStream* fs; // the mapping's, where mapped
-	// where not mapped: a stream for each reader at once
-	class FileStreamPool* streams;
-	// the file's octets, where it is mapped, while fs lives
-	const unsigned char* mapped;
-	unsigned long long	fileSize;
-	long long		uncompressedSize;
-	bool			isCompressed;
-	// data used when compressed
-	unsigned int	sectorSize;
-	unsigned int	indexTableEntryCount;
-	const unsigned int*	indexTable; // in the mapping, or indexTableCopy
-	unsigned int*	indexTableCopy;
-	long long		offsetIndexTable;
-	long long		offsetSectorArray;
-};
+#include <stdint.h>
+#include <boolean.h>
+#include <retro_common_api.h>
 
-#define WUX_MAGIC_0	'0XUW' // "WUX0"
-#define WUX_MAGIC_1	0x1099d02e
+RETRO_BEGIN_DECLS
 
-// wud and wux functions
-wud_t* wud_open(const fs::path& path); // transparently handles wud and wux files
-void wud_close(wud_t* wud);
+typedef struct wud wud_t;
 
-bool wud_isWUXCompressed(wud_t* wud);
-unsigned int wud_readData(wud_t* wud, void* buffer, unsigned int length, long long offset);
-// The image's length octets at offset, lent from the mapping and valid until
-// wud_close: nullptr where they are not all there and in one piece (an
-// unmapped file, a range past the end, or one that crosses a .wux sector)
-const unsigned char* wud_lend(wud_t* wud, unsigned int length, long long offset);
-long long wud_getWUDSize(wud_t* wud);
+/* wud_open flags */
+#define WUD_OPEN_NO_MAP 1 /* read through streams even where it could be mapped */
+
+/* path as the host file system has it (UTF-8); NULL if it is neither */
+wud_t *wud_open(const char *path, unsigned flags);
+void wud_close(wud_t *wud);
+
+bool wud_isWUXCompressed(const wud_t *wud);
+/* Up to length octets of the image at offset into buffer; how many */
+unsigned wud_readData(wud_t *wud, void *buffer, unsigned length, int64_t offset);
+/* The image's length octets at offset, lent from the mapping and valid until
+ * wud_close: NULL where they are not all there and in one piece (an
+ * unmapped file, a range past the end, or one that crosses a .wux sector) */
+const unsigned char *wud_lend(const wud_t *wud, unsigned length, int64_t offset);
+/* .wud: the file's size; .wux: the size of the image it holds */
+int64_t wud_getWUDSize(const wud_t *wud);
+
+bool wud_isMapped(const wud_t *wud);
+/* streams opened for readers, where it is not mapped */
+unsigned wud_streamsOpened(const wud_t *wud);
+
+RETRO_END_DECLS
+
+#endif

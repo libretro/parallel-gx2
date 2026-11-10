@@ -6,12 +6,16 @@
 // then an entry is read where it lies, a name compared there, and a file's
 // octets copied once from the pages to where the read wants them, with no
 // stream, no seek and nothing allocated. Where it cannot be mapped, through a
-// stream lent to each reader. Either way read from any number of threads at
-// once.
+// stream lent to each reader (shared_file.h). Either way read from any number
+// of threads at once.
 class WUHBReader
 {
   public:
-	static WUHBReader* FromPath(const fs::path& path);
+	// map: false to read through streams even where it could be mapped
+	static WUHBReader* FromPath(const fs::path& path, bool map = true);
+	~WUHBReader();
+	WUHBReader(const WUHBReader&) = delete;
+	WUHBReader& operator=(const WUHBReader&) = delete;
 
 	romfs_direntry_t GetDirEntry(uint32 offset) const;
 	romfs_fentry_t GetFileEntry(uint32 offset) const;
@@ -25,13 +29,12 @@ class WUHBReader
 	uint32 Lookup(const std::filesystem::path& path, bool isFile) const;
 
   private:
-	WUHBReader(FileStream* fileIn, const fs::path& path);
+	explicit WUHBReader(struct shared_file* file);
 	WUHBReader() = delete;
 
 	romfs_header_t m_header;
-	std::unique_ptr<FileStream> m_fileIn;      // the mapping's, where mapped
-	std::unique_ptr<FileStreamPool> m_streams; // where not
-	std::span<const uint8> m_mapped;
+	struct shared_file* m_file; // shared_file.h
+	std::span<const uint8> m_mapped; // its octets, where mapped
 	// len octets at offset into dst: from the mapping, or the stream
 	bool ReadAt(uint64 offset, void* dst, uint64 len) const;
 	// an entry's fields before its name, and where its name lies

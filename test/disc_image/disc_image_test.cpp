@@ -1,7 +1,12 @@
 // The core's disc image and title content readers, against images made here:
 //  - a .wud reads back whole and at random places, and so does a .wux - its
 //    sectors stored out of order, one stored once for two places, the image
-//    not a whole number of sectors - mapped and not;
+//    not a whole number of sectors - mapped and not; mapped, with no stream
+//    opened, and not, through the one it was opened with;
+//  - a .wux is refused when it is too short for its header or its sector
+//    table, gives a sector size out of range, or an image size of more
+//    sectors than its table can count; one whose table sends a sector past
+//    the file's end reads short there and lends nothing;
 //  - wud_lend lends a range from the mapping where it lies in one piece, and
 //    nothing where it crosses into a .wux sector stored elsewhere, runs past
 //    the end, or the file is not mapped;
@@ -18,10 +23,10 @@
 //    file's pool, and read back right (run under ThreadSanitizer by CI);
 //  - a homebrew bundle (.wuhb, a RomFS image) looks its files and
 //    directories up through hash chains that collide, and reads files back
-//    whole and at random places, mapped and not; mapped, with no read of
-//    the stream once open; a chain that loops ends the lookup.
-// FileStream is the one below, over libretro-common's filestream as the core's
-// is, counting what is read and mapping only when let.
+//    whole and at random places, mapped and not; a chain that loops ends
+//    the lookup.
+// The disc image reader (wud.c) and the file reader under all three
+// (shared_file.c) are built as C89, as the C89 lane builds them.
 #include "Cafe/Filesystem/WUD/wud.h"
 #include "Cafe/Filesystem/FST/FSTDataSource.h"
 #include "Common/FileStream.h"
@@ -41,52 +46,12 @@ static int s_failures = 0;
 #define CHECK(cond) \
 	do { if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); s_failures++; } } while (0)
 
-// --- the stream ----------------------------------------------------------
+// --- the path ---------------------------------------------------------------
 
-static std::atomic<uint32> s_reads{0};
-static bool s_noMap = false;
-
-FileStream* FileStream::openFile2(const fs::path& path, bool allowWrite)
+// as the core's, but for a case-insensitive search the test does not need
+std::string FileStream::HostPath(const fs::path& path)
 {
-	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
-	return f ? new FileStream(f) : nullptr;
-}
-
-FileStream* FileStream::openFileMapped(const fs::path& path)
-{
-	RFILE* f = filestream_open(path.string().c_str(), RETRO_VFS_FILE_ACCESS_READ,
-		s_noMap ? RETRO_VFS_FILE_ACCESS_HINT_NONE : RETRO_VFS_FILE_ACCESS_HINT_FREQUENT_ACCESS);
-	return f ? new FileStream(f) : nullptr;
-}
-
-std::span<const uint8> FileStream::MappedSpan()
-{
-	int64_t len = 0;
-	const uint8_t* map = filestream_get_mapped_ptr(m_file, &len);
-	return map && len > 0 ? std::span<const uint8>(map, (size_t)len) : std::span<const uint8>();
-}
-
-FileStream::~FileStream()
-{
-	filestream_close(m_file);
-}
-
-uint64 FileStream::GetSize()
-{
-	const int64_t size = filestream_get_size(m_file);
-	return size < 0 ? 0 : (uint64)size;
-}
-
-void FileStream::SetPosition(uint64 pos)
-{
-	filestream_seek(m_file, (int64_t)pos, RETRO_VFS_SEEK_POSITION_START);
-}
-
-uint32 FileStream::readData(void* data, uint32 length)
-{
-	s_reads++;
-	const int64_t n = filestream_read(m_file, data, length);
-	return n < 0 ? 0 : (uint32)n;
+	return path.string();
 }
 
 // --- what WUHBReader takes from the rest of the core --------------------
@@ -137,14 +102,16 @@ static std::vector<uint8> MakeWux(std::vector<uint8>& image)
 		if (stored[i] == shared)
 			index[1] = i;
 
-	wuxHeader_t header{};
-	header.magic0 = WUX_MAGIC_0;
-	header.magic1 = WUX_MAGIC_1;
-	header.sectorSize = SECTOR;
-	header.uncompressedSize = image.size();
-	std::vector<uint8> wux(sizeof(header) + index.size() * 4);
-	memcpy(wux.data(), &header, sizeof(header));
-	memcpy(wux.data() + sizeof(header), index.data(), index.size() * 4);
+	// the header, little-endian: "WUX0", 0x1099d02e, the sector size, four
+	// octets of padding, the image's size, flags, padding - 32 octets
+	std::vector<uint8> wux(32 + index.size() * 4);
+	auto put = [&](size_t at, uint64 v, int n) { for (int i = 0; i < n; i++) wux[at + i] = (uint8)(v >> (8 * i)); };
+	memcpy(wux.data(), "WUX0", 4);
+	put(4, 0x1099d02e, 4);
+	put(8, SECTOR, 4);
+	put(16, image.size(), 8);
+	for (size_t i = 0; i < index.size(); i++)
+		put(32 + i * 4, index[i], 4);
 	wux.resize((wux.size() + SECTOR - 1) / SECTOR * SECTOR);
 	for (uint32 s : stored)
 	{
@@ -190,19 +157,20 @@ static void TestImages()
 
 	for (bool map : {true, false})
 	{
-		s_noMap = !map;
-		wud_t* wud = wud_open(wudPath);
-		wud_t* wx = wud_open(wuxPath);
+		const unsigned flags = map ? 0 : WUD_OPEN_NO_MAP;
+		wud_t* wud = wud_open(wudPath.string().c_str(), flags);
+		wud_t* wx = wud_open(wuxPath.string().c_str(), flags);
 		CHECK(wud && wx);
 		if (!wud || !wx)
 			continue;
 		CHECK(!wud_isWUXCompressed(wud) && wud_isWUXCompressed(wx));
-		CHECK((wud->mapped != nullptr) == map && (wx->mapped != nullptr) == map);
-		const uint32 reads = s_reads;
+		CHECK(wud_isMapped(wud) == map && wud_isMapped(wx) == map);
 		CHECK(ReadsBack(wud, image, rng));
 		CHECK(ReadsBack(wx, wuxImage, rng));
-		// mapped, every octet from the pages
-		CHECK(map ? s_reads == reads : s_reads > reads);
+		// mapped, every octet from the pages: no stream; not, the one
+		// opened first, and no more for one reader
+		CHECK(map ? wud_streamsOpened(wud) == 0 && wud_streamsOpened(wx) == 0
+			: wud_streamsOpened(wud) == 1 && wud_streamsOpened(wx) == 1);
 
 		// lent only in one piece, and only mapped
 		const unsigned char* p = wud_lend(wud, 3 * SECTOR, SECTOR + 5);
@@ -219,12 +187,55 @@ static void TestImages()
 		wud_close(wud);
 		wud_close(wx);
 	}
-	s_noMap = false;
 
-	// too short for its own index table
-	std::vector<uint8> cut(wux.begin(), wux.begin() + 40);
-	WriteFile(wuxPath, cut);
-	CHECK(wud_open(wuxPath) == nullptr);
+	// not images: each refused, mapped and not
+	for (unsigned flags : {0u, (unsigned)WUD_OPEN_NO_MAP})
+	{
+		const std::string p = wuxPath.string();
+		// too short for its own index table
+		WriteFile(wuxPath, std::vector<uint8>(wux.begin(), wux.begin() + 40));
+		CHECK(wud_open(p.c_str(), flags) == nullptr);
+		// too short for a header
+		WriteFile(wuxPath, std::vector<uint8>(wux.begin(), wux.begin() + 20));
+		CHECK(wud_open(p.c_str(), flags) == nullptr);
+		// an image size of more sectors than the file could say where are,
+		// and one past what the index can count
+		std::vector<uint8> bad = wux;
+		for (uint64 size : {0x7FFFFFFFFFFFFFFFull, 0xFFFFFFFFFFFFFFFFull, 0x100000000ull * SECTOR, 0ull})
+		{
+			for (int i = 0; i < 8; i++)
+				bad[16 + i] = (uint8)(size >> (8 * i));
+			WriteFile(wuxPath, bad);
+			CHECK(wud_open(p.c_str(), flags) == nullptr);
+		}
+		// a sector size out of range
+		bad = wux;
+		bad[8] = 0x80; bad[9] = 0; bad[10] = 0; bad[11] = 0;
+		WriteFile(wuxPath, bad);
+		CHECK(wud_open(p.c_str(), flags) == nullptr);
+		// a folder
+		CHECK(wud_open(fs::temp_directory_path().string().c_str(), flags) == nullptr);
+		CHECK(wud_open(nullptr, flags) == nullptr);
+	}
+	// a .wux whose table sends a sector past the file's end: a short read
+	// and nothing lent, not a read past the mapping
+	{
+		std::vector<uint8> bad = wux;
+		bad[32] = 0xFF; bad[33] = 0xFF; bad[34] = 0; bad[35] = 0; // sector 0 stored as 0xFFFF
+		WriteFile(wuxPath, bad);
+		for (unsigned flags : {0u, (unsigned)WUD_OPEN_NO_MAP})
+		{
+			wud_t* wx = wud_open(wuxPath.string().c_str(), flags);
+			CHECK(wx != nullptr);
+			if (!wx)
+				continue;
+			std::vector<uint8> got(SECTOR);
+			CHECK(wud_readData(wx, got.data(), 16, 0) == 0);
+			CHECK(!wud_lend(wx, 16, 0));
+			CHECK(wud_readData(wx, got.data(), 16, SECTOR) == 16); // the next one is where it was
+			wud_close(wx);
+		}
+	}
 	fs::remove(wudPath);
 	fs::remove(wuxPath);
 }
@@ -362,17 +373,15 @@ static void TestDiscSource()
 
 	for (bool map : {true, false})
 	{
-		s_noMap = !map;
 		for (const fs::path& path : {wudPath, wuxPath})
 		{
-			std::unique_ptr<FSTDataSourceWUD> ds(FSTDataSourceWUD::Open(path));
+			std::unique_ptr<FSTDataSourceWUD> ds(FSTDataSourceWUD::Open(path, map));
 			CHECK(ds != nullptr);
 			if (!ds)
 				continue;
 			// the partition's base and the cluster's offset both count
 			ds->SetBaseOffset(0x8000);
 			Counting c(*ds);
-			const uint32 reads = s_reads;
 			CHECK(RawReadsBack(c, 1, 0x8000, raw, SECTOR, iv0));
 			// mapped, raw blocks lie in one sector: decrypted from the pages
 			CHECK(map ? c.read == 0 : c.read > 0);
@@ -384,10 +393,8 @@ static void TestDiscSource()
 			CHECK(lent ? c.read == 0 : c.read > 0);
 			if (map && !lent)
 				CHECK(c.read == 3 * (FSTDataSource::HASHED_BLOCK_SIZE - FSTDataSource::HASHED_BLOCK_HASH_SIZE));
-			CHECK(map ? s_reads == reads : s_reads > reads);
 		}
 	}
-	s_noMap = false;
 	fs::remove(wudPath);
 	fs::remove(wuxPath);
 }
@@ -409,19 +416,17 @@ static void TestAppSource()
 
 	for (bool map : {true, false})
 	{
-		s_noMap = !map;
-		std::unique_ptr<FSTDataSourceApp> ds(FSTDataSourceApp::Open(dir, contents));
+		std::unique_ptr<FSTDataSourceApp> ds(FSTDataSourceApp::Open(dir, contents, map));
 		CHECK(ds != nullptr);
 		if (!ds)
 			continue;
-		const uint32 reads = s_reads;
 		Counting c(*ds);
 		// the cluster's offset is not the file's: each file is its cluster
 		CHECK(RawReadsBack(c, 0, 0x123456, fst, SECTOR, iv0));
 		CHECK(RawReadsBack(c, 1, 0x8000, raw, SECTOR, iv1));
 		CHECK(HashedReadsBack(c, 2, 0x10000, hashed));
 		// mapped, every block decrypted from the pages
-		CHECK(map ? c.read == 0 && s_reads == reads : c.read > 0 && s_reads > reads);
+		CHECK(map ? c.read == 0 : c.read > 0);
 		// lent where it lies, mapped
 		const uint8* p = ds->Lend(1, 0, 0x100, 0x2000);
 		CHECK(map ? p && memcmp(p, raw.cipher.data() + 0x100, 0x2000) == 0 : !p);
@@ -434,7 +439,6 @@ static void TestAppSource()
 		CHECK(ds->readData(2, 0, hashed.cipher.size(), got.data(), 1) == 0);
 		CHECK(ds->readData(7, 0, 0, got.data(), 1) == 0);
 	}
-	s_noMap = false;
 
 	// a file missing, a cluster twice
 	const FSTDataSourceApp::Content missing[] = {{0, 0x0}, {1, 0xc}};
@@ -603,13 +607,11 @@ static void TestWuhb()
 
 	for (bool map : {true, false})
 	{
-		s_noMap = !map;
-		std::unique_ptr<WUHBReader> reader(WUHBReader::FromPath(path));
+		std::unique_ptr<WUHBReader> reader(WUHBReader::FromPath(path, map));
 		CHECK(reader != nullptr);
 		if (!reader)
 			continue;
 		CHECK(reader->IsMapped() == map);
-		const uint32 reads = s_reads;
 		bool all = true;
 		std::vector<uint8> got(80000);
 		for (const RomfsFile& f : files)
@@ -646,10 +648,7 @@ static void TestWuhb()
 		CHECK(reader->Lookup("content/file1.bi", true) == ROMFS_ENTRY_EMPTY);
 		CHECK(reader->GetFileSize(0x7FFFFFF0) == 0);
 		CHECK(reader->ReadFromFile(ROMFS_ENTRY_EMPTY, 0, 1, got.data()) == 0);
-		// mapped, nothing read once open
-		CHECK(map ? s_reads == reads : s_reads > reads);
 	}
-	s_noMap = false;
 
 	// a chain that comes back round: what is not there is not found
 	WriteFile(path, MakeWuhb(files, true));
@@ -666,7 +665,6 @@ static void TestWuhb()
 
 static void TestThreadsUnmapped()
 {
-	s_noMap = true;
 	std::mt19937 rng(77);
 	std::vector<uint8> image(12 * SECTOR + 0x777);
 	for (uint8& b : image)
@@ -690,15 +688,15 @@ static void TestThreadsUnmapped()
 	const fs::path wuhbPath = TempPath("parallel_gx2_threads_test.wuhb");
 	WriteFile(wuhbPath, MakeWuhb(files));
 
-	wud_t* wud = wud_open(wudPath);
-	wud_t* wx = wud_open(wuxPath);
+	wud_t* wud = wud_open(wudPath.string().c_str(), WUD_OPEN_NO_MAP);
+	wud_t* wx = wud_open(wuxPath.string().c_str(), WUD_OPEN_NO_MAP);
 	const FSTDataSourceApp::Content contents[] = {{0, 5}};
-	std::unique_ptr<FSTDataSourceApp> app(FSTDataSourceApp::Open(appDir, contents));
-	std::unique_ptr<WUHBReader> wuhb(WUHBReader::FromPath(wuhbPath));
+	std::unique_ptr<FSTDataSourceApp> app(FSTDataSourceApp::Open(appDir, contents, false));
+	std::unique_ptr<WUHBReader> wuhb(WUHBReader::FromPath(wuhbPath, false));
 	CHECK(wud && wx && app && wuhb);
 	if (wud && wx && app && wuhb)
 	{
-		CHECK(!wud->mapped && !wx->mapped && !wuhb->IsMapped());
+		CHECK(!wud_isMapped(wud) && !wud_isMapped(wx) && !wuhb->IsMapped());
 		std::vector<uint32> entries;
 		for (const RomfsFile& f : files)
 			entries.push_back(wuhb->Lookup("content/" + f.name, true));
@@ -731,7 +729,7 @@ static void TestThreadsUnmapped()
 			t.join();
 		CHECK(bad == 0);
 		// a stream each at most, for the four
-		CHECK(wud->streams->Opened() <= 4 && wx->streams->Opened() <= 4);
+		CHECK(wud_streamsOpened(wud) <= 4 && wx && wud_streamsOpened(wx) <= 4);
 	}
 	if (wud)
 		wud_close(wud);
@@ -739,7 +737,6 @@ static void TestThreadsUnmapped()
 		wud_close(wx);
 	app.reset();
 	wuhb.reset();
-	s_noMap = false;
 	fs::remove(wudPath);
 	fs::remove(wuxPath);
 	fs::remove(wuhbPath);

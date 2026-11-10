@@ -1,9 +1,9 @@
 #pragma once
 #include "Common/precompiled.h"
 
-struct wud_t;
+typedef struct wud wud_t;
 class FileStream;
-class FileStreamPool;
+typedef struct shared_file shared_file_t;
 
 // Where an FST volume's encrypted octets come from: a disc image (.wud, .wux)
 // or a title's content files (.app). Each is mapped where it can be, and then
@@ -59,7 +59,8 @@ protected:
 class FSTDataSourceWUD : public FSTDataSource
 {
 public:
-	static FSTDataSourceWUD* Open(const fs::path& path);
+	// map: false to read through streams even where it could be mapped
+	static FSTDataSourceWUD* Open(const fs::path& path, bool map = true);
 	~FSTDataSourceWUD() override;
 
 	void SetBaseOffset(uint64 baseOffset) { m_baseOffset = baseOffset; }
@@ -83,19 +84,15 @@ public:
 		uint16 index;    // the cluster
 		uint32 contentId; // its file: <contentId>.app, in hex
 	};
-	static FSTDataSourceApp* Open(const fs::path& path, std::span<const Content> contents);
+	// map: false to read through streams even where they could be mapped
+	static FSTDataSourceApp* Open(const fs::path& path, std::span<const Content> contents, bool map = true);
 	~FSTDataSourceApp() override;
 
 	uint64 readData(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, void* data, uint64 size) override;
 	const uint8* Lend(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint64 size) override;
 
 private:
-	struct Cluster
-	{
-		FileStream* file{};             // the mapping's, where mapped
-		std::span<const uint8> mapped;
-		FileStreamPool* streams{};      // where not: one for each reader at once
-	};
+	// each cluster's file, mapped where it can be (shared_file.h)
 	FSTDataSourceApp() = default;
-	std::vector<Cluster> m_cluster;
+	std::vector<shared_file_t*> m_cluster;
 };
