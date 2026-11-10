@@ -372,10 +372,13 @@ static void TestDiscSource()
 			// mapped, raw blocks lie in one sector: decrypted from the pages
 			CHECK(map ? c.read == 0 : c.read > 0);
 			CHECK(HashedReadsBack(c, 2, 0x40000, hashed));
-			// a .wux's hashed blocks lie across sectors stored apart: read,
-			// from the pages where it is mapped
+			// a .wux's hashed blocks lie across sectors stored apart: their
+			// data read, from the pages where it is mapped, their hashes
+			// (in one sector) lent
 			const bool lent = map && path == wudPath;
-			CHECK(lent ? c.read == 0 : c.read >= (map ? hashed.cipher.size() : 0));
+			CHECK(lent ? c.read == 0 : c.read > 0);
+			if (map && !lent)
+				CHECK(c.read == 3 * (FSTDataSource::HASHED_BLOCK_SIZE - FSTDataSource::HASHED_BLOCK_HASH_SIZE));
 			CHECK(map ? s_reads == reads : s_reads > reads);
 		}
 	}

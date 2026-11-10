@@ -48,6 +48,9 @@ public:
 	static FSTVolume* OpenFromDiscImage(const fs::path& path, NCrypto::AesKey& discTitleKey, ErrorCode* errorCodeOut = nullptr);
 	static FSTVolume* OpenFromDiscImage(const fs::path& path, ErrorCode* errorCodeOut = nullptr);
 	static FSTVolume* OpenFromContentFolder(fs::path folderPath, ErrorCode* errorCodeOut = nullptr);
+	// An FST of fstSize octets at fstOffset of cluster 0, in a source of the
+	// caller's, decrypted with key: what the reads see, without a title around
+	static FSTVolume* OpenFromDataSource(std::unique_ptr<class FSTDataSource> dataSource, uint64 fstOffset, uint32 fstSize, const NCrypto::AesKey& key);
 
 	~FSTVolume();
 
@@ -193,17 +196,43 @@ private:
 		return m_hashIsDisabled;
 	}
 
-	/* Cache for decrypted raw and hashed blocks */
-	std::unordered_map<uint64, struct FSTCachedRawBlock*> m_cacheDecryptedRawBlocks;
-	std::unordered_map<uint64, struct FSTCachedHashedBlock*> m_cacheDecryptedHashedBlocks;
+	/* Decrypted blocks kept for the reads that follow: a fixed set of slots,
+	   made at the first read, so a read allocates nothing. A read that wants
+	   a whole block is decrypted straight to where it goes instead. */
+	struct CacheSlot
+	{
+		uint64 key{~0ull}; // CacheKey(); ~0 when empty
+		uint64 lastAccess{};
+		NCrypto::AesIv ivForNextBlock{}; // a raw block's: the next one's IV
+	};
+	static constexpr uint32 CACHE_SLOTS = 32;
+	static constexpr uint32 CACHE_SLOT_SIZE = 0x10000; // a hashed block, or a raw one
+	std::unique_ptr<uint8[]> m_cacheMemory;
+	CacheSlot m_cacheSlots[CACHE_SLOTS];
 	uint64 m_cacheAccessCounter{};
+	// the IV of the raw block after the last one decrypted outside the cache
+	uint64 m_nextIvKey{~0ull};
+	NCrypto::AesIv m_nextIv{};
 
-	void DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut);
+	static uint64 CacheKey(bool hashed, uint32 clusterIndex, uint32 blockIndex)
+	{
+		return ((uint64)hashed << 63) | ((uint64)clusterIndex << 32) | blockIndex;
+	}
+	CacheSlot* FindCacheSlot(uint64 key);
+	// the least recently used slot, emptied, or nullptr when there is no memory
+	CacheSlot* TakeCacheSlot();
+	uint8* CacheSlotData(const CacheSlot* slot) { return m_cacheMemory.get() + (size_t)(slot - m_cacheSlots) * CACHE_SLOT_SIZE; }
 
-	struct FSTCachedRawBlock* GetDecryptedRawBlock(uint32 clusterIndex, uint32 blockIndex);
-	struct FSTCachedHashedBlock* GetDecryptedHashedBlock(uint32 clusterIndex, uint32 blockIndex);
-
-	void TrimCacheIfRequired(struct FSTCachedRawBlock** droppedRawBlock, struct FSTCachedHashedBlock** droppedHashedBlock);
+	bool DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut);
+	// a raw block (m_sectorSize octets) decrypted into dst and, where the
+	// cluster has a content hash and this is the next block of it, hashed
+	bool DecryptRawBlock(uint32 clusterIndex, uint32 blockIndex, uint8* dst, NCrypto::AesIv& nextIvOut);
+	// a hashed block's hashes (0x400) and data (0xFC00), its data checked
+	// against its H0 hash
+	bool DecryptHashedBlock(uint32 clusterIndex, uint32 blockIndex, uint8* hashDst, uint8* dataDst);
+	// from the cache, decrypted into it first when not there
+	const uint8* GetDecryptedRawBlock(uint32 clusterIndex, uint32 blockIndex);
+	const uint8* GetDecryptedHashedBlockData(uint32 clusterIndex, uint32 blockIndex);
 
 	/* File reading */
 	uint32 ReadFile_HashModeRaw(uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut);

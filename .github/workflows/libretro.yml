@@ -305,6 +305,20 @@ jobs:
           make -C test/fsc clean
           SANITIZER=address,undefined ./test/fsc/run_tests.sh
 
+      - name: "FST volumes"
+        # the core's reader of disc and title content volumes: files from
+        # unhashed and hashed clusters of a volume the test makes, through
+        # the block cache and straight to where they go, with no allocation
+        # once warm; plain, under ThreadSanitizer, under ASan + UBSan. The
+        # core's precompiled header wants fmt and glm.
+        run: |
+          git submodule update --init --depth 1 dependencies/fmt dependencies/glm
+          ./test/fst/run_tests.sh
+          make -C test/fst clean
+          SANITIZER=thread ./test/fst/run_tests.sh
+          make -C test/fst clean
+          SANITIZER=address,undefined ./test/fst/run_tests.sh
+
       - name: "IOSU kernel"
         # Message queues, timers and IPC from several threads at once, against
         # the kernel's own source; plain, under ThreadSanitizer, under ASan +

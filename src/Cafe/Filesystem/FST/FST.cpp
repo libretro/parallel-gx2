@@ -442,6 +442,12 @@ FSTVolume* FSTVolume::OpenFST(FSTDataSource* dataSource, uint64 fstOffset, uint3
 	return fstVolume;
 }
 
+FSTVolume* FSTVolume::OpenFromDataSource(std::unique_ptr<FSTDataSource> dataSource, uint64 fstOffset, uint32 fstSize, const NCrypto::AesKey& key)
+{
+	NCrypto::AesKey k = key;
+	return OpenFST(std::move(dataSource), fstOffset, fstSize, &k, ClusterHashMode::RAW, nullptr);
+}
+
 FSTVolume* FSTVolume::OpenFST(std::unique_ptr<FSTDataSource> dataSource, uint64 fstOffset, uint32 fstSize, NCrypto::AesKey* partitionTitleKey, ClusterHashMode fstHashMode, NCrypto::TMDParser* optionalTMD)
 {
 	FSTDataSource* ds = dataSource.release();
@@ -714,11 +720,6 @@ constexpr size_t BLOCK_SIZE = 0x10000;
 constexpr size_t BLOCK_HASH_SIZE = 0x0400;
 constexpr size_t BLOCK_FILE_SIZE = 0xFC00;
 
-struct FSTRawBlock
-{
-	std::vector<uint8> rawData; // unhashed block size depends on sector size field in partition header
-};
-
 struct FSTHashedBlock
 {
 	uint8 rawData[BLOCK_SIZE];
@@ -760,128 +761,82 @@ struct FSTHashedBlock
 
 static_assert(sizeof(FSTHashedBlock) == BLOCK_SIZE);
 
-struct FSTCachedRawBlock
+FSTVolume::CacheSlot* FSTVolume::FindCacheSlot(uint64 key)
 {
-	FSTRawBlock blockData;
-	NCrypto::AesIv ivForNextBlock;
-	uint64 lastAccess;
-};
-
-struct FSTCachedHashedBlock 
-{
-	FSTHashedBlock blockData;
-	uint64 lastAccess;
-};
-
-// Checks cache fill state and if necessary drops least recently accessed block from the cache. Optionally allows to recycle the released cache entry to cut down cost of memory allocation and clearing
-void FSTVolume::TrimCacheIfRequired(FSTCachedRawBlock** droppedRawBlock, FSTCachedHashedBlock** droppedHashedBlock)
-{
-	// calculate size used by cache
-	size_t cacheSize = 0;
-	for (auto& itr : m_cacheDecryptedRawBlocks)
-		cacheSize += itr.second->blockData.rawData.size();
-	for (auto& itr : m_cacheDecryptedHashedBlocks)
-		cacheSize += sizeof(FSTCachedHashedBlock) + sizeof(FSTHashedBlock);
-	// only trim if cache is full (larger than 2MB)
-	if (cacheSize < 2*1024*1024) // 2MB
-		return;
-	// scan both cache lists to find least recently accessed block to drop
-	auto dropRawItr = std::min_element(m_cacheDecryptedRawBlocks.begin(), m_cacheDecryptedRawBlocks.end(), [](const auto& a, const auto& b) -> bool
-										{ return a.second->lastAccess < b.second->lastAccess; });
-	auto dropHashedItr = std::min_element(m_cacheDecryptedHashedBlocks.begin(), m_cacheDecryptedHashedBlocks.end(), [](const auto& a, const auto& b) -> bool
-										{ return a.second->lastAccess < b.second->lastAccess; });
-	uint64 lastAccess = std::numeric_limits<uint64>::max();
-	if(dropRawItr != m_cacheDecryptedRawBlocks.end())
-		lastAccess = dropRawItr->second->lastAccess;
-	if(dropHashedItr != m_cacheDecryptedHashedBlocks.end())
-		lastAccess = std::min<uint64>(lastAccess, dropHashedItr->second->lastAccess);
-	if(dropRawItr != m_cacheDecryptedRawBlocks.end() && dropRawItr->second->lastAccess == lastAccess)
-	{
-		if (droppedRawBlock)
-			*droppedRawBlock = dropRawItr->second;
-		else
-			delete dropRawItr->second;
-		m_cacheDecryptedRawBlocks.erase(dropRawItr);
-		return;
-	}
-	else if(dropHashedItr != m_cacheDecryptedHashedBlocks.end() && dropHashedItr->second->lastAccess == lastAccess)
-	{
-		if (droppedHashedBlock)
-			*droppedHashedBlock = dropHashedItr->second;
-		else
-			delete dropHashedItr->second;
-		m_cacheDecryptedHashedBlocks.erase(dropHashedItr);
-	}
+	for (CacheSlot& slot : m_cacheSlots)
+		if (slot.key == key)
+			return &slot;
+	return nullptr;
 }
 
-void FSTVolume::DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut)
+FSTVolume::CacheSlot* FSTVolume::TakeCacheSlot()
+{
+	if (!m_cacheMemory)
+	{
+		// made at the first read, not when a volume is only opened to be
+		// looked at (the title list)
+		m_cacheMemory.reset(new (std::nothrow) uint8[(size_t)CACHE_SLOTS * CACHE_SLOT_SIZE]);
+		if (!m_cacheMemory)
+			return nullptr;
+	}
+	CacheSlot* oldest = &m_cacheSlots[0];
+	for (CacheSlot& slot : m_cacheSlots)
+		if (slot.lastAccess < oldest->lastAccess)
+			oldest = &slot;
+	oldest->key = ~0ull;
+	return oldest;
+}
+
+bool FSTVolume::DetermineUnhashedBlockIV(uint32 clusterIndex, uint32 blockIndex, NCrypto::AesIv& ivOut)
 {
 	ivOut = {};
 	if(blockIndex == 0)
 	{
 		ivOut.iv[0] = (uint8)(clusterIndex >> 8);
 		ivOut.iv[1] = (uint8)(clusterIndex >> 0);
+		return true;
 	}
-	else
+	// the last 16 encrypted bytes of the previous block are the IV (AES CBC):
+	// kept with that block when it is cached or was the last one decrypted
+	// outside the cache, and otherwise read (or lent) from the data source
+	const uint64 prevKey = CacheKey(false, clusterIndex, blockIndex - 1);
+	if (const CacheSlot* prev = FindCacheSlot(prevKey))
 	{
-		// the last 16 encrypted bytes of the previous block are the IV (AES CBC)
-		// if the previous block is cached we can grab the IV from there. Otherwise we have to read the 16 bytes from the data source
-		uint32 prevBlockIndex = blockIndex - 1;
-		uint64 cacheBlockId = ((uint64)clusterIndex << (64 - 16)) | (uint64)prevBlockIndex;
-		auto itr = m_cacheDecryptedRawBlocks.find(cacheBlockId);
-		if (itr != m_cacheDecryptedRawBlocks.end())
-		{
-			ivOut = itr->second->ivForNextBlock;
-		}
-		else
-		{
-			cemu_assert(m_sectorSize >= NCrypto::AesIv::SIZE);
-			uint64 clusterOffset = (uint64)m_cluster[clusterIndex].offset * m_sectorSize;
-			NCrypto::AesIv prevIV{};
-			const uint8* prev = m_dataSource->Fetch(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize - NCrypto::AesIv::SIZE, prevIV.iv, NCrypto::AesIv::SIZE);
-			if (!prev)
-			{
-				cemuLog_log(LogType::Force, "Failed to read IV for raw FST block");
-				m_detectedCorruption = true;
-				return;
-			}
-			memcpy(ivOut.iv, prev, NCrypto::AesIv::SIZE);
-		}
+		ivOut = prev->ivForNextBlock;
+		return true;
 	}
+	if (m_nextIvKey == prevKey)
+	{
+		ivOut = m_nextIv;
+		return true;
+	}
+	cemu_assert(m_sectorSize >= NCrypto::AesIv::SIZE);
+	uint64 clusterOffset = (uint64)m_cluster[clusterIndex].offset * m_sectorSize;
+	const uint8* prev = m_dataSource->Fetch(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize - NCrypto::AesIv::SIZE, ivOut.iv, NCrypto::AesIv::SIZE);
+	if (!prev)
+	{
+		cemuLog_log(LogType::Force, "Failed to read IV for raw FST block");
+		m_detectedCorruption = true;
+		return false;
+	}
+	memmove(ivOut.iv, prev, NCrypto::AesIv::SIZE);
+	return true;
 }
 
-FSTCachedRawBlock* FSTVolume::GetDecryptedRawBlock(uint32 clusterIndex, uint32 blockIndex)
+bool FSTVolume::DecryptRawBlock(uint32 clusterIndex, uint32 blockIndex, uint8* dst, NCrypto::AesIv& nextIvOut)
 {
 	FSTCluster& cluster = m_cluster[clusterIndex];
 	uint64 clusterOffset = (uint64)cluster.offset * m_sectorSize;
-	// generate id for cache
-	uint64 cacheBlockId = ((uint64)clusterIndex << (64 - 16)) | (uint64)blockIndex;
-	// lookup block in cache
-	FSTCachedRawBlock* block = nullptr;
-	auto itr = m_cacheDecryptedRawBlocks.find(cacheBlockId);
-	if (itr != m_cacheDecryptedRawBlocks.end())
-	{
-		block = itr->second;
-		block->lastAccess = ++m_cacheAccessCounter;
-		return block;
-	}
-	// if cache already full, drop least recently accessed block and recycle FSTCachedRawBlock object if possible
-	TrimCacheIfRequired(&block, nullptr);
-	if (!block)
-		block = new FSTCachedRawBlock();
-	block->blockData.rawData.resize(m_sectorSize);
-	// block not cached, read new
-	block->lastAccess = ++m_cacheAccessCounter;
-	// decrypted from the file's pages into the block, or read there first
+	// decrypted from the file's pages into dst, or read there first
 	NCrypto::AesIv iv{};
-	DetermineUnhashedBlockIV(clusterIndex, blockIndex, iv);
-	if (!m_dataSource->ReadRawBlock(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize, block->blockData.rawData.data(), m_sectorSize,
-		m_partitionTitlekey.b, iv.iv, block->ivForNextBlock.iv))
+	if (!DetermineUnhashedBlockIV(clusterIndex, blockIndex, iv))
+		return false;
+	if (!m_dataSource->ReadRawBlock(clusterIndex, clusterOffset, (uint64)blockIndex * m_sectorSize, dst, m_sectorSize,
+		m_partitionTitlekey.b, iv.iv, nextIvOut.iv))
 	{
 		cemuLog_log(LogType::Force, "Failed to read raw FST block");
-		delete block;
 		m_detectedCorruption = true;
-		return nullptr;
+		return false;
 	}
 	// if this is the next block, then hash it
 	if(cluster.hasContentHash)
@@ -893,7 +848,7 @@ FSTCachedRawBlock* FSTVolume::GetDecryptedRawBlock(uint32 clusterIndex, uint32 b
 			uint32 hashSize = m_sectorSize;
 			if(isLastBlock)
 				hashSize = cluster.contentSize - (uint64)blockIndex*m_sectorSize;
-			cluster.singleHashCtx->Update(block->blockData.rawData.data(), hashSize);
+			cluster.singleHashCtx->Update(dst, hashSize);
 			cluster.singleHashNumBlocksHashed++;
 			if(isLastBlock)
 			{
@@ -902,62 +857,72 @@ FSTCachedRawBlock* FSTVolume::GetDecryptedRawBlock(uint32 clusterIndex, uint32 b
 				if(memcmp(hash, cluster.contentHash32, cluster.contentHashIsSHA1 ? 20 : 32) != 0)
 				{
 					cemuLog_log(LogType::Force, "FST: Raw section hash mismatch");
-					delete block;
 					m_detectedCorruption = true;
-					return nullptr;
+					return false;
 				}
 			}
 		}
 	}
-	// register in cache
-	m_cacheDecryptedRawBlocks.emplace(cacheBlockId, block);
-	return block;
+	return true;
 }
 
-FSTCachedHashedBlock* FSTVolume::GetDecryptedHashedBlock(uint32 clusterIndex, uint32 blockIndex)
+bool FSTVolume::DecryptHashedBlock(uint32 clusterIndex, uint32 blockIndex, uint8* hashDst, uint8* dataDst)
 {
 	const FSTCluster& cluster = m_cluster[clusterIndex];
 	uint64 clusterOffset = (uint64)cluster.offset * m_sectorSize;
-	// generate id for cache
-	uint64 cacheBlockId = ((uint64)clusterIndex << (64 - 16)) | (uint64)blockIndex;
-	// lookup block in cache
-	FSTCachedHashedBlock* block = nullptr;
-	auto itr = m_cacheDecryptedHashedBlocks.find(cacheBlockId);
-	if (itr != m_cacheDecryptedHashedBlocks.end())
-	{
-		block = itr->second;
-		block->lastAccess = ++m_cacheAccessCounter;
-		return block;
-	}
-	// if cache already full, drop least recently accessed block and recycle FSTCachedHashedBlock object if possible
-	TrimCacheIfRequired(nullptr, &block);
-	if (!block)
-		block = new FSTCachedHashedBlock();
-	// block not cached, read new
-	block->lastAccess = ++m_cacheAccessCounter;
-	// decrypted from the file's pages into the block, or read there first
+	// decrypted from the file's pages, or read where they go first
 	static_assert(BLOCK_SIZE == FSTDataSource::HASHED_BLOCK_SIZE && BLOCK_HASH_SIZE == FSTDataSource::HASHED_BLOCK_HASH_SIZE);
-	if (!m_dataSource->ReadHashedBlock(clusterIndex, clusterOffset, (uint64)blockIndex * BLOCK_SIZE, block->blockData.rawData, m_partitionTitlekey.b, blockIndex % 16))
+	if (!m_dataSource->ReadHashedBlock(clusterIndex, clusterOffset, (uint64)blockIndex * BLOCK_SIZE, hashDst, dataDst, m_partitionTitlekey.b, blockIndex % 16))
 	{
 		cemuLog_log(LogType::Force, "Failed to read hashed FST block");
-		delete block;
 		m_detectedCorruption = true;
-		return nullptr;
+		return false;
 	}
 	// compare with H0 to verify data integrity
 	NCrypto::CHash160 h0;
-	SHA1(block->blockData.getFileData(), BLOCK_FILE_SIZE, h0.b);
-	uint32 h0Index = (blockIndex % 4096);
-	if (memcmp(h0.b, block->blockData.getH0Hash(h0Index & 0xF), sizeof(h0.b)) != 0)
+	SHA1(dataDst, BLOCK_FILE_SIZE, h0.b);
+	if (memcmp(h0.b, hashDst + 20 * (blockIndex % 16), sizeof(h0.b)) != 0)
 	{
 		cemuLog_log(LogType::Force, "FST: Hash H0 mismatch in hashed block (section {} index {})", clusterIndex, blockIndex);
-		delete block;
 		m_detectedCorruption = true;
-		return nullptr;
+		return false;
 	}
-	// register in cache
-	m_cacheDecryptedHashedBlocks.emplace(cacheBlockId, block);
-	return block;
+	return true;
+}
+
+const uint8* FSTVolume::GetDecryptedRawBlock(uint32 clusterIndex, uint32 blockIndex)
+{
+	const uint64 key = CacheKey(false, clusterIndex, blockIndex);
+	if (CacheSlot* slot = FindCacheSlot(key))
+	{
+		slot->lastAccess = ++m_cacheAccessCounter;
+		return CacheSlotData(slot);
+	}
+	CacheSlot* slot = TakeCacheSlot();
+	if (!slot || !DecryptRawBlock(clusterIndex, blockIndex, CacheSlotData(slot), slot->ivForNextBlock))
+		return nullptr;
+	slot->key = key;
+	slot->lastAccess = ++m_cacheAccessCounter;
+	return CacheSlotData(slot);
+}
+
+const uint8* FSTVolume::GetDecryptedHashedBlockData(uint32 clusterIndex, uint32 blockIndex)
+{
+	const uint64 key = CacheKey(true, clusterIndex, blockIndex);
+	if (CacheSlot* slot = FindCacheSlot(key))
+	{
+		slot->lastAccess = ++m_cacheAccessCounter;
+		return CacheSlotData(slot) + BLOCK_HASH_SIZE;
+	}
+	CacheSlot* slot = TakeCacheSlot();
+	if (!slot)
+		return nullptr;
+	uint8* data = CacheSlotData(slot);
+	if (!DecryptHashedBlock(clusterIndex, blockIndex, data, data + BLOCK_HASH_SIZE))
+		return nullptr;
+	slot->key = key;
+	slot->lastAccess = ++m_cacheAccessCounter;
+	return data + BLOCK_HASH_SIZE;
 }
 
 uint32 FSTVolume::ReadFile_HashModeRaw(uint32 clusterIndex, FSTEntry& entry, uint32 readOffset, uint32 readSize, void* dataOut)
@@ -967,16 +932,30 @@ uint32 FSTVolume::ReadFile_HashModeRaw(uint32 clusterIndex, FSTEntry& entry, uin
 		return 0;
 	else if ((readOffset + readSize) >= entry.fileInfo.fileSize)
 		readSize = (entry.fileInfo.fileSize - readOffset);
-	uint64 absFileOffset = entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
+	uint64 absFileOffset = (uint64)entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
 	uint32 remainingReadSize = readSize;
 	while (remainingReadSize > 0)
 	{
-		const FSTCachedRawBlock* rawBlock = this->GetDecryptedRawBlock(clusterIndex, absFileOffset/m_sectorSize);
-		if (!rawBlock)
-			break;
+		const uint32 blockIndex = (uint32)(absFileOffset / m_sectorSize);
 		uint32 blockOffset = (uint32)(absFileOffset % m_sectorSize);
 		uint32 bytesToRead = std::min<uint32>(remainingReadSize, m_sectorSize - blockOffset);
-		std::memcpy(dataOutU8, rawBlock->blockData.rawData.data() + blockOffset, bytesToRead);
+		if (bytesToRead == m_sectorSize && readSize >= 2 * m_sectorSize && !FindCacheSlot(CacheKey(false, clusterIndex, blockIndex)))
+		{
+			// all of a block, in a read of more than one: decrypted where it
+			// goes rather than kept, its next one's IV kept instead
+			NCrypto::AesIv nextIv;
+			if (!DecryptRawBlock(clusterIndex, blockIndex, dataOutU8, nextIv))
+				break;
+			m_nextIvKey = CacheKey(false, clusterIndex, blockIndex);
+			m_nextIv = nextIv;
+		}
+		else
+		{
+			const uint8* rawBlock = GetDecryptedRawBlock(clusterIndex, blockIndex);
+			if (!rawBlock)
+				break;
+			std::memcpy(dataOutU8, rawBlock + blockOffset, bytesToRead);
+		}
 		dataOutU8 += bytesToRead;
 		remainingReadSize -= bytesToRead;
 		absFileOffset += bytesToRead;
@@ -1013,18 +992,32 @@ uint32 FSTVolume::ReadFile_HashModeHashed(uint32 clusterIndex, FSTEntry& entry, 
 
 	*/
 
-	const FSTCluster& cluster = m_cluster[clusterIndex];
-	uint64 fileReadOffset = entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
+	// not past the file's end, as for raw clusters
+	if (readOffset >= entry.fileInfo.fileSize)
+		return 0;
+	readSize = std::min(readSize, entry.fileInfo.fileSize - readOffset);
+	uint64 fileReadOffset = (uint64)entry.fileInfo.fileOffset * m_offsetFactor + readOffset;
 	uint32 blockIndex = (uint32)(fileReadOffset / BLOCK_FILE_SIZE);
 	uint32 bytesRemaining = readSize;
 	uint32 offsetWithinBlock = (uint32)(fileReadOffset % BLOCK_FILE_SIZE);
 	while (bytesRemaining > 0)
 	{
-		FSTCachedHashedBlock* block = GetDecryptedHashedBlock(clusterIndex, blockIndex);
-		if (!block)
-			return 0;
 		uint32 bytesToRead = std::min(bytesRemaining, (uint32)BLOCK_FILE_SIZE - offsetWithinBlock);
-		std::memcpy(dataOut, block->blockData.getFileData() + offsetWithinBlock, bytesToRead);
+		if (bytesToRead == BLOCK_FILE_SIZE && readSize >= 2 * BLOCK_FILE_SIZE && !FindCacheSlot(CacheKey(true, clusterIndex, blockIndex)))
+		{
+			// all of a block's data, in a read of more than one: decrypted
+			// where it goes rather than kept, its hashes aside
+			uint8 hashes[BLOCK_HASH_SIZE];
+			if (!DecryptHashedBlock(clusterIndex, blockIndex, hashes, (uint8*)dataOut))
+				return 0;
+		}
+		else
+		{
+			const uint8* data = GetDecryptedHashedBlockData(clusterIndex, blockIndex);
+			if (!data)
+				return 0;
+			std::memcpy(dataOut, data + offsetWithinBlock, bytesToRead);
+		}
 		dataOut = (uint8*)dataOut + bytesToRead;
 		bytesRemaining -= bytesToRead;
 		blockIndex++;
@@ -1066,10 +1059,6 @@ bool FSTVolume::Next(FSTDirectoryIterator& directoryIterator, FSTFileHandle& fil
 
 FSTVolume::~FSTVolume()
 {
-	for (auto& itr : m_cacheDecryptedRawBlocks)
-		delete itr.second;
-	for (auto& itr : m_cacheDecryptedHashedBlocks)
-		delete itr.second;
 	if (m_sourceIsOwned)
 		delete m_dataSource;
 }

@@ -24,20 +24,28 @@ bool FSTDataSource::ReadRawBlock(uint16 clusterIndex, uint64 clusterOffset, uint
 	return true;
 }
 
-bool FSTDataSource::ReadHashedBlock(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint8* dst,
+bool FSTDataSource::ReadHashedBlock(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint8* hashDst, uint8* dataDst,
 	const uint8* key, uint32 h0Index)
 {
 	if (h0Index >= 16)
 		return false;
-	const uint8* src = Fetch(clusterIndex, clusterOffset, offset, dst, HASHED_BLOCK_SIZE);
+	// lent in one piece where the source can, each part read where it goes
+	// where it cannot
+	const uint8* src = Lend(clusterIndex, clusterOffset, offset, HASHED_BLOCK_SIZE);
+	const uint8* hashSrc = src;
+	const uint8* dataSrc = src ? src + HASHED_BLOCK_HASH_SIZE : nullptr;
 	if (!src)
-		return false;
-	AES128_CBC_decrypt(dst, src, HASHED_BLOCK_HASH_SIZE, key, nullptr);
-	// the IV is the decrypted H0 hash: in dst now, apart from src
+	{
+		hashSrc = Fetch(clusterIndex, clusterOffset, offset, hashDst, HASHED_BLOCK_HASH_SIZE);
+		dataSrc = Fetch(clusterIndex, clusterOffset, offset + HASHED_BLOCK_HASH_SIZE, dataDst, HASHED_BLOCK_SIZE - HASHED_BLOCK_HASH_SIZE);
+		if (!hashSrc || !dataSrc)
+			return false;
+	}
+	AES128_CBC_decrypt(hashDst, hashSrc, HASHED_BLOCK_HASH_SIZE, key, nullptr);
+	// the IV is the decrypted H0 hash: in hashDst now, apart from the source
 	uint8 iv[16];
-	memcpy(iv, dst + 20 * h0Index, 16);
-	AES128_CBC_decrypt(dst + HASHED_BLOCK_HASH_SIZE, src + HASHED_BLOCK_HASH_SIZE,
-		HASHED_BLOCK_SIZE - HASHED_BLOCK_HASH_SIZE, key, iv);
+	memcpy(iv, hashDst + 20 * h0Index, 16);
+	AES128_CBC_decrypt(dataDst, dataSrc, HASHED_BLOCK_SIZE - HASHED_BLOCK_HASH_SIZE, key, iv);
 	return true;
 }
 

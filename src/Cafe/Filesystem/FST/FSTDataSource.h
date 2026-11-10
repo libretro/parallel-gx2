@@ -39,6 +39,12 @@ public:
 	// with no IV, then the 0xFC00 of data with the first 16 octets of the
 	// block's H0 hash (h0Index of the 16) as the IV, into dst
 	bool ReadHashedBlock(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint8* dst,
+		const uint8* key, uint32 h0Index)
+	{
+		return ReadHashedBlock(clusterIndex, clusterOffset, offset, dst, dst + HASHED_BLOCK_HASH_SIZE, key, h0Index);
+	}
+	// the same, the hashes into hashDst and the data into dataDst, apart
+	bool ReadHashedBlock(uint16 clusterIndex, uint64 clusterOffset, uint64 offset, uint8* hashDst, uint8* dataDst,
 		const uint8* key, uint32 h0Index);
 
 	static constexpr uint32 HASHED_BLOCK_SIZE = 0x10000;
