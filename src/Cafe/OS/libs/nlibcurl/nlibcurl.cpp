@@ -5,7 +5,8 @@
 
 #define CURL_STRICTER
 
-#include "curl/curl.h"
+#include "curl_host.h"
+#include "Common/http_xfer.h"
 #include <unordered_map>
 #include <atomic>
 
@@ -298,9 +299,9 @@ void CurlWorkerThread(CURL_t* curl, PPCConcurrentQueue<QueueMsg_t>* callerQueue,
 	resultMsg.order = QueueOrder_Result;
 
 	if (msg.order == QueueOrder_Perform)
-		resultMsg.result = ::curl_easy_perform(curl->curl);
+		resultMsg.result = curlh_easy_perform(curl->curl);
 	else if(msg.order == QueueOrder_Pause)
-		resultMsg.result = ::curl_easy_pause(curl->curl, msg.pause.bitmask);
+		resultMsg.result = curlh_easy_pause(curl->curl, msg.pause.bitmask);
 	else
 		assert_dbg();
 
@@ -387,8 +388,8 @@ void _curl_set_default_parameters(CURL_t* curl)
 	curl->set.SetToDefault();
 
 	// default parameters
-	curl_easy_setopt(curl->curl, CURLOPT_HEADERFUNCTION, header_callback);
-	curl_easy_setopt(curl->curl, CURLOPT_HEADERDATA, curl);
+	curlh_easy_setopt(curl->curl, CURLOPT_HEADERFUNCTION, header_callback);
+	curlh_easy_setopt(curl->curl, CURLOPT_HEADERDATA, curl);
 }
 
 void _curl_sync_parameters(CURL_t* curl)
@@ -399,15 +400,15 @@ void _curl_sync_parameters(CURL_t* curl)
 	// http request type
 	if(curl->set.httpreq_1EC == WU_HTTPREQ::HTTPREQ_GET)
 	{
-		::curl_easy_setopt(curl->curl, CURLOPT_HTTPGET, 1);
+		curlh_easy_setopt(curl->curl, CURLOPT_HTTPGET, 1);
 		cemu_assert_debug(curl->opt_no_body_281 == 0);
 		cemu_assert_debug(curl->upload_283 == 0);
 	}
 	else if(curl->set.httpreq_1EC == WU_HTTPREQ::HTTPREQ_POST)
 	{
-		::curl_easy_setopt(curl->curl, CURLOPT_POST, 1);
+		curlh_easy_setopt(curl->curl, CURLOPT_POST, 1);
 		cemu_assert_debug(curl->upload_283 == 0);
-		::curl_easy_setopt(curl->curl, CURLOPT_NOBODY, curl->opt_no_body_281 ? 1 : 0);
+		curlh_easy_setopt(curl->curl, CURLOPT_NOBODY, curl->opt_no_body_281 ? 1 : 0);
 	}
 	else
 	{
@@ -436,27 +437,27 @@ void _curl_sync_parameters(CURL_t* curl)
 
 			cemuLog_logDebug(LogType::Force, "curl_slist_append: {}", ppcList->data.GetPtr());
 			curlDebug_logEasySetOptStr(curl, "CURLOPT_HTTPHEADER", (const char*)ppcList->data.GetPtr());
-			list = ::curl_slist_append(list, ppcList->data.GetPtr());
+			list = curlh_slist_append(list, ppcList->data.GetPtr());
 			ppcList = ppcList->next;
 		}
-		::curl_easy_setopt(curl->curl, CURLOPT_HTTPHEADER, list);
+		curlh_easy_setopt(curl->curl, CURLOPT_HTTPHEADER, list);
 		// todo - prevent leaking of list (maybe store in host curl object, similar to how our zlib implementation does stuff)
 	}
 	else
-		::curl_easy_setopt(curl->curl, CURLOPT_HTTPHEADER, nullptr);
+		curlh_easy_setopt(curl->curl, CURLOPT_HTTPHEADER, nullptr);
 
 	// infile size (post data size)
 	if (curl->set.infilesize_190)
 	{
 		cemu_assert_debug(manualHeaderContentLength == 0); // should not have both?
-		::curl_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, curl->set.infilesize_190);
+		curlh_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, curl->set.infilesize_190);
 	}
 	else
 	{
 		if(isPost && manualHeaderContentLength > 0)
-			::curl_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, manualHeaderContentLength);
+			curlh_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, manualHeaderContentLength);
 		else
-			::curl_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, 0);
+			curlh_easy_setopt(curl->curl, CURLOPT_INFILESIZE_LARGE, 0);
 	}
 }
 
@@ -517,7 +518,7 @@ CURLcode curl_global_init(uint32 flags)
 
 	// curl_read_default_proxy_config()
 
-	return ::curl_global_init(flags);
+	return curlh_global_init(flags);
 }
 
 void export_curl_multi_init(PPCInterpreter_t* hCPU)
@@ -528,7 +529,7 @@ void export_curl_multi_init(PPCInterpreter_t* hCPU)
 	{
 		memset(result.GetPtr(), 0, sizeof(CURLM_t));
 		*result = {};
-		result->curlm = curl_multi_init();
+		result->curlm = curlh_multi_init();
 	}
 
 	osLib_returnFromFunction(hCPU, result.GetMPTR());
@@ -542,7 +543,7 @@ void export_curl_multi_add_handle(PPCInterpreter_t* hCPU)
 	curlDebug_markActiveRequest(curl.GetPtr());
 	curlDebug_notifySubmitRequest(curl.GetPtr());
 
-	CURLMcode result = ::curl_multi_add_handle(curlm->curlm, curl->curl);
+	CURLMcode result = curlh_multi_add_handle(curlm->curlm, curl->curl);
 	if (result == CURLM_OK)
 		curlm->curl.push_back(curl.GetPtr());
 
@@ -555,7 +556,7 @@ void export_curl_multi_remove_handle(PPCInterpreter_t* hCPU)
 	ppcDefineParamMEMPTR(curlm, CURLM_t, 0);
 	ppcDefineParamMEMPTR(curl, CURL_t, 1);
 
-	CURLMcode result = curl_multi_remove_handle(curlm->curlm, curl->curl);
+	CURLMcode result = curlh_multi_remove_handle(curlm->curlm, curl->curl);
 
 	if (result == CURLM_OK)
 	{
@@ -573,7 +574,7 @@ void export_curl_multi_timeout(PPCInterpreter_t* hCPU)
 
 	long timeoutLE = (long)(uint32)*timeoParam;
 
-	CURLMcode result = ::curl_multi_timeout(curlm->curlm, &timeoutLE);
+	CURLMcode result = curlh_multi_timeout(curlm->curlm, &timeoutLE);
 	*timeoParam = (uint32)timeoutLE;
 
 	cemuLog_logDebug(LogType::Force, "curl_multi_timeout(0x{:08x}, 0x{:08x} [{}]) -> 0x{:x}", curlm.GetMPTR(), timeoParam.GetMPTR(), timeoutLE, result);
@@ -583,7 +584,7 @@ void export_curl_multi_timeout(PPCInterpreter_t* hCPU)
 void export_curl_multi_cleanup(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamMEMPTR(curlm, CURLM_t, 0);
-	CURLMcode result = ::curl_multi_cleanup(curlm->curlm);
+	CURLMcode result = curlh_multi_cleanup(curlm->curlm);
 	cemuLog_logDebug(LogType::Force, "curl_multi_cleanup(0x{:08x}) -> 0x{:x}", curlm.GetMPTR(), result);
 	curlm->curl.clear();
 	PPCCoreCallback(g_nlibcurl.free.GetMPTR(), curlm.GetMPTR());
@@ -612,7 +613,7 @@ void export_curl_multi_perform(PPCInterpreter_t* hCPU)
 	//g_callerQueue = curlm->callerQueue;
 	//g_threadQueue = curlm->threadQueue;
 	int tempRunningHandles = 0;
-	CURLMcode result = curl_multi_perform(curlm->curlm, &tempRunningHandles);
+	CURLMcode result = curlh_multi_perform(curlm->curlm, &tempRunningHandles);
 	*(runningHandles.GetPtr()) = tempRunningHandles;
 	cemuLog_logDebug(LogType::Force, "curl_multi_perform(0x{:08x}, 0x{:08x}) -> 0x{:x} (running handles: {})", curlm.GetMPTR(), runningHandles.GetMPTR(), result, tempRunningHandles);
 	//const uint32 result = SendOrderToWorker(curlm.GetPtr(), QueueOrder_MultiPerform);
@@ -636,7 +637,7 @@ void export_curl_multi_fdset(PPCInterpreter_t* hCPU)
 	FD_ZERO(&h_exceptionFd);
 	sint32 h_maxFd = 0;
 
-	CURLMcode result = curl_multi_fdset(curlm->curlm, &h_readFd, &h_writeFd, &h_exceptionFd, &h_maxFd);
+	CURLMcode result = curlh_multi_fdset(curlm->curlm, &h_readFd, &h_writeFd, &h_exceptionFd, &h_maxFd);
 
 	nsysnet::wuResetFD(readFd.GetPtr());
 	nsysnet::wuResetFD(writeFd.GetPtr());
@@ -701,7 +702,7 @@ void export_curl_multi_setopt(PPCInterpreter_t* hCPU)
 	switch (option)
 	{
 	case CURLMOPT_MAXCONNECTS:
-		result = ::curl_multi_setopt(curlm->curlm, (CURLMoption)option, parameter.GetMPTR());
+		result = curlh_multi_setopt(curlm->curlm, (CURLMoption)option, parameter.GetMPTR());
 		break;
 	default:
 		cemuLog_logDebug(LogType::Force, "curl_multi_setopt(0x{:08x}, {}, 0x{:08x}) unsupported option", curlm.GetMPTR(), option, parameter.GetMPTR());
@@ -717,7 +718,7 @@ void export_curl_multi_info_read(PPCInterpreter_t* hCPU)
 	ppcDefineParamMEMPTR(curlm, CURLM_t, 0);
 	ppcDefineParamMEMPTR(msgsInQueue, int, 1);
 
-	CURLMsg* msg = ::curl_multi_info_read(curlm->curlm, msgsInQueue.GetPtr());
+	CURLMsg* msg = curlh_multi_info_read(curlm->curlm, msgsInQueue.GetPtr());
 
 	cemuLog_logDebug(LogType::Force, "curl_multi_info_read - todo");
 	if (msg)
@@ -782,26 +783,26 @@ void export_curl_share_setopt(PPCInterpreter_t* hCPU)
 	{
 		case CURLSHOPT_USERDATA:
 			share->data = parameter;
-			result = curl_share_setopt(curlSh, CURLSHOPT_USERDATA, share.GetPtr());
+			result = curlh_share_setopt(curlSh, CURLSHOPT_USERDATA, share.GetPtr());
 			break;
 		case CURLSHOPT_LOCKFUNC:
 			share->lockfunc = parameter;
-			result = curl_share_setopt(curlSh, CURLSHOPT_LOCKFUNC, lock_function);
+			result = curlh_share_setopt(curlSh, CURLSHOPT_LOCKFUNC, lock_function);
 			break;
 		case CURLSHOPT_UNLOCKFUNC:
 			share->unlockfunc = parameter;
-			result = curl_share_setopt(curlSh, CURLSHOPT_UNLOCKFUNC, unlock_function);
+			result = curlh_share_setopt(curlSh, CURLSHOPT_UNLOCKFUNC, unlock_function);
 			break;
 		case CURLSHOPT_SHARE:
 		{
 			const sint32 type = parameter.GetMPTR();
-			result = curl_share_setopt(curlSh, CURLSHOPT_SHARE, type);
+			result = curlh_share_setopt(curlSh, CURLSHOPT_SHARE, type);
 			break;
 		}
 		case CURLSHOPT_UNSHARE:
 		{
 			const sint32 type = parameter.GetMPTR();
-			result = curl_share_setopt(curlSh, CURLSHOPT_UNSHARE, type);
+			result = curlh_share_setopt(curlSh, CURLSHOPT_UNSHARE, type);
 			break;
 		}
 		default:
@@ -819,7 +820,7 @@ void export_curl_share_init(PPCInterpreter_t* hCPU)
 	{
 		memset(result.GetPtr(), 0, sizeof(CURLSH_t));
 		*result = {};
-		result->curlsh = curl_share_init();
+		result->curlsh = curlh_share_init();
 	}
 
 	osLib_returnFromFunction(hCPU, result.GetMPTR());
@@ -828,7 +829,7 @@ void export_curl_share_init(PPCInterpreter_t* hCPU)
 void export_curl_share_cleanup(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamMEMPTR(curlsh, CURLSH_t, 0);
-	uint32 result = ::curl_share_cleanup(curlsh->curlsh);
+	uint32 result = curlh_share_cleanup(curlsh->curlsh);
 	cemuLog_logDebug(LogType::Force, "curl_share_cleanup(0x{:08x}) -> 0x{:x}", curlsh.GetMPTR(), result);
 	PPCCoreCallback(g_nlibcurl.free.GetMPTR(), curlsh.GetMPTR());
 	osLib_returnFromFunction(hCPU, 0);
@@ -851,7 +852,7 @@ CURL_t* curl_easy_init()
 	{
 		memset(result.GetPtr(), 0, sizeof(CURL_t));
 		*result = {};
-		result->curl = ::curl_easy_init();
+		result->curl = curlh_easy_init();
 		result->curlThread = coreinit::OSGetCurrentThread();
 
 		result->info_contentType = nullptr;
@@ -879,7 +880,7 @@ void export_curl_easy_pause(PPCInterpreter_t* hCPU)
 	ppcDefineParamS32(bitmask, 1);
 	cemuLog_logDebug(LogType::Force, "curl_easy_pause(0x{:08x}, 0x{:x})", curl.GetMPTR(), bitmask);
 
-	//const CURLcode result = ::curl_easy_pause(curl->curl, bitmask);
+	//const CURLcode result = curlh_easy_pause(curl->curl, bitmask);
 	const uint32 result = SendOrderToWorker(curl.GetPtr(), QueueOrder_Pause, bitmask);
 	cemuLog_logDebug(LogType::Force, "curl_easy_pause(0x{:08x}, 0x{:x}) DONE", curl.GetMPTR(), bitmask);
 	osLib_returnFromFunction(hCPU, result);
@@ -892,7 +893,7 @@ void export_curl_easy_cleanup(PPCInterpreter_t* hCPU)
 
 	curlDebug_cleanup(curl.GetPtr());
 
-	::curl_easy_cleanup(curl->curl);
+	curlh_easy_cleanup(curl->curl);
 	PPCCoreCallback(g_nlibcurl.free.GetMPTR(), curl.GetMPTR());
 
 	if (curl->info_contentType.IsNull() == false)
@@ -908,7 +909,7 @@ void export_curl_easy_reset(PPCInterpreter_t* hCPU)
 	ppcDefineParamMEMPTR(curl, CURL_t, 0);
 	cemuLog_logDebug(LogType::Force, "curl_easy_reset(0x{:08x})", curl.GetMPTR());
 	// curl_apply_default_proxy_config();
-	::curl_easy_reset(curl->curl);
+	curlh_easy_reset(curl->curl);
 	osLib_returnFromFunction(hCPU, 0);
 }
 
@@ -920,7 +921,7 @@ CURLcode ssl_ctx_callback(CURL* curl, void* sslctx, void* param)
 
 	for (uint32 i : nssl->serverPKIs)
 	{
-		if (iosuCrypto_addCACertificate(sslctx, i) == false)
+		if (iosuCrypto_addCACertificate((http_xfer_tls_t*)sslctx, i) == false)
 		{
 			cemu_assert_suspicious();
 			return CURLE_SSL_CACERT;
@@ -928,14 +929,14 @@ CURLcode ssl_ctx_callback(CURL* curl, void* sslctx, void* param)
 	}
 	for (auto& customPKI : nssl->serverCustomPKIs)
 	{
-		if (iosuCrypto_addCustomCACertificate(sslctx, &customPKI[0], (sint32)customPKI.size()) == false)
+		if (iosuCrypto_addCustomCACertificate((http_xfer_tls_t*)sslctx, &customPKI[0], (sint32)customPKI.size()) == false)
 		{
 			cemu_assert_suspicious();
 			return CURLE_SSL_CACERT;
 		}
 	}
 
-	if (nssl->clientPKI != 0 && iosuCrypto_addClientCertificate(sslctx, nssl->clientPKI) == false)
+	if (nssl->clientPKI != 0 && iosuCrypto_addClientCertificate((http_xfer_tls_t*)sslctx, nssl->clientPKI) == false)
 	{
 		cemu_assert_suspicious();
 		return CURLE_SSL_CERTPROBLEM;
@@ -945,10 +946,10 @@ CURLcode ssl_ctx_callback(CURL* curl, void* sslctx, void* param)
 	if (HAS_FLAG(flags, NSSL_VERIFY_PEER))
 	{
 		static const unsigned rsaAes256Sha = 0x0035; // TLS_RSA_WITH_AES_256_CBC_SHA (in CURL it's called rsa_aes_256_sha)
-		curl_tls_set_suites((curl_tls_settings*)sslctx, &rsaAes256Sha, 1);
+		http_xfer_tls_set_suites((http_xfer_tls_t*)sslctx, &rsaAes256Sha, 1);
 	}
 	// the peer is not checked: the console accepts certificates OpenSSL would refuse
-	curl_tls_set_verify((curl_tls_settings*)sslctx, false, false);
+	http_xfer_tls_set_verify((http_xfer_tls_t*)sslctx, false, false);
 	
 	return CURLE_OK;
 }
@@ -1148,14 +1149,14 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		case CURLOPT_LOW_SPEED_TIME:
 		case CURLOPT_CONNECTTIMEOUT:
 		{
-			result = ::curl_easy_setopt(curlObj, (CURLoption)option, parameter.GetMPTR());
+			result = curlh_easy_setopt(curlObj, (CURLoption)option, parameter.GetMPTR());
 			break;
 		}
 		case CURLOPT_URL:
 		{
 			curlDebug_logEasySetOptStr(curl.GetPtr(), "CURLOPT_URL", (const char*)parameter.GetPtr());
 			cemuLog_logDebug(LogType::Force, "curl_easy_setopt({}) [{}]", option, parameter.GetPtr());
-			result = ::curl_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
+			result = curlh_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
 			break;
 		}
 
@@ -1163,7 +1164,7 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		case CURLOPT_USERAGENT:
 		{
 			cemuLog_logDebug(LogType::Force, "curl_easy_setopt({}) [{}]", option, parameter.GetPtr());
-			result = ::curl_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
+			result = curlh_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
 			break;
 		}
 
@@ -1171,7 +1172,7 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		{
 			curlDebug_logEasySetOptStr(curl.GetPtr(), "CURLOPT_POSTFIELDS", (const char*)parameter.GetPtr());
 			cemuLog_logDebug(LogType::Force, "curl_easy_setopt({}) [{}]", option, parameter.GetPtr());
-			result = ::curl_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
+			result = curlh_easy_setopt(curlObj, (CURLoption)option, parameter.GetPtr());
 			break;
 		}
 
@@ -1179,7 +1180,7 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		case CURLOPT_MAX_RECV_SPEED_LARGE:
 		case CURLOPT_POSTFIELDSIZE_LARGE:
 		{
-			result = ::curl_easy_setopt(curlObj, (CURLoption)option, parameterU64);
+			result = curlh_easy_setopt(curlObj, (CURLoption)option, parameterU64);
 			break;
 		}
 		case 211: // verifyOpt
@@ -1188,14 +1189,14 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 			curl->nsslVerifyOptions = flags;
 
 			if (HAS_FLAG(flags, NSSL_VERIFY_PEER))
-				::curl_easy_setopt(curlObj, CURLOPT_SSL_VERIFYPEER, 1);
+				curlh_easy_setopt(curlObj, CURLOPT_SSL_VERIFYPEER, 1);
 			else
-				::curl_easy_setopt(curlObj, CURLOPT_SSL_VERIFYPEER, 0);
+				curlh_easy_setopt(curlObj, CURLOPT_SSL_VERIFYPEER, 0);
 
 			if (HAS_FLAG(flags, NSSL_VERIFY_HOSTNAME))
-				::curl_easy_setopt(curlObj, CURLOPT_SSL_VERIFYHOST, 2);
+				curlh_easy_setopt(curlObj, CURLOPT_SSL_VERIFYHOST, 2);
 			else
-				::curl_easy_setopt(curlObj, CURLOPT_SSL_VERIFYHOST, 0);
+				curlh_easy_setopt(curlObj, CURLOPT_SSL_VERIFYHOST, 0);
 
 			break;
 		}
@@ -1207,13 +1208,13 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 			if (nssl)
 			{
 				curl->hNSSL = nsslIndex;
-				result = ::curl_easy_setopt(curlObj, CURLOPT_SSL_CTX_FUNCTION, ssl_ctx_callback);
-				::curl_easy_setopt(curlObj, CURLOPT_SSL_CTX_DATA, curl.GetPtr());
+				result = curlh_easy_setopt(curlObj, CURLOPT_SSL_CTX_FUNCTION, ssl_ctx_callback);
+				curlh_easy_setopt(curlObj, CURLOPT_SSL_CTX_DATA, curl.GetPtr());
 
 				if (nssl->sslVersion == 2)
-					::curl_easy_setopt(curlObj, CURLOPT_SSLVERSION, CURL_SSLVERSION_SSLv3);
+					curlh_easy_setopt(curlObj, CURLOPT_SSLVERSION, CURL_SSLVERSION_SSLv3);
 				else // auto = highest = 0 || 2 for v3
-					::curl_easy_setopt(curlObj, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+					curlh_easy_setopt(curlObj, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 			}
 			else
 				cemu_assert_suspicious();
@@ -1228,7 +1229,7 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 				curlSh->curl = curl;
 				shObj = curlSh->curlsh;
 			}
-			result = ::curl_easy_setopt(curlObj, CURLOPT_SHARE, shObj);
+			result = curlh_easy_setopt(curlObj, CURLOPT_SHARE, shObj);
 			break;
 		}
 		case CURLOPT_HEADERFUNCTION:
@@ -1247,8 +1248,8 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		{
 			curlDebug_logEasySetOptPtr(curl.GetPtr(), "CURLOPT_WRITEFUNCTION", parameter.GetMPTR());
 			curl->fwrite_func = parameter;
-			result = ::curl_easy_setopt(curlObj, CURLOPT_WRITEFUNCTION, write_callback);
-			::curl_easy_setopt(curlObj, CURLOPT_WRITEDATA, curl.GetPtr());
+			result = curlh_easy_setopt(curlObj, CURLOPT_WRITEFUNCTION, write_callback);
+			curlh_easy_setopt(curlObj, CURLOPT_WRITEDATA, curl.GetPtr());
 			break;
 		}
 		case CURLOPT_WRITEDATA: // aka CURLOPT_FILE
@@ -1266,8 +1267,8 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		case CURLOPT_SOCKOPTFUNCTION:
 		{
 			curl->fsockopt = parameter;
-			result = ::curl_easy_setopt(curlObj, CURLOPT_SOCKOPTFUNCTION, sockopt_callback);
-			::curl_easy_setopt(curlObj, CURLOPT_SOCKOPTDATA, curl.GetPtr());
+			result = curlh_easy_setopt(curlObj, CURLOPT_SOCKOPTFUNCTION, sockopt_callback);
+			curlh_easy_setopt(curlObj, CURLOPT_SOCKOPTDATA, curl.GetPtr());
 			break;
 		}
 		case CURLOPT_SOCKOPTDATA:
@@ -1279,8 +1280,8 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		{
 			curlDebug_logEasySetOptPtr(curl.GetPtr(), "CURLOPT_READFUNCTION", parameter.GetMPTR());
 			curl->fread_func_set = parameter;
-			result = ::curl_easy_setopt(curlObj, CURLOPT_READFUNCTION, read_callback);
-			::curl_easy_setopt(curlObj, CURLOPT_READDATA, curl.GetPtr());
+			result = curlh_easy_setopt(curlObj, CURLOPT_READFUNCTION, read_callback);
+			curlh_easy_setopt(curlObj, CURLOPT_READDATA, curl.GetPtr());
 			break;
 		}
 		case CURLOPT_READDATA:
@@ -1293,8 +1294,8 @@ void export_curl_easy_setopt(PPCInterpreter_t* hCPU)
 		{
 			curlDebug_logEasySetOptPtr(curl.GetPtr(), "CURLOPT_PROGRESSFUNCTION", parameter.GetMPTR());
 			curl->fprogress = parameter;
-			result = ::curl_easy_setopt(curlObj, CURLOPT_PROGRESSFUNCTION, progress_callback);
-			::curl_easy_setopt(curlObj, CURLOPT_PROGRESSDATA, curl.GetPtr());
+			result = curlh_easy_setopt(curlObj, CURLOPT_PROGRESSFUNCTION, progress_callback);
+			curlh_easy_setopt(curlObj, CURLOPT_PROGRESSDATA, curl.GetPtr());
 			break;
 		}
 		case CURLOPT_PROGRESSDATA:
@@ -1359,7 +1360,7 @@ void export_curl_easy_getinfo(PPCInterpreter_t* hCPU)
 		case CURLINFO_CONTENT_LENGTH_DOWNLOAD:
 		{
 			double tempDouble = 0.0;
-			result = curl_easy_getinfo(curlObj, (CURLINFO)info, &tempDouble);
+			result = curlh_easy_getinfo(curlObj, (CURLINFO)info, &tempDouble);
 			*(uint64*)parameter.GetPtr() = _swapEndianU64(*(uint64*)&tempDouble);
 			break;
 		}
@@ -1367,14 +1368,14 @@ void export_curl_easy_getinfo(PPCInterpreter_t* hCPU)
 		case CURLINFO_SSL_VERIFYRESULT:
 		{
 			long tempLong = 0;
-			result = curl_easy_getinfo(curlObj, (CURLINFO)info, &tempLong);
+			result = curlh_easy_getinfo(curlObj, (CURLINFO)info, &tempLong);
 			*(uint32*)parameter.GetPtr() = _swapEndianU32((uint32)tempLong);
 			break;
 		}
 		case CURLINFO_CONTENT_TYPE:
 		{
 			char* contentType = nullptr;
-			result = curl_easy_getinfo(curlObj, CURLINFO_REDIRECT_URL, &contentType);
+			result = curlh_easy_getinfo(curlObj, CURLINFO_REDIRECT_URL, &contentType);
 			_updateGuestString(curl.GetPtr(), curl->info_contentType, contentType);
 			*(MEMPTR<char>*)parameter.GetPtr() = curl->info_contentType;
 			break;
@@ -1382,14 +1383,14 @@ void export_curl_easy_getinfo(PPCInterpreter_t* hCPU)
 		case CURLINFO_REDIRECT_URL:
 		{
 			char* redirectUrl = nullptr;
-			result = curl_easy_getinfo(curlObj, CURLINFO_REDIRECT_URL, &redirectUrl);
+			result = curlh_easy_getinfo(curlObj, CURLINFO_REDIRECT_URL, &redirectUrl);
 			_updateGuestString(curl.GetPtr(), curl->info_redirectUrl, redirectUrl);
 			*(MEMPTR<char>*)parameter.GetPtr() = curl->info_redirectUrl;
 			break;
 		}
 		default:
 			cemu_assert_unimplemented();
-			result = curl_easy_getinfo(curlObj, (CURLINFO)info, (double*)parameter.GetPtr());
+			result = curlh_easy_getinfo(curlObj, (CURLINFO)info, (double*)parameter.GetPtr());
 	}
 
 	cemuLog_logDebug(LogType::Force, "curl_easy_getinfo(0x{:08x}, 0x{:x}, 0x{:08x}) -> 0x{:x}", curl.GetMPTR(), info, parameter.GetMPTR(), result);
@@ -1401,7 +1402,7 @@ void export_curl_easy_strerror(PPCInterpreter_t* hCPU)
 	ppcDefineParamU32(code, 0);
 	MEMPTR<char> result;
 
-	const char* error = curl_easy_strerror((CURLcode)code);
+	const char* error = curlh_easy_strerror((CURLcode)code);
 	if (error)
 	{
 		cemuLog_logDebug(LogType::Force, "curl_easy_strerror: {}", error);

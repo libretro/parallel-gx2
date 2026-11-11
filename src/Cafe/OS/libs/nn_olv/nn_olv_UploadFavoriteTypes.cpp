@@ -7,11 +7,11 @@ namespace nn
 	namespace olv
 	{
 	
-		sint32 UploadFavoriteToCommunityData_AsyncRequestImpl(CurlRequestHelper& req, const char* reqUrl,
+		sint32 UploadFavoriteToCommunityData_AsyncRequestImpl(HttpRequestHelper& req, const char* reqUrl,
 			UploadedFavoriteToCommunityData* pOutData, const UploadFavoriteToCommunityDataParam* pParam
 		);
 
-		sint32 UploadFavoriteToCommunityData_AsyncRequest(CurlRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent,
+		sint32 UploadFavoriteToCommunityData_AsyncRequest(HttpRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent,
 			UploadedFavoriteToCommunityData* pOutData, const UploadFavoriteToCommunityDataParam* pParam
 		)
 		{
@@ -40,8 +40,8 @@ namespace nn
 			else 
 				snprintf(requestUrl, sizeof(requestUrl), "%s/v1/communities/%u.favorite", g_DiscoveryResults.apiEndpoint, pParam->communityId.value());
 			
-			CurlRequestHelper req;
-			req.initate(ActiveSettings::GetNetworkService(), requestUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
+			HttpRequestHelper req;
+			req.initate(ActiveSettings::GetNetworkService(), requestUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
 			InitializeOliveRequest(req);
 
 			StackAllocator<coreinit::OSEvent> requestDoneEvent;
@@ -57,13 +57,13 @@ namespace nn
 			return UploadFavoriteToCommunityData(nullptr, pParam);
 		}
 
-		sint32 UploadFavoriteToCommunityData_AsyncRequestImpl(CurlRequestHelper& req, const char* reqUrl,
+		sint32 UploadFavoriteToCommunityData_AsyncRequestImpl(HttpRequestHelper& req, const char* reqUrl,
 			UploadedFavoriteToCommunityData* pOutData, const UploadFavoriteToCommunityDataParam* pParam
 		)
 		{
 			bool reqResult = req.submitRequest(true);
 			long httpCode = 0;
-			curl_easy_getinfo(req.getCURL(), CURLINFO_RESPONSE_CODE, &httpCode);
+			httpCode = req.GetHTTPStatusCode();
 
 			if (!reqResult)
 			{

@@ -146,9 +146,9 @@ libretro-build-webos-aarch64:
     - .core-defs
 
 #################################### TESTS ###################################
-# The network layer that stands in for libcurl and OpenSSL
-# (dependencies/curl-compat), against local HTTP and TLS servers.
-test-curl-compat:
+# The core's HTTP transfers (src/Common/http_xfer.c) and nlibcurl's host
+# side over them (curl_host.c), against local HTTP and TLS servers.
+test-http-xfer:
   stage: test
   image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
   needs: []
@@ -160,11 +160,11 @@ test-curl-compat:
     - apt-get update -qq
     - apt-get install -y --no-install-recommends python3 openssl
   script:
-    - ./dependencies/curl-compat/test/run_tests.sh
-    - make -C dependencies/curl-compat/test clean
-    - SANITIZER=address,undefined ./dependencies/curl-compat/test/run_tests.sh
-    - make -C dependencies/curl-compat/test clean
-    - SANITIZER=thread ./dependencies/curl-compat/test/run_tests.sh
+    - ./test/http_xfer/run_tests.sh
+    - make -C test/http_xfer clean
+    - SANITIZER=address,undefined ./test/http_xfer/run_tests.sh
+    - make -C test/http_xfer clean
+    - SANITIZER=thread ./test/http_xfer/run_tests.sh
 
 # The OpenGL GPU as a cothread of the frontend's thread (LatteGpuCothread.h):
 # the run/yield protocol, exit and restart, and libco on several threads at

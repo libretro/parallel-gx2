@@ -135,10 +135,12 @@ What tends to break on a sync, none of which the conflict resolution shows:
   hand. Every unit of the core is compiled with `precompiled.h` force-included,
   as upstream's `cemu_use_precompiled_header()` does.
 - **Boost and the network libraries.** The core has no Boost: the parts the
-  emulator uses are small headers in `dependencies/boost-compat`, and
-  `dependencies/curl-compat` carries libcurl's API over libretro-common's
-  HTTP and TLS. Upstream code that reaches for another Boost header, or a
-  libcurl or OpenSSL call these do not have yet, fails to build until they do.
+  emulator uses are small headers in `dependencies/boost-compat`. HTTP and
+  TLS are libretro-common's, run by `src/Common/http_xfer.c`; nlibcurl, the
+  console's libcurl, has libcurl's behaviour over it in
+  `src/Cafe/OS/libs/nlibcurl/curl_host.c`, and the services' requests
+  (`napi_helper.cpp`) use it directly. Upstream code that reaches for another
+  Boost header, or for libcurl or OpenSSL, fails to build until it is ported.
 - **Copied functions drifting.** The libretro `VulkanRenderer` constructor is a
   copy of upstream's adapted for the shared device; upstream keeps changing the
   original underneath it.

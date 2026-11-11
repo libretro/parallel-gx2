@@ -115,14 +115,16 @@ jobs:
         # the nex thread poll
         run: ./tools/check_gpu_waits.sh
 
-      - name: "curl_compat against local servers"
-        # plain, then under AddressSanitizer + UBSan, then ThreadSanitizer
+      - name: "HTTP transfers against local servers"
+        # the core's transfers (http_xfer.c) and nlibcurl's host side over
+        # them (curl_host.c), both C89: plain, then under AddressSanitizer +
+        # UBSan, then ThreadSanitizer
         run: |
-          ./dependencies/curl-compat/test/run_tests.sh
-          make -C dependencies/curl-compat/test clean
-          SANITIZER=address,undefined ./dependencies/curl-compat/test/run_tests.sh
-          make -C dependencies/curl-compat/test clean
-          SANITIZER=thread ./dependencies/curl-compat/test/run_tests.sh
+          ./test/http_xfer/run_tests.sh
+          make -C test/http_xfer clean
+          SANITIZER=address,undefined ./test/http_xfer/run_tests.sh
+          make -C test/http_xfer clean
+          SANITIZER=thread ./test/http_xfer/run_tests.sh
 
       - name: "OpenGL GPU cothread"
         # plain, then under AddressSanitizer + UBSan (ThreadSanitizer does

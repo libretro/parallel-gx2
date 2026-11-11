@@ -1,7 +1,7 @@
 #include "Common/precompiled.h"
 #include "napi.h"
 
-#include "curl/curl.h"
+#include "Common/http_xfer.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
@@ -13,177 +13,145 @@
 #include "util/xml/Xml.h"
 #include <charconv>
 
-CURLcode _sslctx_function_NUS(CURL* curl, void* sslctx, void* param)
+namespace
 {
-	if (iosuCrypto_addCACertificate(sslctx, 102) == false)
+	void AddCA(http_xfer_tls* tls, sint32 id)
 	{
-		cemuLog_log(LogType::Force, "Invalid CA certificate (102)");
-	}
-	if (iosuCrypto_addCACertificate(sslctx, 105) == false)
-	{
-		cemuLog_log(LogType::Force, "Invalid CA certificate (105)");
+		if (!iosuCrypto_addCACertificate(tls, id))
+			cemuLog_log(LogType::Force, "Invalid CA certificate ({})", id);
 	}
 
-	if (iosuCrypto_addClientCertificate(sslctx, 3) == false)
+	void AddClient(http_xfer_tls* tls, sint32 id)
 	{
-		cemuLog_log(LogType::Force, "Certificate error");
+		if (!iosuCrypto_addClientCertificate(tls, id))
+			cemuLog_log(LogType::Force, "Invalid client certificate ({})", id);
 	}
-	return CURLE_OK;
+
+	// "Name: value" headers as net_http takes them: Content-Type and
+	// User-Agent in their own slots, Host and Content-Length its own
+	void SplitHeaders(const std::vector<std::string>& fields, std::string& headers, std::string& contentType, std::string& userAgent)
+	{
+		for (const std::string& f : fields)
+		{
+			const size_t colon = f.find(':');
+			if (colon == std::string::npos)
+				continue;
+			std::string_view name(f.data(), colon);
+			size_t v = colon + 1;
+			while (v < f.size() && (f[v] == ' ' || f[v] == '\t'))
+				v++;
+			if (boost::iequals(name, "Content-Type"))
+				contentType = f.substr(v);
+			else if (boost::iequals(name, "User-Agent"))
+				userAgent = f.substr(v);
+			else if (!boost::iequals(name, "Content-Length") && !boost::iequals(name, "Host"))
+			{
+				headers += f;
+				headers += "\r\n";
+			}
+		}
+	}
+
+	// the request, its TLS set up, sent once - and, with retry, once more if
+	// it fails, received (when not handed on) anew
+	int Perform(http_xfer_request_t& req, NetworkService service, HttpRequestHelper::SERVER_SSL_CONTEXT ctx, const HttpRequestHelper* custom,
+		bool (*onBody)(void*, const void*, size_t), void* bodyCtx, std::vector<uint8>* received, bool retry, int& status)
+	{
+		int res = HTTP_XFER_OK;
+		for (int attempt = 0; attempt < (retry ? 2 : 1); attempt++)
+		{
+			if (received)
+				received->clear();
+			req.tls = nullptr;
+			if (boost::istarts_with(req.url, "https:"))
+			{
+				req.tls = http_xfer_tls_new();
+				if (IsNetworkServiceSSLDisabled(service))
+					http_xfer_tls_set_verify(req.tls, false, false);
+				else
+					HttpRequestHelper::SetupTLS(req.tls, ctx, custom);
+			}
+			res = http_xfer_perform(&req, onBody, bodyCtx, &status); // takes req.tls
+			if (res == HTTP_XFER_OK || !retry || attempt == 1)
+				break;
+			cemuLog_log(LogType::Force, "Web request failed with error {}. Retrying...", res);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		}
+		return res;
+	}
 }
 
-CURLcode _sslctx_function_IDBE(CURL* curl, void* sslctx, void* param)
+void HttpRequestHelper::SetupTLS(http_xfer_tls* tls, SERVER_SSL_CONTEXT ctx, const HttpRequestHelper* custom)
 {
-	if (iosuCrypto_addCACertificate(sslctx, 105) == false)
+	switch (ctx)
 	{
-		cemuLog_log(LogType::Force, "Invalid CA certificate (105)");
-	}
-	return CURLE_OK;
-}
-
-CURLcode _sslctx_function_SOAP(CURL* curl, void* sslctx, void* param)
-{
-	if (iosuCrypto_addCACertificate(sslctx, 102) == false)
+	case SERVER_SSL_CONTEXT::ACT:
+	case SERVER_SSL_CONTEXT::TAGAYA:
+		AddCA(tls, 102);
+		AddCA(tls, 105);
+		AddClient(tls, 3);
+		break;
+	case SERVER_SSL_CONTEXT::IDBE:
+		AddCA(tls, 105);
+		break;
+	case SERVER_SSL_CONTEXT::IAS:
+	case SERVER_SSL_CONTEXT::ECS:
+	case SERVER_SSL_CONTEXT::CCS:
+		AddCA(tls, 102);
+		AddClient(tls, 1);
+		break;
+	case SERVER_SSL_CONTEXT::OLIVE:
 	{
-		cemuLog_log(LogType::Force, "Invalid CA certificate (102)");
-		cemuLog_log(LogType::Force, "Certificate error");
-	}
-	if (iosuCrypto_addClientCertificate(sslctx, 1) == false)
-	{
-		cemuLog_log(LogType::Force, "Certificate error");
-	}
-	return CURLE_OK;
-}
-
-CURLcode _sslctx_function_OLIVE(CURL* curl, void* sslctx, void* param)
-{
-	if (iosuCrypto_addCACertificate(sslctx, 105) == false)
-	{
-		cemuLog_log(LogType::Force, "Invalid CA certificate (105)");
-		cemuLog_log(LogType::Force, "Certificate error");
-	}
-	if (iosuCrypto_addClientCertificate(sslctx, 7) == false)
-	{
-		cemuLog_log(LogType::Force, "Olive client certificate error");
-	}
-
-	{
-		std::vector<sint16> certGroups = {
+		AddCA(tls, 105);
+		AddClient(tls, 7);
+		static const sint16 certGroups[] = {
 			100,  101,  102,   103,  104,  105,
 			1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
 			1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019,
 			1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029,
 			1030, 1031, 1032, 1033
 		};
-
-		for (auto& certId : certGroups)
-			iosuCrypto_addCACertificate(sslctx, certId);
+		for (sint16 certId : certGroups)
+			iosuCrypto_addCACertificate(tls, certId);
+		break;
 	}
-
-	return CURLE_OK;
-}
-
-CURLcode _sslctx_function_CUSTOM(CURL* curl, void* sslctx, void* param)
-{
-	CurlRequestHelper* requestHelper = (CurlRequestHelper*)param;
-	for (auto& caCertId : requestHelper->GetCaCertIds())
-	{
-		if (iosuCrypto_addCACertificate(sslctx, caCertId) == false)
-		{
-			cemuLog_log(LogType::Force, "Invalid CA certificate ({})", caCertId);
-		}
-	}
-	for (auto& clientCertId : requestHelper->GetClientCertIds())
-	{
-		if (iosuCrypto_addClientCertificate(sslctx, clientCertId) == false)
-		{
-			cemuLog_log(LogType::Force, "Invalid client certificate ({})", clientCertId);
-		}
-	}
-	if (requestHelper->GetClientCertIds().empty())
-		curl_tls_set_verify((curl_tls_settings*)sslctx, false, false);
-	return CURLE_OK;
-}
-
-CurlRequestHelper::CurlRequestHelper()
-{
-	m_curl = curl_easy_init();
-	curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, __curlWriteCallback);
-	curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, this);
-
-	curl_easy_setopt(m_curl, CURLOPT_FOLLOWLOCATION, 1);
-	curl_easy_setopt(m_curl, CURLOPT_MAXREDIRS, 2);
-	curl_easy_setopt(m_curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-
-	if(GetConfig().proxy_server.GetValue() != "")
-	{
-		curl_easy_setopt(m_curl, CURLOPT_PROXY, GetConfig().proxy_server.GetValue().c_str());
-	}
-}
-
-CurlRequestHelper::~CurlRequestHelper()
-{
-	curl_easy_cleanup(m_curl);
-}
-
-void CurlRequestHelper::initate(NetworkService service, std::string url, SERVER_SSL_CONTEXT sslContext)
-{
-	// reset parameters
-	m_headerExtraFields.clear();
-	m_postData.clear();
-	m_cbWriteCallback = nullptr;
-
-	curl_easy_setopt(m_curl, CURLOPT_URL, url.c_str());
-	curl_easy_setopt(m_curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_DEFAULT);
-	curl_easy_setopt(m_curl, CURLOPT_TIMEOUT, 60);
-
-	// SSL
-	curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYPEER, 1L);
-	if (IsNetworkServiceSSLDisabled(service))
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYPEER, 0L);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::ACT || sslContext == SERVER_SSL_CONTEXT::TAGAYA)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_NUS);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::IDBE)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_IDBE);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::IAS || sslContext == SERVER_SSL_CONTEXT::ECS)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_SOAP);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::CCS)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_SOAP);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::OLIVE)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_OLIVE);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-	}
-	else if (sslContext == SERVER_SSL_CONTEXT::CUSTOM)
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_CUSTOM);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, this);
-	}
-	else
-	{
+	case SERVER_SSL_CONTEXT::CUSTOM:
+		if (!custom)
+			break;
+		for (sint32 caCertId : custom->GetCaCertIds())
+			AddCA(tls, caCertId);
+		for (sint32 clientCertId : custom->GetClientCertIds())
+			AddClient(tls, clientCertId);
+		if (custom->GetClientCertIds().empty())
+			http_xfer_tls_set_verify(tls, false, false);
+		break;
+	default:
 		cemu_assert(false);
 	}
 }
 
-void CurlRequestHelper::addHeaderField(const char* fieldName, std::string_view value)
+HttpRequestHelper::HttpRequestHelper() = default;
+HttpRequestHelper::~HttpRequestHelper() = default;
+
+void HttpRequestHelper::initate(NetworkService service, std::string url, SERVER_SSL_CONTEXT sslContext)
+{
+	// reset parameters
+	m_headerExtraFields.clear();
+	m_postData.clear();
+	m_formFields.clear();
+	m_cbWriteCallback = nullptr;
+	m_url = std::move(url);
+	m_service = service;
+	m_sslContext = sslContext;
+	m_timeoutSeconds = 60;
+}
+
+void HttpRequestHelper::addHeaderField(const char* fieldName, std::string_view value)
 {
 	m_headerExtraFields.emplace_back(fieldName, value);
 }
 
-void CurlRequestHelper::addPostField(const char* fieldName, std::string_view value)
+void HttpRequestHelper::addPostField(const char* fieldName, std::string_view value)
 {
 	if (!m_postData.empty())
 		m_postData.emplace_back('&');
@@ -192,80 +160,98 @@ void CurlRequestHelper::addPostField(const char* fieldName, std::string_view val
 	m_postData.insert(m_postData.end(), (uint8*)value.data(), (uint8*)value.data() + value.size());
 }
 
-void CurlRequestHelper::setWriteCallback(bool(*cbWriteCallback)(void* userData, const void* ptr, size_t len, bool isLast), void* userData)
+void HttpRequestHelper::addFormField(const char* fieldName, std::string_view value)
+{
+	m_formFields.emplace_back(fieldName, std::string(value));
+}
+
+void HttpRequestHelper::setWriteCallback(bool(*cbWriteCallback)(void* userData, const void* ptr, size_t len, bool isLast), void* userData)
 {
 	m_cbWriteCallback = cbWriteCallback;
 	m_writeCallbackUserData = userData;
 }
 
-void CurlRequestHelper::setTimeout(sint32 time)
+void HttpRequestHelper::setTimeout(sint32 time)
 {
-	curl_easy_setopt(m_curl, CURLOPT_TIMEOUT, time);
+	m_timeoutSeconds = time;
 }
 
-size_t CurlRequestHelper::__curlWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata)
+void HttpRequestHelper::setUserAgent(std::string_view userAgent)
 {
-	size_t writeByteSize = (size_t)(size * nmemb);
-	CurlRequestHelper* curlHelper = (CurlRequestHelper*)userdata;
-	if (curlHelper->m_cbWriteCallback)
-	{
-		if (!curlHelper->m_cbWriteCallback(curlHelper->m_writeCallbackUserData, ptr, writeByteSize, false))
-			return 0;
-		return writeByteSize;
-	}
-	curlHelper->m_receiveBuffer.insert(curlHelper->m_receiveBuffer.end(), ptr, ptr + writeByteSize);
-	return writeByteSize;
+	m_userAgent = userAgent;
 }
 
-bool CurlRequestHelper::submitRequest(bool isPost)
+bool HttpRequestHelper::OnBody(void* ctx, const void* data, size_t len)
 {
-	// HTTP headers
-	struct curl_slist* headers = nullptr;
+	HttpRequestHelper* helper = (HttpRequestHelper*)ctx;
+	if (helper->m_cbWriteCallback)
+		return helper->m_cbWriteCallback(helper->m_writeCallbackUserData, data, len, false);
+	helper->m_receiveBuffer.insert(helper->m_receiveBuffer.end(), (const uint8*)data, (const uint8*)data + len);
+	return true;
+}
+
+bool HttpRequestHelper::submitRequest(bool isPost)
+{
+	std::vector<std::string> fields;
 	for (auto& itr : m_headerExtraFields)
-		headers = curl_slist_append(headers, itr.data.c_str());
-	curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, headers);
+		fields.emplace_back(itr.data);
+	std::string headers, contentType, userAgent = m_userAgent;
+	SplitHeaders(fields, headers, contentType, userAgent);
 
-	// post
+	http_xfer_request_t req{};
+	req.url = m_url.c_str();
+	req.method = isPost ? "POST" : "GET";
+	req.headers = headers.empty() ? nullptr : headers.c_str();
+	req.user_agent = userAgent.empty() ? nullptr : userAgent.c_str();
+	req.timeout_ms = m_timeoutSeconds > 0 ? (unsigned)m_timeoutSeconds * 1000 : 0;
+	void* form = nullptr;
+	char* formType = nullptr;
 	if (isPost)
 	{
-		if (!m_isUsingMultipartFormData)
+		req.has_body = true;
+		if (!m_formFields.empty())
 		{
-			curl_easy_setopt(m_curl, CURLOPT_POST, 1);
-			curl_easy_setopt(m_curl, CURLOPT_POSTFIELDS, m_postData.data());
-			curl_easy_setopt(m_curl, CURLOPT_POSTFIELDSIZE, m_postData.size());
+			std::vector<http_xfer_part_t> parts(m_formFields.size());
+			for (size_t i = 0; i < parts.size(); i++)
+			{
+				parts[i].name = m_formFields[i].first.c_str();
+				parts[i].data = m_formFields[i].second.data();
+				parts[i].len = m_formFields[i].second.size();
+				parts[i].content_type = nullptr;
+			}
+			form = http_xfer_multipart(parts.data(), parts.size(), &req.body_len, &formType);
+			if (!form)
+				return false;
+			req.body = form;
+			req.content_type = formType;
+		}
+		else
+		{
+			req.body = m_postData.data();
+			req.body_len = m_postData.size();
 		}
 	}
-	else
-		curl_easy_setopt(m_curl, CURLOPT_POST, 0);
+	if (!contentType.empty())
+		req.content_type = contentType.c_str();
 
-	// submit
-	int res = curl_easy_perform(m_curl);
-	if (res != CURLE_OK)
-	{
-		cemuLog_log(LogType::Force, "CURL web request failed with error {}. Retrying...", res);
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		// retry
-		res = curl_easy_perform(m_curl);
-		if (res != CURLE_OK)
-			return false;
-	}
-	
+	int status = 0;
+	const int res = Perform(req, m_service, m_sslContext, this, OnBody, this, m_cbWriteCallback ? nullptr : &m_receiveBuffer, true, status);
+	free(form);
+	free(formType);
+	m_httpStatusCode = status;
+	if (res != HTTP_XFER_OK)
+		return false;
+
 	// check response code
-	long httpCode = 0;
-	curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &httpCode);
-	m_httpStatusCode = httpCode;
-	if (httpCode != 200)
+	if (status != 200)
 	{
-		cemuLog_log(LogType::Force, "HTTP request received response {} but expected 200", httpCode);
-		char* effectiveUrl = nullptr;
-		curl_easy_getinfo(m_curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
-		if (effectiveUrl)
-			cemuLog_log(LogType::Force, "Request: {}", effectiveUrl);
+		cemuLog_log(LogType::Force, "HTTP request received response {} but expected 200", status);
+		cemuLog_log(LogType::Force, "Request: {}", m_url);
 		// error status codes (4xx or 5xx range) are always considered a failed request, except for code 400 which is usually returned as a response to failed logins etc.
-		if (httpCode >= 400 && httpCode <= 599 && httpCode != 400)
+		if (status >= 400 && status <= 599 && status != 400)
 			return false;
 		// for other status codes we assume success if the message is non-empty
-		if(m_receiveBuffer.empty())
+		if (m_receiveBuffer.empty())
 			return false;
 	}
 
@@ -275,38 +261,13 @@ bool CurlRequestHelper::submitRequest(bool isPost)
 	return true;
 }
 
-CurlSOAPHelper::CurlSOAPHelper(NetworkService service)
+HttpSOAPHelper::HttpSOAPHelper(NetworkService service) : m_service(service)
 {
-	m_curl = curl_easy_init();
-	curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, __curlWriteCallback);
-	curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, this);
-	curl_easy_setopt(m_curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-
-	// SSL
-	if (!IsNetworkServiceSSLDisabled(service))
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_FUNCTION, _sslctx_function_SOAP);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_CTX_DATA, NULL);
-		curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYPEER, 1L);
-	}
-	else
-	{
-		curl_easy_setopt(m_curl, CURLOPT_SSL_VERIFYPEER, 0L);
-	}
-	if (GetConfig().proxy_server.GetValue() != "")
-	{
-		curl_easy_setopt(m_curl, CURLOPT_PROXY, GetConfig().proxy_server.GetValue().c_str());
-	}
 }
 
-CurlSOAPHelper::~CurlSOAPHelper()
+void HttpSOAPHelper::SOAP_initate(std::string_view serviceType, std::string url, std::string_view requestMethod, std::string_view requestVersion)
 {
-	curl_easy_cleanup(m_curl);
-}
-
-void CurlSOAPHelper::SOAP_initate(std::string_view serviceType, std::string url, std::string_view requestMethod, std::string_view requestVersion)
-{
-	curl_easy_setopt(m_curl, CURLOPT_URL, url.c_str());
+	m_url = std::move(url);
 	m_serviceType = serviceType;
 	m_requestMethod = requestMethod;
 	m_requestVersion = requestVersion;
@@ -315,12 +276,12 @@ void CurlSOAPHelper::SOAP_initate(std::string_view serviceType, std::string url,
 	m_envelopeExtraParam.clear();
 }
 
-void CurlSOAPHelper::SOAP_addRequestField(const char* fieldName, std::string_view value)
+void HttpSOAPHelper::SOAP_addRequestField(const char* fieldName, std::string_view value)
 {
 	m_envelopeExtraParam.append(fmt::format("<{}:{}>{}</{}:{}>", m_serviceType, fieldName, value, m_serviceType, fieldName));
 }
 
-void CurlSOAPHelper::SOAP_generateEnvelope()
+void HttpSOAPHelper::SOAP_generateEnvelope()
 {
 	m_envelopeStr.reserve(4096);
 	m_envelopeStr.clear();
@@ -393,25 +354,31 @@ void CurlSOAPHelper::SOAP_generateEnvelope()
 
 sint32 iosuCrypto_getDeviceCertificateBase64Encoded(char* output);
 
-bool CurlSOAPHelper::submitRequest()
+static bool SOAPOnBody(void* ctx, const void* data, size_t len)
+{
+	std::vector<uint8>* buffer = (std::vector<uint8>*)ctx;
+	buffer->insert(buffer->end(), (const uint8*)data, (const uint8*)data + len);
+	return true;
+}
+
+bool HttpSOAPHelper::submitRequest()
 {
 	// generate and set envelope
 	SOAP_generateEnvelope();
-	curl_easy_setopt(m_curl, CURLOPT_POST, 1);
-	curl_easy_setopt(m_curl, CURLOPT_POSTFIELDS, m_envelopeStr.c_str());
-	curl_easy_setopt(m_curl, CURLOPT_POSTFIELDSIZE, m_envelopeStr.size());
-	// generate and set headers
-	struct curl_slist* headers = NULL;
-	headers = curl_slist_append(headers, "Content-Type: text/xml; charset=utf-8");
-	headers = curl_slist_append(headers, "Accept-Charset: UTF-8");
-	headers = curl_slist_append(headers, fmt::format("SOAPAction: urn:{}.wsapi.broadon.com/{}", m_serviceType, m_requestMethod).c_str());
-	headers = curl_slist_append(headers, "Accept: */*");
-	curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(m_curl, CURLOPT_USERAGENT, "EVL NUP 040800 Sep 18 2012 20:20:02");
-
-	// send request
-	auto res = curl_easy_perform(m_curl);
-	return res == CURLE_OK;
+	std::string headers = "Accept-Charset: UTF-8\r\n";
+	headers += fmt::format("SOAPAction: urn:{}.wsapi.broadon.com/{}\r\n", m_serviceType, m_requestMethod);
+	headers += "Accept: */*\r\n";
+	http_xfer_request_t req{};
+	req.url = m_url.c_str();
+	req.method = "POST";
+	req.headers = headers.c_str();
+	req.content_type = "text/xml; charset=utf-8";
+	req.user_agent = "EVL NUP 040800 Sep 18 2012 20:20:02";
+	req.body = m_envelopeStr.data();
+	req.body_len = m_envelopeStr.size();
+	req.has_body = true;
+	int status = 0;
+	return Perform(req, m_service, HttpRequestHelper::SERVER_SSL_CONTEXT::IAS, nullptr, SOAPOnBody, &m_receiveBuffer, &m_receiveBuffer, false, status) == HTTP_XFER_OK;
 }
 
 /* helper functions */
@@ -433,7 +400,7 @@ namespace NAPI
 		return false;
 	}
 
-	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode)
+	bool _parseResponseInit(const HttpSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode)
 	{
 		// parse XML response
 		if (!doc.load(soapHelper.getReceivedData().data(), soapHelper.getReceivedData().size()))

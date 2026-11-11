@@ -265,21 +265,5 @@ namespace nn
 			*pOutId = ExtractCommunityIdFromCode((char*)pCode);
 			return true;
 		}
-
-		sint32 olv_curlformcode_to_error(CURLFORMcode code)
-		{
-			switch (code)
-			{
-				case CURL_FORMADD_OK:
-					return OLV_RESULT_SUCCESS;
-
-				case CURL_FORMADD_MEMORY:
-					return OLV_RESULT_FATAL(25);
-
-				case CURL_FORMADD_OPTION_TWICE:
-				default:
-					return OLV_RESULT_LVL6(50);
-			}
-		}
 	}
 }

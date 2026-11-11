@@ -2,7 +2,6 @@
 #include "napi.h"
 #include "napi_helper.h"
 
-#include "curl/curl.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
@@ -131,7 +130,7 @@ namespace NAPI
 	{
 		NAPI_NUSGetSystemCommonETicket_Result result{};
 
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("nus", _getNUSUrl(authInfo.GetService()), "GetSystemCommonETicket", "1.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform()));
@@ -184,7 +183,7 @@ namespace NAPI
 	{
 		NAPI_IASGetChallenge_Result result{};
 		
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("ias", _getIASUrl(authInfo.GetService()), "GetChallenge", "2.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform())); // not validated but the generated Challenge is bound to this DeviceId
@@ -209,7 +208,7 @@ namespace NAPI
 	NAPI_IASGetRegistrationInfo_Result IAS_GetRegistrationInfo_QueryInfo(AuthInfo& authInfo, std::string challenge)
 	{
 		NAPI_IASGetRegistrationInfo_Result result;
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("ias", _getIASUrl(authInfo.GetService()), "GetRegistrationInfo", "2.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform())); // this must match the DeviceId used to generate Challenge
@@ -310,7 +309,7 @@ namespace NAPI
 	{
 		NAPI_ECSGetAccountStatus_Result result{};
 
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("ecs", _getECSUrl(authInfo.GetService()), "GetAccountStatus", "2.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform()));
@@ -396,7 +395,7 @@ namespace NAPI
 	{
 		NAPI_ECSAccountListETicketIds_Result result{};
 
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("ecs", _getECSUrl(authInfo.GetService()), "AccountListETicketIds", "2.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform()));
@@ -455,7 +454,7 @@ namespace NAPI
 	{
 		NAPI_ECSAccountGetETickets_Result result{};
 
-		CurlSOAPHelper soapHelper(authInfo.GetService());
+		HttpSOAPHelper soapHelper(authInfo.GetService());
 		soapHelper.SOAP_initate("ecs", _getECSUrl(authInfo.GetService()), "AccountGetETickets", "2.0");
 
 		soapHelper.SOAP_addRequestField("DeviceId", fmt::format("{}", authInfo.getDeviceIdWithPlatform()));
@@ -520,8 +519,8 @@ namespace NAPI
 	NAPI_CCSGetTMD_Result CCS_GetTMD(AuthInfo& authInfo, uint64 titleId, uint16 titleVersion)
 	{
 		NAPI_CCSGetTMD_Result result{};
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("{}/{:016x}/tmd.{}?deviceId={}&accountId={}", _getCCSUncachedUrl(authInfo.GetService()), titleId, titleVersion, authInfo.getDeviceIdWithPlatform(), authInfo.IASToken.accountId), CurlRequestHelper::SERVER_SSL_CONTEXT::CCS);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("{}/{:016x}/tmd.{}?deviceId={}&accountId={}", _getCCSUncachedUrl(authInfo.GetService()), titleId, titleVersion, authInfo.getDeviceIdWithPlatform(), authInfo.IASToken.accountId), HttpRequestHelper::SERVER_SSL_CONTEXT::CCS);
 		req.setTimeout(180);
 		if (!req.submitRequest(false))
 		{
@@ -536,8 +535,8 @@ namespace NAPI
 	NAPI_CCSGetTMD_Result CCS_GetTMD(AuthInfo& authInfo, uint64 titleId)
 	{
 		NAPI_CCSGetTMD_Result result{};
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("{}/{:016x}/tmd?deviceId={}&accountId={}", _getCCSUncachedUrl(authInfo.GetService()), titleId, authInfo.getDeviceIdWithPlatform(), authInfo.IASToken.accountId), CurlRequestHelper::SERVER_SSL_CONTEXT::CCS);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("{}/{:016x}/tmd?deviceId={}&accountId={}", _getCCSUncachedUrl(authInfo.GetService()), titleId, authInfo.getDeviceIdWithPlatform(), authInfo.IASToken.accountId), HttpRequestHelper::SERVER_SSL_CONTEXT::CCS);
 		req.setTimeout(180);
 		if (!req.submitRequest(false))
 		{
@@ -552,8 +551,8 @@ namespace NAPI
 	NAPI_CCSGetETicket_Result CCS_GetCETK(NetworkService service, uint64 titleId, uint16 titleVersion)
 	{
 		NAPI_CCSGetETicket_Result result{};
-		CurlRequestHelper req;
-		req.initate(service, fmt::format("{}/{:016x}/cetk", _getCCSUncachedUrl(service), titleId), CurlRequestHelper::SERVER_SSL_CONTEXT::CCS);
+		HttpRequestHelper req;
+		req.initate(service, fmt::format("{}/{:016x}/cetk", _getCCSUncachedUrl(service), titleId), HttpRequestHelper::SERVER_SSL_CONTEXT::CCS);
 		req.setTimeout(180);
 		if (!req.submitRequest(false))
 		{
@@ -567,8 +566,8 @@ namespace NAPI
 
 	bool CCS_GetContentFile(NetworkService service, uint64 titleId, uint32 contentId, bool(*cbWriteCallback)(void* userData, const void* ptr, size_t len, bool isLast), void* userData)
 	{
-		CurlRequestHelper req;
-		req.initate(service, fmt::format("{}/{:016x}/{:08x}", _getCCSUrl(service), titleId, contentId), CurlRequestHelper::SERVER_SSL_CONTEXT::CCS);
+		HttpRequestHelper req;
+		req.initate(service, fmt::format("{}/{:016x}/{:08x}", _getCCSUrl(service), titleId, contentId), HttpRequestHelper::SERVER_SSL_CONTEXT::CCS);
 		req.setWriteCallback(cbWriteCallback, userData);
 		req.setTimeout(0);
 		if (!req.submitRequest(false))
@@ -582,8 +581,8 @@ namespace NAPI
 	NAPI_CCSGetContentH3_Result CCS_GetContentH3File(NetworkService service, uint64 titleId, uint32 contentId)
 	{
 		NAPI_CCSGetContentH3_Result result{};
-		CurlRequestHelper req;
-		req.initate(service, fmt::format("{}/{:016x}/{:08x}.h3", _getCCSUrl(service), titleId, contentId), CurlRequestHelper::SERVER_SSL_CONTEXT::CCS);
+		HttpRequestHelper req;
+		req.initate(service, fmt::format("{}/{:016x}/{:08x}.h3", _getCCSUrl(service), titleId, contentId), HttpRequestHelper::SERVER_SSL_CONTEXT::CCS);
 		if (!req.submitRequest(false))
 		{
 			cemuLog_log(LogType::Force, fmt::format("Failed to request content hash file {:08x}.h3 for title {:016X}", contentId, titleId));

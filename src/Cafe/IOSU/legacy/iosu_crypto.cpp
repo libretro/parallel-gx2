@@ -2,7 +2,7 @@
 #include "util/helpers/MappedFile.h"
 
 #include "config/ActiveSettings.h"
-#include <curl/curl.h>
+#include "Common/http_xfer.h"
 #include <crypto/pk.h>
 #include <crypto/x509.h>
 
@@ -283,7 +283,7 @@ bool iosuCrypto_loadCertificate(uint32 id, std::wstring_view mlcSubpath, std::ws
 	return true;
 }
 
-bool iosuCrypto_addClientCertificate(void* tlsSettings, sint32 certificateId)
+bool iosuCrypto_addClientCertificate(http_xfer_tls* tlsSettings, sint32 certificateId)
 {
 	// find entry
 	for (sint32 i = 0; i < iosuCryptoCertificates.certListCount; i++)
@@ -291,7 +291,7 @@ bool iosuCrypto_addClientCertificate(void* tlsSettings, sint32 certificateId)
 		auto& entry = iosuCryptoCertificates.certList[i];
 		if (entry.isValid && entry.id == certificateId)
 		{
-			if (entry.pkeyDERData.empty() || !curl_tls_set_client((curl_tls_settings*)tlsSettings, entry.certData.data(), entry.certData.size(), entry.pkeyDERData.data(), entry.pkeyDERData.size()))
+			if (entry.pkeyDERData.empty() || !http_xfer_tls_set_client(tlsSettings, entry.certData.data(), entry.certData.size(), entry.pkeyDERData.data(), entry.pkeyDERData.size()))
 			{
 				cemuLog_log(LogType::Force, "Unable to setup certificate {}", certificateId);
 				return false;
@@ -303,19 +303,19 @@ bool iosuCrypto_addClientCertificate(void* tlsSettings, sint32 certificateId)
 	return false;
 }
 
-bool iosuCrypto_addCACertificate(void* tlsSettings, sint32 certificateId)
+bool iosuCrypto_addCACertificate(http_xfer_tls* tlsSettings, sint32 certificateId)
 {
 	// find entry
 	for (sint32 i = 0; i < iosuCryptoCertificates.certListCount; i++)
 	{
 		auto& entry = iosuCryptoCertificates.certList[i];
 		if (entry.isValid && entry.id == certificateId)
-			return curl_tls_add_trust((curl_tls_settings*)tlsSettings, entry.certData.data(), entry.certData.size());
+			return http_xfer_tls_add_trust(tlsSettings, entry.certData.data(), entry.certData.size());
 	}
 	return false;
 }
 
-bool iosuCrypto_addCustomCACertificate(void* tlsSettings, uint8* certData, sint32 certLength)
+bool iosuCrypto_addCustomCACertificate(http_xfer_tls* tlsSettings, uint8* certData, sint32 certLength)
 {
 	struct x509_cert parsedCert;
 	if (certLength <= 0 || x509_parse(&parsedCert, certData, (size_t)certLength) != 0)
@@ -323,7 +323,7 @@ bool iosuCrypto_addCustomCACertificate(void* tlsSettings, uint8* certData, sint3
 		cemuLog_log(LogType::Force, "Invalid custom server PKI certificate");
 		return false;
 	}
-	return curl_tls_add_trust((curl_tls_settings*)tlsSettings, certData, (size_t)certLength);
+	return http_xfer_tls_add_trust(tlsSettings, certData, (size_t)certLength);
 }
 
 uint8* iosuCrypto_getCertificateDataById(sint32 certificateId, sint32* certificateSize)

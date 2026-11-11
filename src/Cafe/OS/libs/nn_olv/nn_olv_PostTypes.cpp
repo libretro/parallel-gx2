@@ -363,14 +363,14 @@ namespace nn
 				return OLV_RESULT_INVALID_PARAMETER;
 
 			/*
-			CurlRequestHelper req;
-			req.initate(urlBuffer, CurlRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
+			HttpRequestHelper req;
+			req.initate(urlBuffer, HttpRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
 			InitializeOliveRequest(req);
 			bool reqResult = req.submitRequest();
 			if (!reqResult)
 			{
 				long httpCode = 0;
-				curl_easy_getinfo(req.getCURL(), CURLINFO_RESPONSE_CODE, &httpCode);
+				httpCode = req.GetHTTPStatusCode();
 				cemuLog_log(LogType::Force, "Failed request: {} ({})", urlBuffer, httpCode);
 				if (!(httpCode >= 400))
 					return OLV_RESULT_FAILED_REQUEST;

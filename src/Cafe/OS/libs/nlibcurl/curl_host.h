@@ -1,28 +1,33 @@
-/* The part of libcurl's API the core uses, carried by libretro-common's
- * net_http and its built-in TLS client (curl_compat.cpp), so that no
- * libcurl, OpenSSL or mbedTLS is linked.
+#ifndef NLIBCURL_CURL_HOST_H
+#define NLIBCURL_CURL_HOST_H
+
+/* The host side of nlibcurl, the console's libcurl: libcurl's behaviour -
+ * easy handles and their options, callbacks and pause, the multi and share
+ * interfaces - over the core's HTTP transfers (http_xfer.h), for nlibcurl
+ * to hand a game's calls to. Not libcurl, and not named as it: its
+ * functions are curlh_*. Its types and its option, info and error numbers
+ * are libcurl's, as the game gives them.
  *
- * Option, info and error numbers are libcurl's own: nlibcurl hands the
- * guest's numbers straight through. Options this layer has no use for
- * are accepted and ignored, as libcurl does with ones it was built
- * without.
- *
- * Differences from libcurl:
- * - CURLOPT_SSL_CTX_FUNCTION receives a struct curl_tls_settings *
- *   where libcurl passes the TLS library's context; fill it with the
- *   curl_tls_* functions below.
- * - CURLOPT_CLOSESOCKETFUNCTION and CURLOPT_SOCKOPTFUNCTION are never
- *   called: the sockets belong to net_http.
+ * Unlike libcurl:
+ * - CURLOPT_SSL_CTX_FUNCTION receives the transfer's http_xfer_tls_t,
+ *   to fill in with the http_xfer_tls_* functions.
+ * - CURLOPT_SOCKOPTFUNCTION and CURLOPT_CLOSESOCKETFUNCTION are never
+ *   called: the sockets are net_http's.
  * - A request body from CURLOPT_READFUNCTION is read whole before the
  *   request goes out.
- * - curl_multi_fdset() reports no descriptors; curl_multi_timeout()
- *   says when to call curl_multi_perform() again.
- * - Redirects are followed whatever CURLOPT_FOLLOWLOCATION says, and a
- *   proxy is not used.
- * - curl_formadd() takes names and contents (with their lengths) and a
- *   content type; files and buffers are refused. */
-#ifndef CURL_COMPAT_CURL_H
-#define CURL_COMPAT_CURL_H
+ * - curlh_multi_fdset reports no descriptors; curlh_multi_timeout says
+ *   when to call curlh_multi_perform again.
+ * - Redirects are followed whatever CURLOPT_FOLLOWLOCATION says; a proxy
+ *   is not used; options it has no use for are accepted and do nothing.
+ *
+ * C89. */
+
+#include <stddef.h>
+#include <stdint.h>
+#include <boolean.h>
+#include <retro_common_api.h>
+
+RETRO_BEGIN_DECLS
 
 #include <stddef.h>
 #include <stdint.h>
@@ -251,6 +256,7 @@ typedef int (*curl_sockopt_callback)(void *clientp,
       curl_socket_t curlfd, curlsocktype purpose);
 typedef int (*curl_closesocket_callback)(void *clientp,
       curl_socket_t item);
+/* ssl_ctx is the transfer's http_xfer_tls_t, to fill in (http_xfer.h) */
 typedef CURLcode (*curl_ssl_ctx_callback)(CURL *curl, void *ssl_ctx,
       void *userptr);
 typedef void (*curl_lock_function)(CURL *handle, curl_lock_data data,
@@ -263,103 +269,38 @@ typedef void *(*curl_realloc_callback)(void *ptr, size_t size);
 typedef char *(*curl_strdup_callback)(const char *str);
 typedef void *(*curl_calloc_callback)(size_t nmemb, size_t size);
 
-CURLcode curl_global_init(long flags);
-/* Stops the transfer thread; call when nothing is transferring. */
-void curl_global_cleanup(void);
+/* the transfer thread, started (also by curlh_easy_init) and stopped:
+ * not while anything transfers */
+CURLcode curlh_global_init(long flags);
+void curlh_global_cleanup(void);
 
-CURL *curl_easy_init(void);
-void curl_easy_cleanup(CURL *curl);
-void curl_easy_reset(CURL *curl);
-CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...);
-CURLcode curl_easy_perform(CURL *curl);
-CURLcode curl_easy_getinfo(CURL *curl, CURLINFO info, ...);
-CURLcode curl_easy_pause(CURL *curl, int bitmask);
-const char *curl_easy_strerror(CURLcode code);
+CURL *curlh_easy_init(void);
+void curlh_easy_cleanup(CURL *curl);
+void curlh_easy_reset(CURL *curl);
+CURLcode curlh_easy_setopt(CURL *curl, CURLoption option, ...);
+CURLcode curlh_easy_perform(CURL *curl);
+CURLcode curlh_easy_getinfo(CURL *curl, CURLINFO info, ...);
+CURLcode curlh_easy_pause(CURL *curl, int bitmask);
+const char *curlh_easy_strerror(CURLcode code);
 
-struct curl_slist *curl_slist_append(struct curl_slist *list,
-      const char *data);
-void curl_slist_free_all(struct curl_slist *list);
+struct curl_slist *curlh_slist_append(struct curl_slist *list, const char *data);
+void curlh_slist_free_all(struct curl_slist *list);
 
-CURLM *curl_multi_init(void);
-CURLMcode curl_multi_cleanup(CURLM *multi);
-CURLMcode curl_multi_add_handle(CURLM *multi, CURL *curl);
-CURLMcode curl_multi_remove_handle(CURLM *multi, CURL *curl);
-CURLMcode curl_multi_perform(CURLM *multi, int *running_handles);
-CURLMcode curl_multi_timeout(CURLM *multi, long *milliseconds);
-CURLMcode curl_multi_setopt(CURLM *multi, CURLMoption option, ...);
-CURLMcode curl_multi_fdset(CURLM *multi, void *read_fd_set,
+CURLM *curlh_multi_init(void);
+CURLMcode curlh_multi_cleanup(CURLM *multi);
+CURLMcode curlh_multi_add_handle(CURLM *multi, CURL *curl);
+CURLMcode curlh_multi_remove_handle(CURLM *multi, CURL *curl);
+CURLMcode curlh_multi_perform(CURLM *multi, int *running_handles);
+CURLMcode curlh_multi_timeout(CURLM *multi, long *milliseconds);
+CURLMcode curlh_multi_setopt(CURLM *multi, CURLMoption option, ...);
+CURLMcode curlh_multi_fdset(CURLM *multi, void *read_fd_set,
       void *write_fd_set, void *exc_fd_set, int *max_fd);
-CURLMsg *curl_multi_info_read(CURLM *multi, int *msgs_in_queue);
+CURLMsg *curlh_multi_info_read(CURLM *multi, int *msgs_in_queue);
 
-/* multipart/form-data, for CURLOPT_HTTPPOST */
-struct curl_httppost
-{
-   struct curl_httppost *next;
-   char *name;
-   long namelength;
-   char *contents;
-   long contentslength;
-   char *contenttype;
-};
+CURLSH *curlh_share_init(void);
+CURLSHcode curlh_share_setopt(CURLSH *share, CURLSHoption option, ...);
+CURLSHcode curlh_share_cleanup(CURLSH *share);
 
-typedef enum
-{
-   CURLFORM_NOTHING,
-   CURLFORM_COPYNAME,
-   CURLFORM_PTRNAME,
-   CURLFORM_NAMELENGTH,
-   CURLFORM_COPYCONTENTS,
-   CURLFORM_PTRCONTENTS,
-   CURLFORM_CONTENTSLENGTH,
-   CURLFORM_FILECONTENT,
-   CURLFORM_ARRAY,
-   CURLFORM_OBSOLETE,
-   CURLFORM_FILE,
-   CURLFORM_BUFFER,
-   CURLFORM_BUFFERPTR,
-   CURLFORM_BUFFERLENGTH,
-   CURLFORM_CONTENTTYPE,
-   CURLFORM_CONTENTHEADER,
-   CURLFORM_FILENAME,
-   CURLFORM_END
-} CURLformoption;
-
-typedef enum
-{
-   CURL_FORMADD_OK,
-   CURL_FORMADD_MEMORY,
-   CURL_FORMADD_OPTION_TWICE,
-   CURL_FORMADD_NULL,
-   CURL_FORMADD_UNKNOWN_OPTION,
-   CURL_FORMADD_INCOMPLETE,
-   CURL_FORMADD_ILLEGAL_ARRAY,
-   CURL_FORMADD_DISABLED
-} CURLFORMcode;
-
-CURLFORMcode curl_formadd(struct curl_httppost **httppost,
-      struct curl_httppost **last_post, ...);
-void curl_formfree(struct curl_httppost *form);
-
-CURLSH *curl_share_init(void);
-CURLSHcode curl_share_setopt(CURLSH *share, CURLSHoption option, ...);
-CURLSHcode curl_share_cleanup(CURLSH *share);
-
-/* TLS settings for one transfer, filled in by its
- * CURLOPT_SSL_CTX_FUNCTION. Certificates and keys are DER and copied. */
-struct curl_tls_settings;
-
-/* A trust anchor in place of the built-in bundle. */
-bool curl_tls_add_trust(struct curl_tls_settings *tls,
-      const void *der, size_t len);
-/* The client certificate and its RSA key (PKCS#1 or PKCS#8). */
-bool curl_tls_set_client(struct curl_tls_settings *tls,
-      const void *cert_der, size_t cert_len,
-      const void *key_der, size_t key_len);
-/* Suites to offer, by IANA number, most preferred first. */
-void curl_tls_set_suites(struct curl_tls_settings *tls,
-      const unsigned *suites, size_t count);
-/* Whether the peer's certificate and name are checked. */
-void curl_tls_set_verify(struct curl_tls_settings *tls,
-      bool peer, bool host);
+RETRO_END_DECLS
 
 #endif

@@ -1,11 +1,15 @@
 #!/bin/sh
-# curl_compat against local servers: GET, POST from a buffer, from a
-# read callback and as a multipart form, a 404, a timeout, the multi interface with and without
-# paused transfers, several threads at once, the transfer thread stopped
-# and started again, and TLS with the client certificate and the
-# RSA/AES-256-CBC suite nlibcurl asks for, against a server that requires
-# both - and refused with a trust anchor that signed nothing. Needs
-# python3 and openssl. RUNNER prefixes the test (wine for a MinGW build).
+# The core's HTTP transfers and nlibcurl's host side against local servers.
+# http_xfer: GET, POST, a multipart form, a 404, a timeout, a body refused
+# and a transfer closed while it hangs, a reader that falls behind or
+# pauses, several threads at once, the transfer thread stopped and started
+# again, and TLS with the client certificate and the RSA/AES-256-CBC suite
+# nlibcurl asks for against a server that requires both - and refused with
+# a trust anchor that signed nothing. curl_host: GET, POST from a buffer
+# and from a read callback, a 404, a timeout, the multi interface with and
+# without paused transfers, threads, a restart, TLS, TLS refused, and TLS
+# left unchecked whatever the options say. Needs python3 and openssl.
+# RUNNER prefixes the tests (wine for a MinGW build).
 set -e
 cd "$(dirname "$0")"
 D=$(mktemp -d)
@@ -32,11 +36,25 @@ TP=${TLS_PORT:-45443}
 python3 server.py $HP $D & HTTP=$!
 (cd $D && exec openssl s_server -accept $TP -cert srv.pem -key srv.key -tls1_2 -cipher AES256-SHA \
    -Verify 1 -CAfile cca.pem -WWW) >/dev/null 2>&1 & TLS=$!
-sleep 1
+# both listening before the first case
+python3 - $HP $TP <<'PY'
+import socket, sys, time
+for port in map(int, sys.argv[1:]):
+    for _ in range(200):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.2).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+PY
 fail=0
-for t in get post post-read form 404 timeout multi pause threads restart tls tls-refused; do
-   if $RUN ./curl_compat_test$EXE $t $HP $TP $D > $D/out 2>&1; then echo "ok:   $t"
-   else echo "FAIL: $t: $(cat $D/out)"; fail=1; fi
+for t in get post form 404 timeout abort backpressure threads restart tls tls-refused; do
+   if $RUN ./http_xfer_test$EXE $t $HP $TP $D > $D/out 2>&1; then echo "ok:   http_xfer $t"
+   else echo "FAIL: http_xfer $t: $(cat $D/out)"; fail=1; fi
 done
-[ $fail -eq 0 ] && echo "[pass] curl_compat"
+for t in get post post-read 404 timeout multi pause threads restart tls tls-refused tls-unchecked; do
+   if $RUN ./curl_host_test$EXE $t $HP $TP $D > $D/out 2>&1; then echo "ok:   curl_host $t"
+   else echo "FAIL: curl_host $t: $(cat $D/out)"; fail=1; fi
+done
+[ $fail -eq 0 ] && echo "[pass] http_xfer"
 exit $fail

@@ -3,7 +3,6 @@
 #include "iosu_act.h"
 #include "iosu_mcp.h"
 #include "util/crypto/aes128.h"
-#include "curl/curl.h"
 #include "util/helpers/helpers.h"
 #include "util/helpers/EventWake.h"
 #include "Cemu/napi/napi.h"

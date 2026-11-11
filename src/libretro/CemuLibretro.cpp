@@ -15,7 +15,7 @@
 #include "config/CemuConfig.h"
 #include "Cafe/Account/Account.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
-#include <curl/curl.h>
+#include "Common/http_xfer.h"
 #include <boost/nowide/convert.hpp>
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
@@ -3816,8 +3816,8 @@ RETRO_API void retro_init()
 	// when it started crashing at core selection, before any content.
 	libretro_log(RETRO_LOG_INFO, "retro_init: start (%s)\n", BUILD_VERSION_WITH_NAME_STRING);
 
-	// the network transfer thread, before anything transfers (curl_compat)
-	curl_global_init(CURL_GLOBAL_DEFAULT);
+	// the network transfer thread, before anything transfers
+	http_xfer_init();
 
 	LibretroAudioAPI::SetAudioCallback([](const int16_t* data, size_t frames) -> size_t {
 		if (s_audio_submission_allowed && audio_batch_cb && data && frames > 0)
@@ -6238,7 +6238,7 @@ RETRO_API void retro_deinit()
 
 	// What would otherwise outlive this library: the network transfer
 	// thread is joined, and the crash handlers go back to the frontend's.
-	curl_global_cleanup();
+	http_xfer_deinit();
 	ExceptionHandler_Shutdown();
 
 	s_initialized = false;

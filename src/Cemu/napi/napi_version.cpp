@@ -2,7 +2,6 @@
 #include "napi.h"
 #include "napi_helper.h"
 
-#include "curl/curl.h"
 #include "util/xml/Xml.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
@@ -15,7 +14,7 @@ namespace NAPI
 	NAPI_VersionListVersion_Result TAG_GetVersionListVersion(AuthInfo& authInfo)
 	{
 		NAPI_VersionListVersion_Result result;
-		CurlRequestHelper req;
+		HttpRequestHelper req;
 
 		std::string requestUrl;
 		switch (authInfo.GetService())
@@ -32,7 +31,7 @@ namespace NAPI
 			break;
 		}
 		requestUrl.append(fmt::format(fmt::runtime("/{}/{}/latest_version"), NCrypto::GetRegionAsString(authInfo.region), authInfo.country.empty() ? "NN" : authInfo.country));
-		req.initate(authInfo.GetService(), requestUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::TAGAYA);
+		req.initate(authInfo.GetService(), requestUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::TAGAYA);
 
 		if (!req.submitRequest(false))
 		{
@@ -62,8 +61,8 @@ namespace NAPI
 	NAPI_VersionList_Result TAG_GetVersionList(AuthInfo& authInfo, std::string_view fqdnURL, uint32 versionListVersion)
 	{
 		NAPI_VersionList_Result result;
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("https://{}/tagaya/versionlist/{}/{}/list/{}.versionlist", fqdnURL, NCrypto::GetRegionAsString(authInfo.region), authInfo.country.empty() ? "NN" : authInfo.country, versionListVersion), CurlRequestHelper::SERVER_SSL_CONTEXT::TAGAYA);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("https://{}/tagaya/versionlist/{}/{}/list/{}.versionlist", fqdnURL, NCrypto::GetRegionAsString(authInfo.region), authInfo.country.empty() ? "NN" : authInfo.country, versionListVersion), HttpRequestHelper::SERVER_SSL_CONTEXT::TAGAYA);
 		if (!req.submitRequest(false))
 		{
 			cemuLog_log(LogType::Force, fmt::format("Failed to request update list"));

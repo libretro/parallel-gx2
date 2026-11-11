@@ -60,6 +60,8 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/wuhb.c \
 	$(CORE_DIR)/src/Common/shared_file.c \
+	$(CORE_DIR)/src/Common/http_xfer.c \
+	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_host.c \
 	$(CORE_DIR)/src/util/crypto/aes128.c
 CORE_SOURCES_CXX :=
 CORE_SOURCES_ASM :=
@@ -497,7 +499,7 @@ CORE_FLAGS := -DENABLE_LIBRETRO -DRETRO_CORE -DVK_NO_PROTOTYPES \
 	-I$(DEP_DIR)/Vulkan-Headers/include \
 	-I$(DEP_DIR)/glm -I$(DEP_DIR)/fmt/include \
 	-I$(DEP_DIR)/boost-compat \
-	-I$(DEP_DIR)/curl-compat/include -I$(DEP_DIR)/libusb-config \
+	-I$(DEP_DIR)/libusb-config \
 	-I$(LRC_DIR)/include
 CORE_WARNFLAGS := -Wno-multichar -Wno-invalid-offsetof -Wno-switch -Wno-ignored-attributes \
 	-Wno-deprecated-enum-enum-conversion
@@ -548,13 +550,8 @@ endif
 CORE_CXXFLAGS := -include $(CORE_PCH_INCLUDE) $(CORE_WARNFLAGS)
 
 # ----------------------------------------------------------------------------
-# libcurl's API over libretro-common's net_http, and the part of
-# libretro-common the core uses
+# The part of libretro-common the core uses
 # ----------------------------------------------------------------------------
-CURLCOMPAT_SOURCES_CXX := $(DEP_DIR)/curl-compat/curl_compat.cpp
-CURLCOMPAT_FLAGS := -I$(DEP_DIR)/curl-compat/include -I$(LRC_DIR)/include \
-	-DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO
-
 LRC_SOURCES_C := \
 	$(LRC_DIR)/compat/compat_posix_string.c \
 	$(LRC_DIR)/compat/compat_strcasestr.c \
@@ -650,7 +647,7 @@ LIBUSB_FLAGS := -I$(DEP_DIR)/libusb-config -I$(LIBUSB_DIR) -w
 XBYAK_SOURCES_CXX := $(DEP_DIR)/xbyak_aarch64/src/xbyak_aarch64_impl.cpp $(DEP_DIR)/xbyak_aarch64/src/util_impl.cpp
 XBYAK_FLAGS := -I$(DEP_DIR)/xbyak_aarch64 -I$(DEP_DIR)/xbyak_aarch64/xbyak_aarch64 -w
 
-LIB_GROUPS := CORE CURLCOMPAT LRC FMT
+LIB_GROUPS := CORE LRC FMT
 ifeq ($(HAVE_LIBUSB),1)
    LIB_GROUPS += LIBUSB
 endif

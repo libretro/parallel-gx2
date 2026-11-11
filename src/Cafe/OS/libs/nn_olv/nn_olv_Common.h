@@ -71,11 +71,11 @@ namespace nn
 		extern bool g_IsOnlineMode;
 		extern bool g_IsOfflineDBMode; // use offline cache for posts
 
-		static void InitializeOliveRequest(CurlRequestHelper& req)
+		static void InitializeOliveRequest(HttpRequestHelper& req)
 		{
 			req.addHeaderField("X-Nintendo-ServiceToken", g_DiscoveryResults.serviceToken);
 			req.addHeaderField("X-Nintendo-ParamPack", g_ParamPack.encodedParamPack);
-			curl_easy_setopt(req.getCURL(), CURLOPT_USERAGENT, g_DiscoveryResults.userAgent);
+			req.setUserAgent(g_DiscoveryResults.userAgent);
 		}
 
 		static void appendQueryToURL(char* url, const char* query)
@@ -175,7 +175,6 @@ namespace nn
 		bool GetCommunityIdFromCode(uint32* pOutId, const char* pCode);
 		bool FormatCommunityCode(char* pOutCode, uint32* outLen, uint32 communityId);
 
-		sint32 olv_curlformcode_to_error(CURLFORMcode code);
 
 		// convert and copy utf8 string into UC2 big-endian array
 		template<size_t TLength>

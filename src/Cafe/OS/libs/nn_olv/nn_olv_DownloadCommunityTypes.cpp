@@ -6,12 +6,12 @@ namespace nn
 	{
 
 		sint32 DownloadCommunityDataList_AsyncRequestImpl(
-			CurlRequestHelper& req, const char* reqUrl,
+			HttpRequestHelper& req, const char* reqUrl,
 			DownloadedCommunityData* pOutList, uint32* pOutNum, uint32 numMaxList, const DownloadCommunityDataListParam* pParam);
 
 
 		sint32 DownloadCommunityDataList_AsyncRequest(
-			CurlRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent,
+			HttpRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent,
 			DownloadedCommunityData* pOutList, uint32* pOutNum, uint32 numMaxList, const DownloadCommunityDataListParam* pParam
 		)
 		{
@@ -42,8 +42,8 @@ namespace nn
 			if (res < 0)
 				return res;
 
-			CurlRequestHelper req;
-			req.initate(ActiveSettings::GetNetworkService(), reqUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
+			HttpRequestHelper req;
+			req.initate(ActiveSettings::GetNetworkService(), reqUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
 			InitializeOliveRequest(req);
 
 			StackAllocator<coreinit::OSEvent> requestDoneEvent;
@@ -56,14 +56,14 @@ namespace nn
 		}
 
 		sint32 DownloadCommunityDataList_AsyncRequestImpl(
-			CurlRequestHelper& req, const char* reqUrl,
+			HttpRequestHelper& req, const char* reqUrl,
 			DownloadedCommunityData* pOutList, uint32* pOutNum, uint32 numMaxList, const DownloadCommunityDataListParam* pParam
 		)
 		{
 
 			bool reqResult = req.submitRequest();
 			long httpCode = 0;
-			curl_easy_getinfo(req.getCURL(), CURLINFO_RESPONSE_CODE, &httpCode);
+			httpCode = req.GetHTTPStatusCode();
 
 
 			if (!reqResult)

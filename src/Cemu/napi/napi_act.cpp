@@ -3,7 +3,6 @@
 #include "Cemu/ncrypto/ncrypto.h"
 #include "napi.h"
 #include "napi_helper.h"
-#include "curl/curl.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/StringHelpers.h"
 #include "util/highresolutiontimer/HighResolutionTimer.h"
@@ -31,7 +30,7 @@ namespace NAPI
 		std::string refreshToken;
 	};
 
-	bool _parseActResponse(CurlRequestHelper& requestHelper, _NAPI_CommonResultACT& result, xml::Document& doc)
+	bool _parseActResponse(HttpRequestHelper& requestHelper, _NAPI_CommonResultACT& result, xml::Document& doc)
 	{
 		if (!doc.load(requestHelper.getReceivedData().data(), requestHelper.getReceivedData().size()))
 		{
@@ -72,7 +71,7 @@ namespace NAPI
 		return true;
 	}
 
-	void _ACTSetCommonHeaderParameters(CurlRequestHelper& req, AuthInfo& authInfo)
+	void _ACTSetCommonHeaderParameters(HttpRequestHelper& req, AuthInfo& authInfo)
 	{
 		req.addHeaderField("X-Nintendo-Platform-ID", "1");
 		req.addHeaderField("X-Nintendo-Device-Type", "2");
@@ -88,13 +87,13 @@ namespace NAPI
 			req.addHeaderField("X-Nintendo-System-Version", "0260");
 	}
 
-	void _ACTSetDeviceParameters(CurlRequestHelper& req, AuthInfo& authInfo)
+	void _ACTSetDeviceParameters(HttpRequestHelper& req, AuthInfo& authInfo)
 	{
 		req.addHeaderField("X-Nintendo-Device-ID", fmt::format("{}", authInfo.deviceId)); // deviceId without platform field
 		req.addHeaderField("X-Nintendo-Serial-Number", authInfo.serial);
 	}
 
-	void _ACTSetRegionAndCountryParameters(CurlRequestHelper& req, AuthInfo& authInfo)
+	void _ACTSetRegionAndCountryParameters(HttpRequestHelper& req, AuthInfo& authInfo)
 	{
 		req.addHeaderField("X-Nintendo-Region", fmt::format("{}", (uint32)authInfo.region));
 		req.addHeaderField("X-Nintendo-Country", authInfo.country);
@@ -155,9 +154,9 @@ namespace NAPI
 		}
 		g_oauthTokenCacheMtx.unlock();
 		// token not cached, request from server via oauth2
-		CurlRequestHelper req;
+		HttpRequestHelper req;
 
-		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/oauth20/access_token/generate", _getACTUrl(authInfo.GetService())), CurlRequestHelper::SERVER_SSL_CONTEXT::ACT);
+		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/oauth20/access_token/generate", _getACTUrl(authInfo.GetService())), HttpRequestHelper::SERVER_SSL_CONTEXT::ACT);
 		_ACTSetCommonHeaderParameters(req, authInfo);
 		_ACTSetDeviceParameters(req, authInfo);
 		_ACTSetRegionAndCountryParameters(req, authInfo);
@@ -240,9 +239,9 @@ namespace NAPI
 
 	bool ACT_GetProfile(AuthInfo& authInfo, ACTGetProfileResult& result)
 	{
-		CurlRequestHelper req;
+		HttpRequestHelper req;
 
-		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/people/@me/profile", _getACTUrl(authInfo.GetService())), CurlRequestHelper::SERVER_SSL_CONTEXT::ACT);
+		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/people/@me/profile", _getACTUrl(authInfo.GetService())), HttpRequestHelper::SERVER_SSL_CONTEXT::ACT);
 
 		_ACTSetCommonHeaderParameters(req, authInfo);
 		_ACTSetDeviceParameters(req, authInfo);
@@ -308,8 +307,8 @@ namespace NAPI
 			return result;
 		}
 		// do request
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/provider/nex_token/@me?game_server_id={:08X}", _getACTUrl(authInfo.GetService()), serverId), CurlRequestHelper::SERVER_SSL_CONTEXT::ACT);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/provider/nex_token/@me?game_server_id={:08X}", _getACTUrl(authInfo.GetService()), serverId), HttpRequestHelper::SERVER_SSL_CONTEXT::ACT);
 		_ACTSetCommonHeaderParameters(req, authInfo);
 		_ACTSetDeviceParameters(req, authInfo);
 		_ACTSetRegionAndCountryParameters(req, authInfo);
@@ -461,8 +460,8 @@ namespace NAPI
 			return result;
 		}
 		// do request
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/provider/service_token/@me?client_id={}", _getACTUrl(authInfo.GetService()), clientId), CurlRequestHelper::SERVER_SSL_CONTEXT::ACT);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/provider/service_token/@me?client_id={}", _getACTUrl(authInfo.GetService()), clientId), HttpRequestHelper::SERVER_SSL_CONTEXT::ACT);
 		_ACTSetCommonHeaderParameters(req, authInfo);
 		_ACTSetDeviceParameters(req, authInfo);
 		_ACTSetRegionAndCountryParameters(req, authInfo);
@@ -532,8 +531,8 @@ namespace NAPI
 			return result;
 		}
 		// do request
-		CurlRequestHelper req;
-		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/admin/mapped_ids?input_type=user_id&output_type=pid&input={}", _getACTUrl(authInfo.GetService()), nnid), CurlRequestHelper::SERVER_SSL_CONTEXT::ACT);
+		HttpRequestHelper req;
+		req.initate(authInfo.GetService(), fmt::format("{}/v1/api/admin/mapped_ids?input_type=user_id&output_type=pid&input={}", _getACTUrl(authInfo.GetService()), nnid), HttpRequestHelper::SERVER_SSL_CONTEXT::ACT);
 		_ACTSetCommonHeaderParameters(req, authInfo);
 		_ACTSetDeviceParameters(req, authInfo);
 		_ACTSetRegionAndCountryParameters(req, authInfo);

@@ -16,7 +16,6 @@
 #include "boss_common.h"
 
 #include "util/xml/Xml.h"
-#include <curl/curl.h>
 #include "util/crypto/sha.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
@@ -47,7 +46,7 @@ namespace iosu::boss
 	static constexpr nnResult RESULT_FADENTRY_NOTEXIST = 0xA021FB00;
 
 	template <typename ... TArgs>
-	void AppendHeaderParam(CurlRequestHelper& request, const char* fieldName, const char* format, TArgs&& ... args)
+	void AppendHeaderParam(HttpRequestHelper& request, const char* fieldName, const char* format, TArgs&& ... args)
 	{
 		request.addHeaderField(fieldName, fmt::format(fmt::runtime(format), std::forward<TArgs>(args)...).c_str());
 	}
@@ -379,7 +378,7 @@ namespace iosu::boss
 			return m_contentLength; // todo - unlike content length, this value is getting updated as the download happens. But for now we just return the content length
 		}
 
-		nnResult TaskDoRequest(CURL* curl)
+		nnResult TaskDoRequest()
 		{
 			std::unique_lock _l(m_mutex);
 			if (m_taskState != TaskState::Ready)
@@ -503,8 +502,8 @@ namespace iosu::boss
 				return BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_BOSS, 0);
 			}
 
-			CurlRequestHelper request;
-			request.initate(ActiveSettings::GetNetworkService(), requestUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::CUSTOM);
+			HttpRequestHelper request;
+			request.initate(ActiveSettings::GetNetworkService(), requestUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::CUSTOM);
 			// add certs
 			SetupSSL(request);
 			// parameters
@@ -676,7 +675,7 @@ namespace iosu::boss
 			return fileList;
 		}
 
-		void SetupSSL(CurlRequestHelper& request)
+		void SetupSSL(HttpRequestHelper& request)
 		{
 			request.ClearCaCertIds();
 			request.ClearClientCertIds();
@@ -711,8 +710,8 @@ namespace iosu::boss
 			}
 			cemuLog_log(LogType::Force, "\t- {} (DataId:{:08x} {}KB)", nbdlFile.fileName, nbdlFile.dataId, (nbdlFile.size+1023)/1024);
 
-			CurlRequestHelper request;
-			request.initate(ActiveSettings::GetNetworkService(), nbdlFile.url, CurlRequestHelper::SERVER_SSL_CONTEXT::CUSTOM);
+			HttpRequestHelper request;
+			request.initate(ActiveSettings::GetNetworkService(), nbdlFile.url, HttpRequestHelper::SERVER_SSL_CONTEXT::CUSTOM);
 			SetupSSL(request);
 
 			bool r = request.submitRequest();
@@ -973,14 +972,13 @@ namespace iosu::boss
 		void BossDaemonThread()
 		{
 			m_threadExited.store(false, std::memory_order_release);
-			CURL* curl = curl_easy_init();
 			while ( m_threadRunning )
 			{
 				// check for tasks to run
 				std::shared_ptr<RegisteredTask> task = GetNextRunableTask();
 				if (task)
 				{
-					task->TaskDoRequest(curl);
+					task->TaskDoRequest();
 					cemu_assert_debug(task->GetState() != TaskState::Ready);
 					// One left Ready would be picked again at once; upstream's
 					// pace of ten tries a second is the bound on that
@@ -994,7 +992,6 @@ namespace iosu::boss
 				// ten times a second
 				BossWake().WaitUntil([this] { return !m_threadRunning || HasRunnableTask(); });
 			}
-			curl_easy_cleanup(curl);
 			m_threadExited.store(true, std::memory_order_release);
 			BossWake().Notify(); // Stop
 		}

@@ -2,7 +2,6 @@
 #include "napi.h"
 #include "napi_helper.h"
 
-#include "curl/curl.h"
 #include "util/xml/Xml.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 
@@ -56,7 +55,7 @@ namespace NAPI
 
 	std::vector<uint8> IDBE_RequestRawEncrypted(NetworkService networkService, uint64 titleId)
 	{
-		CurlRequestHelper req;
+		HttpRequestHelper req;
 		std::string requestUrl;
 		switch (networkService)
 		{
@@ -72,7 +71,7 @@ namespace NAPI
 			break;
 		}
 		requestUrl.append(fmt::format(fmt::runtime("/{0:02X}/{1:016X}.idbe"), (uint32)((titleId >> 8) & 0xFF), titleId));
-		req.initate(networkService, requestUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::IDBE);
+		req.initate(networkService, requestUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::IDBE);
 
 		if (!req.submitRequest(false))
 		{

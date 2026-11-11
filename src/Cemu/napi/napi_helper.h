@@ -1,11 +1,13 @@
 #pragma once
 #include "napi.h"
-#include "curl/curl.h"
 #include "util/xml/Xml.h"
 
-typedef void CURL;
+struct http_xfer_tls;
 
-class CurlRequestHelper
+// One request at a time to a Nintendo-shaped server, over the core's HTTP
+// transfers (Common/http_xfer.h): its TLS set up from the console's
+// certificates for the server it is, its answer collected or handed on.
+class HttpRequestHelper
 {
 	struct HeaderExtraField
 	{
@@ -31,30 +33,23 @@ public:
 		CUSTOM, // use cert parameters
 	};
 
-	CurlRequestHelper();
-	~CurlRequestHelper();
-
-	CURL* getCURL()
-	{
-		return m_curl;
-	}
+	HttpRequestHelper();
+	~HttpRequestHelper();
 
 	void initate(NetworkService service, std::string url, SERVER_SSL_CONTEXT sslContext);
 	void addHeaderField(const char* fieldName, std::string_view value);
 	void addPostField(const char* fieldName, std::string_view value);
 	void setWriteCallback(bool(*cbWriteCallback)(void* userData, const void* ptr, size_t len, bool isLast), void* userData);
-	void setTimeout(sint32 timeoutSeconds); // maximum duration of the request after connecting. Set to zero to disable limit
+	void setTimeout(sint32 timeoutSeconds); // maximum duration of the request. Set to zero to disable limit
+	void setUserAgent(std::string_view userAgent);
+	// a part of a multipart/form-data body, sent in place of the post fields
+	void addFormField(const char* fieldName, std::string_view value);
 
 	bool submitRequest(bool isPost = false);
 
 	std::vector<uint8>& getReceivedData()
 	{
 		return m_receiveBuffer;
-	}
-
-	void setUseMultipartFormData(bool isUsingMultipartFormData)
-	{
-		m_isUsingMultipartFormData = isUsingMultipartFormData;
 	}
 
 	void ClearCaCertIds()
@@ -92,19 +87,27 @@ public:
 		return m_httpStatusCode;
 	}
 
-private:
-	static size_t __curlWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata);
+	// adds the certificates the server context names to a transfer's TLS
+	// settings (false: verify nothing)
+	static void SetupTLS(struct http_xfer_tls* tls, SERVER_SSL_CONTEXT ctx, const HttpRequestHelper* custom);
 
-	CURL* m_curl;
+private:
+	static bool OnBody(void* ctx, const void* data, size_t len);
+
+	std::string m_url;
+	NetworkService m_service{};
+	SERVER_SSL_CONTEXT m_sslContext{};
+	sint32 m_timeoutSeconds{60};
+	std::string m_userAgent;
 	std::vector<uint8> m_receiveBuffer;
 	// input parameters
 	std::vector<HeaderExtraField> m_headerExtraFields;
 	std::vector<uint8> m_postData;
+	std::vector<std::pair<std::string, std::string>> m_formFields;
 	// write callback redirect
 	bool (*m_cbWriteCallback)(void* userData, const void* ptr, size_t len, bool isLast);
 	void* m_writeCallbackUserData{};
 
-	bool m_isUsingMultipartFormData = false;
 	// cert data
 	std::vector<sint32> m_caCertIds;
 	std::vector<sint32> m_clientCertIds;
@@ -112,16 +115,10 @@ private:
 	sint32 m_httpStatusCode{ 0 };
 };
 
-class CurlSOAPHelper // todo - make this use CurlRequestHelper
+class HttpSOAPHelper
 {
 public:
-	CurlSOAPHelper(NetworkService service);
-	~CurlSOAPHelper();
-
-	CURL* getCURL()
-	{
-		return m_curl;
-	}
+	HttpSOAPHelper(NetworkService service);
 
 	void SOAP_initate(std::string_view serviceType, std::string url, std::string_view requestMethod, std::string_view requestVersion);
 
@@ -137,15 +134,8 @@ public:
 private:
 	void SOAP_generateEnvelope();
 
-	static size_t __curlWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata)
-	{
-		CurlSOAPHelper* curlHelper = (CurlSOAPHelper*)userdata;
-		sint32 writeByteSize = (sint32)(size * nmemb);
-		curlHelper->m_receiveBuffer.insert(curlHelper->m_receiveBuffer.end(), ptr, ptr + writeByteSize);
-		return writeByteSize;
-	}
-
-	CURL* m_curl;
+	NetworkService m_service;
+	std::string m_url;
 	std::vector<uint8> m_receiveBuffer;
 	// input parameters
 	std::string m_serviceType;
@@ -159,6 +149,6 @@ private:
 namespace NAPI
 {
 	bool _findXmlNode(xml::Node& doc, xml::Node& nodeOut, const char* name);
-	bool _parseResponseInit(const CurlSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode);
+	bool _parseResponseInit(const HttpSOAPHelper& soapHelper, const char* responseNodeName, xml::Node& node, _NAPI_CommonResultSOAP& result, xml::Document& doc, xml::Node& responseNode);
 
 };

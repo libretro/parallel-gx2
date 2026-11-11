@@ -100,11 +100,11 @@ namespace nn
 			return OLV_RESULT_SUCCESS;
 		}
 
-		sint32 MakeDiscoveryRequest_AsyncRequestImpl(CurlRequestHelper& req, const char* reqUrl)
+		sint32 MakeDiscoveryRequest_AsyncRequestImpl(HttpRequestHelper& req, const char* reqUrl)
 		{
 			bool reqResult = req.submitRequest();
 			long httpCode = 0;
-			curl_easy_getinfo(req.getCURL(), CURLINFO_RESPONSE_CODE, &httpCode);
+			httpCode = req.GetHTTPStatusCode();
 			if (!reqResult)
 			{
 				cemuLog_log(LogType::Force, "Failed request: {} ({})", reqUrl, httpCode);
@@ -164,7 +164,7 @@ namespace nn
 			return OLV_RESULT_SUCCESS;
 		}
 
-		sint32 MakeDiscoveryRequest_AsyncRequest(CurlRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent)
+		sint32 MakeDiscoveryRequest_AsyncRequest(HttpRequestHelper& req, const char* reqUrl, coreinit::OSEvent* requestDoneEvent)
 		{
 			sint32 res = MakeDiscoveryRequest_AsyncRequestImpl(req, reqUrl);
 			coreinit::OSSignalEvent(requestDoneEvent);
@@ -177,7 +177,7 @@ namespace nn
 			// Discovery request | https://discovery.olv.nintendo.net/v1/endpoint
 			// =============================================================================
 
-			CurlRequestHelper req;
+			HttpRequestHelper req;
 			std::string requestUrl;
 			switch (ActiveSettings::GetNetworkService())
 			{
@@ -193,7 +193,7 @@ namespace nn
 					break;
 			}
 
-			req.initate(ActiveSettings::GetNetworkService(), requestUrl, CurlRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
+			req.initate(ActiveSettings::GetNetworkService(), requestUrl, HttpRequestHelper::SERVER_SSL_CONTEXT::OLIVE);
 			InitializeOliveRequest(req);
 
 			StackAllocator<coreinit::OSEvent> requestDoneEvent;
