@@ -95,6 +95,4 @@ private:
 	const fst_table_t* m_table{}; // the volume's
 
 	FSTVolume(struct fst_volume* volume);
-	// takeSource: the volume closes the source, also when it does not open
-	static FSTVolume* OpenFST(struct fst_source* dataSource, bool takeSource, uint64 fstOffset, uint32 fstSize, const NCrypto::AesKey& partitionTitleKey, NCrypto::TMDParser* optionalTMD);
 };
