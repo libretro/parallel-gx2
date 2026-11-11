@@ -56,6 +56,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/zarchive.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_source.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_table.c \
+	$(CORE_DIR)/src/Cafe/Filesystem/FST/fst_volume.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUD/wud.c \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/wuhb.c \
 	$(CORE_DIR)/src/Common/shared_file.c \

@@ -20,6 +20,7 @@
 //    lent from the volume's pool, from a source that lends and one that
 //    does not (run under ThreadSanitizer by CI).
 #include "Cafe/Filesystem/FST/FST.h"
+#include <lrc_hash.h>
 #include "test_source.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
 #include "Cemu/Logging/CemuLogging.h"

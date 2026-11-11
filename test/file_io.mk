@@ -26,6 +26,8 @@ AES_C := $(SRC)/util/crypto/aes128.c
 AES_LRC_C := $(LRC)/crypto/crypto.c $(LRC)/features/features_cpu.c
 # A volume's file system table (C89), for the tests that open FST volumes
 FST_TABLE_C := $(SRC)/Cafe/Filesystem/FST/fst_table.c
+# A volume's files read and checked a block at a time (C89), over the table
+FST_VOLUME_C := $(SRC)/Cafe/Filesystem/FST/fst_volume.c
 # A file's octets mapped or read once (C89), under MappedFile.h, for the
 # tests that link anything that reads a file whole
 MAPPED_FILE_C := $(SRC)/util/helpers/mapped_file.c
