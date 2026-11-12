@@ -17,14 +17,8 @@ enum class CafeTitleFileType
 
 CafeTitleFileType DetermineCafeSystemFileType(fs::path filePath);
 
-struct ParsedAppXml
-{
-	uint64 title_id;
-	uint16 title_version;
-	uint32 app_type;
-	uint32 group_id;
-	uint32 sdk_version;
-};
+// code/app.xml (title_xml.h)
+using ParsedAppXml = title_app_t;
 
 enum class CosCapabilityGroup : uint32
 {
@@ -104,27 +98,45 @@ enum class CosCapabilityBitsFS : uint64
 };
 ENABLE_BITMASK_OPERATORS(CosCapabilityBitsFS);
 
-struct ParsedCosXml 
+// code/cos.xml (title_xml.h)
+struct ParsedCosXml
 {
-  public:
+	title_cos_t c{};
 
-	std::string argstr;
+	ParsedCosXml() { title_cos_free(&c); } // no argstr, every capability
+	ParsedCosXml(const ParsedCosXml& other) { title_cos_copy(&c, &other.c); }
+	ParsedCosXml& operator=(const ParsedCosXml&) = delete;
+	~ParsedCosXml() { title_cos_free(&c); }
 
-	struct Permission
+	std::string GetArgStr() const
 	{
-		CosCapabilityGroup group{CosCapabilityGroup::None};
-		CosCapabilityBits mask{CosCapabilityBits::All};
-	};
-	Permission permissions[19]{};
+		return c.argstr ? c.argstr : "";
+	}
 
-	static ParsedCosXml* Parse(uint8* xmlData, size_t xmlLen);
+	// nullptr if it is not a cos.xml
+	static ParsedCosXml* Parse(const uint8* xmlData, size_t xmlLen)
+	{
+		auto parsed = std::make_unique<ParsedCosXml>();
+		if (!title_cos_parse(xmlData, xmlLen, &parsed->c))
+			return nullptr;
+		return parsed.release();
+	}
+
+	// what a title with no cos.xml runs: argstr, every capability
+	static ParsedCosXml* Default(const char* argstr)
+	{
+		auto parsed = std::make_unique<ParsedCosXml>();
+		if (!title_cos_default(&parsed->c, argstr))
+			return nullptr;
+		return parsed.release();
+	}
 
 	CosCapabilityBits GetCapabilityBits(CosCapabilityGroup group) const
 	{
-		for (const auto& perm : permissions)
+		for (const auto& perm : c.permissions)
 		{
-			if (perm.group == group)
-				return perm.mask;
+			if (perm.group == (uint32)group)
+				return (CosCapabilityBits)perm.mask;
 		}
 		return CosCapabilityBits::All;
 	}
@@ -295,7 +307,6 @@ private:
 	bool DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataFormat& formatOut);
 	void CalcUID();
 	void SetInvalidReason(InvalidReason reason);
-	ParsedMetaXml* ParseAromaIni(std::span<unsigned char> content);
 	bool ParseAppXml(std::vector<uint8>& appXmlData);
 
 	bool m_isValid{ false };

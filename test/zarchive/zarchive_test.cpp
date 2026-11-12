@@ -353,6 +353,23 @@ static void TestMetaXml()
 	noId.erase(noId.find("  <title_id"), noId.find("</title_id>") + 12 - noId.find("  <title_id"));
 	CHECK(!parse(noId, &why) && why == "it has no title_id");
 	CHECK(!parse("", &why) && why == "it is empty");
+	// a language with no name falls back to English; a copy is its own
+	auto en = parse("<menu><title_id>1</title_id><shortname_en>E</shortname_en><longname_ja></longname_ja>"
+		"<longname_en>L</longname_en><product_code>P</product_code></menu>", nullptr);
+	CHECK(en && en->GetShortName(CafeConsoleLanguage::FR) == "E" && en->GetLongName(CafeConsoleLanguage::JA) == "L");
+	CHECK(en && en->GetCompanyCode().empty() && en->GetProductCode() == "P");
+	if (en)
+	{
+		ParsedMetaXml copy(*en);
+		en.reset();
+		CHECK(copy.GetShortName(CafeConsoleLanguage::EN) == "E" && copy.GetProductCode() == "P" && copy.GetTitleId() == 1);
+	}
+	// a WUHB's meta.ini
+	const std::string ini = "[menu]\nauthor=A\nlongname=L\nshortname=S\n";
+	std::unique_ptr<ParsedMetaXml> wuhb(ParsedMetaXml::ParseIni((const uint8*)ini.data(), ini.size()));
+	CHECK(wuhb && wuhb->GetShortName(CafeConsoleLanguage::DE) == "S" && wuhb->GetLongName(CafeConsoleLanguage::EN) == "L");
+	CHECK(wuhb && (wuhb->GetTitleId() >> 32) == 0x0005000F);
+	CHECK(!ParsedMetaXml::ParseIni((const uint8*)"[x]", 3));
 }
 
 static uint32 Be32(const uint8* p)

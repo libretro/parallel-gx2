@@ -517,6 +517,18 @@ test-fst-open:
     - make -C test/fst_open clean
     - SANITIZER=address,undefined ./test/fst_open/run_tests.sh
 
+# The C (C89) a title's meta.xml, meta.ini, app.xml and cos.xml are parsed in.
+test-title-xml:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/title_xml/run_tests.sh
+    - make -C test/title_xml clean
+    - SANITIZER=address,undefined ./test/title_xml/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

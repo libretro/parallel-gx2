@@ -63,6 +63,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Common/shared_file.c \
 	$(CORE_DIR)/src/Common/http_xfer.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_host.c \
+	$(CORE_DIR)/src/Cafe/TitleList/title_xml.c \
 	$(CORE_DIR)/src/util/crypto/aes128.c
 CORE_SOURCES_CXX :=
 CORE_SOURCES_ASM :=

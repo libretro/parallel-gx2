@@ -2,12 +2,9 @@
 #include "Cafe/Filesystem/fscDeviceHostFS.h"
 #include "Cafe/Filesystem/WUHB/wuhb.h"
 #include "Cafe/Filesystem/FST/FST.h"
-#include "util/xml/Xml.h"
 #include "Common/FileStream.h"
 #include "Common/FileStream.h"
 #include "Cafe/Filesystem/ZArchiveVFS.h"
-#include "util/IniParser/IniParser.h"
-#include "util/crypto/crc32.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/helpers.h"
 
@@ -570,11 +567,11 @@ bool TitleInfo::ParseXmlInfo()
 		// meta/meta.ini (WUHB)
 		auto iniData = fsc_extractFile(fmt::format("{}meta/meta.ini", mountPath).c_str());
 		if (iniData)
-			m_parsedMetaXml = ParseAromaIni(*iniData);
+			m_parsedMetaXml = ParsedMetaXml::ParseIni(iniData->data(), iniData->size());
 		if(m_parsedMetaXml)
 		{
-			m_parsedCosXml = new ParsedCosXml{.argstr = "root.rpx"};
-			m_parsedAppXml = new ParsedAppXml{m_parsedMetaXml->m_title_id, 0, 0, 0, 0};
+			m_parsedCosXml = ParsedCosXml::Default("root.rpx");
+			m_parsedAppXml = new ParsedAppXml{m_parsedMetaXml->GetTitleId(), 0, 0, 0, 0};
 		}
 	}
 
@@ -620,60 +617,12 @@ bool TitleInfo::ParseXmlInfo()
 	return true;
 }
 
-ParsedMetaXml* TitleInfo::ParseAromaIni(std::span<unsigned char> content)
-{
-	IniParser parser{content};
-	while (parser.NextSection() && parser.GetCurrentSectionName() != "menu")
-		continue;
-	if (parser.GetCurrentSectionName() != "menu")
-		return nullptr;
-
-	auto parsed = std::make_unique<ParsedMetaXml>();
-
-	const auto author = parser.FindOption("author");
-	if (author)
-		parsed->m_publisher[(size_t)CafeConsoleLanguage::EN] = *author;
-
-	const auto longName = parser.FindOption("longname");
-	if (longName)
-		parsed->m_long_name[(size_t)CafeConsoleLanguage::EN] = *longName;
-
-	const auto shortName = parser.FindOption("shortname");
-	if (shortName)
-		parsed->m_short_name[(size_t)CafeConsoleLanguage::EN] = *shortName;
-
-	auto checksumInput = std::string{*author}.append(*longName).append(*shortName);
-	parsed->m_title_id = (0x0005000Full<<32) | crc32_calc(checksumInput.data(), checksumInput.length());
-
-	return parsed.release();
-}
-
 bool TitleInfo::ParseAppXml(std::vector<uint8>& appXmlData)
 {
-	xml::Document app_doc;
-	if (!app_doc.load(appXmlData.data(), appXmlData.size()))
+	title_app_t app;
+	if (!title_app_parse(appXmlData.data(), appXmlData.size(), &app))
 		return false;
-
-	const auto root = app_doc.child("app");
-	if (!root)
-		return false;
-
-	m_parsedAppXml = new ParsedAppXml();
-
-	for (const auto& child : root.children())
-	{
-		std::string_view name = child.name();
-		if (name == "title_version")
-			m_parsedAppXml->title_version = (uint16)std::stoull(child.text().as_string(), nullptr, 16);
-		else if (name == "title_id")
-			m_parsedAppXml->title_id = std::stoull(child.text().as_string(), nullptr, 16);
-		else if (name == "app_type")
-			m_parsedAppXml->app_type = (uint32)std::stoull(child.text().as_string(), nullptr, 16);
-		else if (name == "group_id")
-			m_parsedAppXml->group_id = (uint32)std::stoull(child.text().as_string(), nullptr, 16);
-		else if (name == "sdk_version")
-			m_parsedAppXml->sdk_version = (uint32)std::stoull(child.text().as_string(), nullptr, 10);
-	}
+	m_parsedAppXml = new ParsedAppXml(app);
 	return true;
 }
 
@@ -781,7 +730,7 @@ std::string TitleInfo::GetArgStr() const
 	cemu_assert_debug(m_parsedCosXml);
 	if (!m_parsedCosXml)
 		return "";
-	return m_parsedCosXml->argstr;
+	return m_parsedCosXml->GetArgStr();
 }
 
 std::string TitleInfo::GetPrintPath() const
@@ -825,35 +774,4 @@ std::string TitleInfo::GetInstallPath() const
     else
 		tmp = fmt::format("usr/title/{:08x}/{:08x}", GetTitleIdHigh(titleId), GetTitleIdLow(titleId));
 	return tmp;
-}
-
-ParsedCosXml* ParsedCosXml::Parse(uint8* xmlData, size_t xmlLen)
-{
-	xml::Document app_doc;
-	if (!app_doc.load(xmlData, xmlLen))
-		return nullptr;
-
-	const auto root = app_doc.child("app");
-	if (!root)
-		return nullptr;
-
-	ParsedCosXml* parsedCos = new ParsedCosXml();
-
-	auto node = root.child("argstr");
-	if (node)
-		parsedCos->argstr = node.text().as_string();
-
-	// parse permissions
-	auto permissionsNode = root.child("permissions");
-	for(uint32 permissionIndex = 0; permissionIndex < 19; ++permissionIndex)
-	{
-		std::string permissionName = fmt::format("p{}", permissionIndex);
-		auto permissionNode = permissionsNode.child(permissionName.c_str());
-		if (!permissionNode)
-			break;
-		parsedCos->permissions[permissionIndex].group = static_cast<CosCapabilityGroup>(ConvertString<uint32>(permissionNode.child("group").text().as_string(), 10));
-		parsedCos->permissions[permissionIndex].mask = static_cast<CosCapabilityBits>(ConvertString<uint64>(permissionNode.child("mask").text().as_string(), 16));
-	}
-
-	return parsedCos;
 }

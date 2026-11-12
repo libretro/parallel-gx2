@@ -23,18 +23,18 @@ include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
 C_SRCS := $(LRC)/formats/zar/zar.c $(LRC)/formats/zar/zar_write.c \
 	$(LRC)/encodings/encoding_rzstd.c $(LRC)/encodings/encoding_xxh64.c \
-	$(LRC)/hash/lrc_hash.c $(LRC)/features/features_cpu.c \
+	$(LRC)/hash/lrc_hash.c \
 	$(LRC)/streams/file_stream.c $(LRC)/vfs/vfs_implementation.c \
 	$(LRC)/file/file_path.c $(LRC)/file/file_path_io.c \
 	$(LRC)/string/stdstring.c $(LRC)/string/rstrtod.c \
 	$(LRC)/encodings/encoding_utf.c $(LRC)/compat/compat_strl.c \
 	$(LRC)/compat/compat_posix_string.c $(LRC)/compat/fopen_utf8.c \
-	$(LRC)/time/rtime.c $(LRC)/formats/xml/rxml.c \
+	$(LRC)/time/rtime.c $(TITLE_XML_LRC_C) \
 	$(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
-CORE_C_SRCS := $(SRC)/Cafe/Filesystem/zarchive.c $(SRC)/Common/shared_file.c $(RCU_C)
-CXX_SRCS := zarchive_test.cpp $(SRC)/util/xml/Xml.cpp
+CORE_C_SRCS := $(SRC)/Cafe/Filesystem/zarchive.c $(SRC)/Common/shared_file.c $(RCU_C) $(TITLE_XML_C)
+CXX_SRCS := zarchive_test.cpp
 
-zarchive_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/zarchive.h $(SRC)/Cafe/Filesystem/ZArchiveVFS.h $(SRC)/Cafe/TitleList/ParsedMetaXml.h $(SRC)/util/xml/Xml.h
+zarchive_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(CORE_C_SRCS) $(SRC)/Cafe/Filesystem/zarchive.h $(SRC)/Cafe/Filesystem/ZArchiveVFS.h $(SRC)/Cafe/TitleList/ParsedMetaXml.h $(SRC)/Cafe/TitleList/title_xml.h
 	for f in $(C_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
 	for f in $(CORE_C_SRCS); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@

@@ -4,6 +4,7 @@
 #include "util/helpers/EventWake.h"
 
 #include "util/helpers/helpers.h"
+#include "util/xml/Xml.h"
 
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 

@@ -1,160 +1,91 @@
 #pragma once
 
-#include "util/xml/Xml.h"
 #include "config/CemuConfig.h"
 #include "Cafe/TitleList/TitleId.h"
+#include "Cafe/TitleList/title_xml.h"
 
+// A title's meta/meta.xml (or a WUHB's meta/meta.ini), parsed in C
+// (title_xml.h)
 struct ParsedMetaXml
 {
-	uint32 m_version;
-	std::string m_product_code;
-	std::string m_company_code;
-	std::string m_content_platform;
-	uint64 m_title_id;
-	CafeConsoleRegion m_region;
+	title_meta_t m{};
 
-	std::array<std::string, 12> m_long_name;
-	std::array<std::string, 12> m_short_name;
-	std::array<std::string, 12> m_publisher;
-
-	uint32 m_olv_accesskey;
+	ParsedMetaXml() = default;
+	ParsedMetaXml(const ParsedMetaXml& other) { title_meta_copy(&m, &other.m); }
+	ParsedMetaXml& operator=(const ParsedMetaXml&) = delete;
+	~ParsedMetaXml() { title_meta_free(&m); }
 
 	std::string GetShortName(CafeConsoleLanguage languageId) const
 	{
-		return m_short_name[(size_t)languageId].empty() ? m_short_name[(size_t)CafeConsoleLanguage::EN] : m_short_name[(size_t)languageId];
+		return Named(m.short_name, languageId);
 	}
 
 	std::string GetLongName(CafeConsoleLanguage languageId) const
 	{
-		return m_long_name[(size_t)languageId].empty() ? m_long_name[(size_t)CafeConsoleLanguage::EN] : m_long_name[(size_t)languageId];
+		return Named(m.long_name, languageId);
 	}
 
 	TitleId GetTitleId() const
 	{
-		return m_title_id;
+		return m.title_id;
 	}
 
 	uint16 GetTitleVersion() const
 	{
-		return (uint16)m_version;
+		return (uint16)m.version;
 	}
 
 	CafeConsoleRegion GetRegion() const
 	{
-		return m_region;
+		return (CafeConsoleRegion)m.region;
 	}
 
 	std::string GetProductCode() const
 	{
-		return m_product_code;
+		return m.product_code ? m.product_code : "";
 	}
 
 	std::string GetCompanyCode() const
 	{
-		return m_company_code;
+		return m.company_code ? m.company_code : "";
 	}
 
 	uint32 GetOlvAccesskey() const
 	{
-		return m_olv_accesskey;
+		return m.olv_accesskey;
 	}
 
 	// nullptr if it is not a meta.xml, and then in @whyNot, if given, which
 	// part of one it lacks
 	static ParsedMetaXml* Parse(const uint8* xmlData, size_t xmlSize, std::string* whyNot = nullptr)
 	{
-		auto fail = [&](std::string why) -> ParsedMetaXml* {
+		char why[256] = {};
+		auto parsed = std::make_unique<ParsedMetaXml>();
+		if (!title_meta_parse(xmlData, xmlSize, &parsed->m, why, sizeof(why)))
+		{
 			if (whyNot)
-				*whyNot = std::move(why);
+				*whyNot = why;
 			return nullptr;
-		};
-		if (xmlSize == 0)
-			return fail("it is empty");
-		xml::Document meta_doc;
-		if (!meta_doc.load(xmlData, xmlSize))
-			return fail(fmt::format("it is {} bytes that do not parse as XML: not well-formed at offset {}", xmlSize, (sint64)meta_doc.error_offset()));
-
-		const auto root = meta_doc.child("menu");
-		if (!root)
-			return fail(fmt::format("its root element is <{}>, not <menu>", meta_doc.document_element().name()));
-
-		ParsedMetaXml* parsedMetaXml = new ParsedMetaXml();
-
-		for (const auto& child : root.children())
-		{
-			std::string_view name = child.name();
-			if (name == "title_version")
-				parsedMetaXml->m_version = child.text().as_uint();
-			else if (name == "product_code")
-				parsedMetaXml->m_product_code = child.text().as_string();
-			else if (name == "company_code")
-				parsedMetaXml->m_company_code = child.text().as_string();
-			else if (name == "content_platform")
-				parsedMetaXml->m_content_platform = child.text().as_string();
-			else if (name == "title_id")
-				parsedMetaXml->m_title_id = std::stoull(child.text().as_string(), nullptr, 16);
-			else if (name == "region")
-				parsedMetaXml->m_region = (CafeConsoleRegion)child.text().as_uint();
-			else if (boost::starts_with(name, "longname_"))
-			{
-				const sint32 index = GetLanguageIndex(name.substr(std::size("longname_") - 1));
-				if (index != -1){
-					std::string longname = child.text().as_string();
-					std::replace_if(longname.begin(), longname.end(), [](char c) { return c == '\r' || c == '\n';}, ' ');
-					parsedMetaXml->m_long_name[index] = longname;
-				}
-			}
-			else if (boost::starts_with(name, L"shortname_"))
-			{
-				const sint32 index = GetLanguageIndex(name.substr(std::size("shortname_") - 1));
-				if (index != -1)
-					parsedMetaXml->m_short_name[index] = child.text().as_string();
-			}
-			else if (boost::starts_with(name, L"publisher_"))
-			{
-				const sint32 index = GetLanguageIndex(name.substr(std::size("publisher_") - 1));
-				if (index != -1)
-					parsedMetaXml->m_publisher[index] = child.text().as_string();
-			}
-			else if (boost::starts_with(name, L"olv_accesskey"))
-				parsedMetaXml->m_olv_accesskey = child.text().as_uint(-1);
 		}
-		if (parsedMetaXml->m_title_id == 0)
-		{
-			// not valid
-			delete parsedMetaXml;
-			return fail("it has no title_id");
-		}
-		return parsedMetaXml;
+		return parsed.release();
+	}
+
+	// a WUHB's meta/meta.ini; nullptr if it has no [menu]
+	static ParsedMetaXml* ParseIni(const uint8* iniData, size_t iniSize)
+	{
+		auto parsed = std::make_unique<ParsedMetaXml>();
+		if (!title_meta_parse_ini(iniData, iniSize, &parsed->m))
+			return nullptr;
+		return parsed.release();
 	}
 
 private:
-	static sint32 GetLanguageIndex(std::string_view language) // move to NCrypto ?
+	// the language's, or the English one when it has none
+	static std::string Named(char* const (&names)[TITLE_LANGUAGES], CafeConsoleLanguage languageId)
 	{
-		if (language == "ja")
-			return (sint32)CafeConsoleLanguage::JA;
-		else if (language == "en")
-			return (sint32)CafeConsoleLanguage::EN;
-		else if (language == "fr")
-			return (sint32)CafeConsoleLanguage::FR;
-		else if (language == "de")
-			return (sint32)CafeConsoleLanguage::DE;
-		else if (language == "it")
-			return (sint32)CafeConsoleLanguage::IT;
-		else if (language == "es")
-			return (sint32)CafeConsoleLanguage::ES;
-		else if (language == "zhs")
-			return (sint32)CafeConsoleLanguage::ZH;
-		else if (language == "ko")
-			return (sint32)CafeConsoleLanguage::KO;
-		else if (language == "nl")
-			return (sint32)CafeConsoleLanguage::NL;
-		else if (language == "pt")
-			return (sint32)CafeConsoleLanguage::PT;
-		else if (language == "ru")
-			return (sint32)CafeConsoleLanguage::RU;
-		else if (language == "zht")
-			return (sint32)CafeConsoleLanguage::TW; // if return ZH here, xxx_zht values may cover xxx_zh values in function Parse()
-		return -1;
+		const char* n = names[(size_t)languageId];
+		if (!n || !*n)
+			n = names[(size_t)CafeConsoleLanguage::EN];
+		return n ? n : "";
 	}
 };
