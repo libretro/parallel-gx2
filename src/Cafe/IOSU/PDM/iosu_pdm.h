@@ -18,24 +18,6 @@ namespace iosu
 
 		uint32 GetDiaryEntries(uint8 accountSlot, PlayDiaryEntry* diaryEntries, uint32 maxEntries);
 
-		/* Helper for UI game list */
-		struct GameListStat
-		{
-			struct LastPlayDate
-			{
-				uint32 year; // if 0 -> never played
-				uint32 month;
-				uint32 day;
-
-				bool operator<(const LastPlayDate& b) const;
-				bool operator==(const LastPlayDate& b) const;
-				std::weak_ordering operator<=>(const LastPlayDate& b) const;
-			}last_played;
-			uint32 numMinutesPlayed;
-		};
-
-		bool GetStatForGamelist(uint64 titleId, GameListStat& stat);
-
 		IOSUModule* GetModule();
 	};
 };
