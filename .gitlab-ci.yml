@@ -630,6 +630,20 @@ test-host-fs:
     - make -C test/host_fs clean
     - SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+# The C (C89) a DLC's title.tik is read in for the contents it grants, every
+# offset in it checked.
+test-eticket:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/eticket/run_tests.sh
+    - make -C test/eticket clean
+    - SANITIZER=address,undefined ./test/eticket/run_tests.sh
+
 # The C (C89) a Miiverse post's memo and picture are read from OfflineDB.zar
 # in, and the posts picked.
 test-olv-offline:

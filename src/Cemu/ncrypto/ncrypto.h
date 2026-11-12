@@ -101,55 +101,6 @@ namespace NCrypto
 
 	/* ETicket */
 
-	class ETicketParser  // .tik parser
-	{
-	public:
-		bool parse(const uint8* data, size_t size);
-		static bool Depersonalize(uint8* ticketData, size_t ticketSize, uint32 deviceId, const ECCPrivKey& devicePrivKey);
-
-		uint64 GetTicketId() const
-		{
-			return m_ticketId;
-		}
-
-		uint64 GetTitleId() const
-		{
-			return m_titleId;
-		}
-
-		uint16 GetTicketVersion() const
-		{
-			return m_titleVersion;
-		}
-
-		void GetTitleKey(AesKey& key);
-
-		bool IsPersonalized()
-		{
-			return m_isPersonalized;
-		}
-
-		bool CheckRight(size_t index)
-		{
-			if (index >= m_contentRights.size())
-				return false;
-			return m_contentRights[index];
-		}
-
-	private:
-		uint64 m_titleId;
-		uint16 m_titleVersion;
-		uint64 m_ticketId;
-		uint8 m_ticketFormatVersion;
-		uint8 m_encryptedTitleKey[16];
-		// personalized data
-		bool m_isPersonalized;
-		uint32 m_deviceId;
-		ECCPubKey m_publicKey;
-		// rights
-		std::vector<bool> m_contentRights;
-	};
-
 	/* Title meta data */
 
 	class TMDParser

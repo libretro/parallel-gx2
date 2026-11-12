@@ -6,7 +6,7 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/TitleList/TitleId.h"
 
-#include "Cemu/ncrypto/ncrypto.h"
+#include "Cemu/ncrypto/eticket.h"
 #include "Common/FileStream.h"
 
 namespace nn
@@ -97,9 +97,13 @@ namespace nn
 			return AOC_RESULT::ERROR_OK;
 		}
 
+		// The path AOC_ListTitle put in the entry: no more than its 88 octets,
+		// whatever the game has done to it since, its NUL included
 		AOC_RESULT AOC_OpenTitle(char* pathOut, AOCTitle* aocTitleInfo, void* workBuffer, uint32 workBufferSize)
 		{
-			strcpy(pathOut, aocTitleInfo->path);
+			const size_t len = strnlen(aocTitleInfo->path, sizeof(aocTitleInfo->path) - 1);
+			memcpy(pathOut, aocTitleInfo->path, len);
+			pathOut[len] = '\0';
 			return AOC_RESULT::ERROR_OK;
 		}
 
@@ -116,24 +120,23 @@ namespace nn
 			MappedFile tikData(ticketPath);
 			if (tikData.size() > 0)
 			{
-				NCrypto::ETicketParser eTicket;
-				if (eTicket.parse(tikData.data(), tikData.size()))
+				// read in C (eticket.c), every offset in it checked against the
+				// file's size
+				static_assert(sizeof(eticket_t) < 1024);
+				eticket_t eTicket;
+				const eticket_error r = eticket_parse(tikData.data(), tikData.size(), &eTicket);
+				if (eTicket.warnings & ETICKET_SKIPPED_RIGHTS)
+					cemuLog_log(LogType::Force, "ETicket: Invalid content rights index");
+				if (r == ETICKET_OK)
 				{
 					for (uint32 i = 0; i < entryCount; i++)
-					{
-						uint16 id = entryIds[i];
-						if (eTicket.CheckRight(id))
-							purchaseBoolArrayOut[i] = 1;
-						else
-							purchaseBoolArrayOut[i] = 0;
-					}
+						purchaseBoolArrayOut[i] = eticket_right(&eTicket, entryIds[i]) ? 1 : 0;
 					cemuLog_log(LogType::Force, "Using content rights from AOC title.tik");
 					return AOC_RESULT::ERROR_OK;
 				}
-				else
-				{
-					cemuLog_log(LogType::Force, "Unable to parse AOC title.tik");
-				}
+				if (r == ETICKET_BAD_RIGHTS_SIZE)
+					cemuLog_log(LogType::Force, "ETicket: Failed to parse ticket with invalid rights size");
+				cemuLog_log(LogType::Force, "Unable to parse AOC title.tik");
 			}
 
 			// fallback: return true for all contentIds
