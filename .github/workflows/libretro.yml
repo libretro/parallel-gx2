@@ -469,6 +469,16 @@ jobs:
           make -C test/host_fs clean
           SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+      - name: "Offline Miiverse posts"
+        # the C (C89) a post's memo and picture are read from OfflineDB.zar
+        # in, and the posts picked; plain, under TSan and under ASan + UBSan
+        run: |
+          ./test/olv_offline/run_tests.sh
+          make -C test/olv_offline clean
+          SANITIZER=thread ./test/olv_offline/run_tests.sh
+          make -C test/olv_offline clean
+          SANITIZER=address,undefined ./test/olv_offline/run_tests.sh
+
       - name: "Play statistics and diary"
         # the C (C89) PlayStats.dat and PlayDiary.dat are kept in and the
         # thread that counts the minutes played; plain, under TSan and under

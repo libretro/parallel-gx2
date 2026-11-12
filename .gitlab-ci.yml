@@ -630,6 +630,21 @@ test-host-fs:
     - make -C test/host_fs clean
     - SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+# The C (C89) a Miiverse post's memo and picture are read from OfflineDB.zar
+# in, and the posts picked.
+test-olv-offline:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/olv_offline/run_tests.sh
+    - make -C test/olv_offline clean
+    - SANITIZER=thread ./test/olv_offline/run_tests.sh
+    - make -C test/olv_offline clean
+    - SANITIZER=address,undefined ./test/olv_offline/run_tests.sh
+
 # The C (C89) the play statistics and diary are kept in, and the thread that
 # counts the minutes played.
 test-pdm:

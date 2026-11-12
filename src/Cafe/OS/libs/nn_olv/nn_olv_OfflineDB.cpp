@@ -6,8 +6,8 @@
 #include "config/ActiveSettings.h"
 #include "Cafe/CafeSystem.h"
 #include "util/xml/Xml.h"
-#include "util/helpers/Deflate.h"
 #include "Cafe/Filesystem/zarchive.h"
+#include "olv_offline.h"
 #include "Common/FileStream.h"
 #include "util/helpers/OnceGate.h"
 
@@ -39,81 +39,42 @@ namespace nn
 			g_offlineDBOpened.Reset();
 		}
 
-		static bool LookUpOfflineDBFile(const char* filePath, zar_file_t& file)
+		// a post's files, by its id: the memo and the picture (olv_offline.c)
+		static bool PostFileName(char (&name)[64], const char* dir, const DownloadedDataBase& post, const char* ext)
 		{
-			return g_offlineDBArchive && zarchive_lookup(g_offlineDBArchive, filePath, strlen(filePath), &file) && !file.dir;
-		}
-
-		bool CheckForOfflineDBFile(const char* filePath, uint32* fileSize)
-		{
-			zar_file_t file;
-			if (!LookUpOfflineDBFile(filePath, file))
-				return false;
-			if(fileSize)
-				*fileSize = (uint32)file.size;
-			return true;
-		}
-
-		bool LoadOfflineDBFile(const char* filePath, std::vector<uint8>& fileData)
-		{
-			fileData.clear();
-			zar_file_t file;
-			if (!LookUpOfflineDBFile(filePath, file))
-				return false;
-			fileData.resize(file.size);
-			return zarchive_read(g_offlineDBArchive, &file, 0, fileData.data(), fileData.size()) == fileData.size();
+			return olv_offline_name(name, sizeof(name), dir, (const uint8*)post.postId, sizeof(post.postId), ext);
 		}
 
 		void TryLoadCompressedMemoImage(DownloadedPostData& downloadedPostData)
 		{
-			const unsigned char tgaHeader_320x120_32BPP[] = {0x0,0x0,0x2,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x40,0x1,0x78,0x0,0x20,0x8};
-			std::string memoImageFilename = fmt::format("memo/{}", (char*)downloadedPostData.downloadedDataBase.postId);
-			std::vector<uint8> bitmaskCompressedImg;
-			if (!LoadOfflineDBFile(memoImageFilename.c_str(), bitmaskCompressedImg))
+			auto& post = downloadedPostData.downloadedDataBase;
+			char name[64];
+			uint32 size = 0;
+			if (!PostFileName(name, "memo/", post, "") ||
+				!olv_offline_memo(g_offlineDBArchive, name, (uint8*)post.compressedMemoBody, sizeof(post.compressedMemoBody), &size))
 				return;
-			if (bitmaskCompressedImg.size() != (320*120)/8)
-				return;
-			std::vector<uint8> decompressedImage;
-			decompressedImage.resize(sizeof(tgaHeader_320x120_32BPP) + 320 * 120 * 4);
-			memcpy(decompressedImage.data(), tgaHeader_320x120_32BPP, sizeof(tgaHeader_320x120_32BPP));
-			uint8* pOut = decompressedImage.data() + sizeof(tgaHeader_320x120_32BPP);
-			for(int i=0; i<320*120; i++)
-			{
-				bool isWhite = (bitmaskCompressedImg[i/8] & (1 << (i%8))) != 0;
-				if(isWhite)
-				{
-					pOut[0] = pOut[1] = pOut[2] = pOut[3] = 0xFF;
-				}
-				else
-				{
-					pOut[0] = pOut[1] = pOut[2] = 0;
-					pOut[3] = 0xFF;
-				}
-				pOut += 4;
-			}
-			// store compressed image
-			size_t compressedDestLen = 40960;
-			if (!Deflate::Compress((uint8*)downloadedPostData.downloadedDataBase.compressedMemoBody, compressedDestLen, decompressedImage.data(), decompressedImage.size()))
-				return;
-			downloadedPostData.downloadedDataBase.compressedMemoBodySize = compressedDestLen;
-			downloadedPostData.downloadedDataBase.SetFlag(DownloadedDataBase::FLAGS::HAS_BODY_MEMO);
+			post.compressedMemoBodySize = size;
+			post.SetFlag(DownloadedDataBase::FLAGS::HAS_BODY_MEMO);
 		}
 
 		void CheckForExternalImage(DownloadedPostData& downloadedPostData)
 		{
-			std::string externalImageFilename = fmt::format("image/{}.jpg", (char*)downloadedPostData.downloadedDataBase.postId);
-			uint32 fileSize;
-			if (!CheckForOfflineDBFile(externalImageFilename.c_str(), &fileSize))
+			auto& post = downloadedPostData.downloadedDataBase;
+			char name[64];
+			uint32 size = 0;
+			if (!PostFileName(name, "image/", post, ".jpg") || strlen(name) >= sizeof(post.externalImageDataUrl) ||
+				!olv_offline_size(g_offlineDBArchive, name, &size))
 				return;
-			strcpy((char*)downloadedPostData.downloadedDataBase.externalImageDataUrl, externalImageFilename.c_str());
-			downloadedPostData.downloadedDataBase.SetFlag(DownloadedDataBase::FLAGS::HAS_EXTERNAL_IMAGE);
-			downloadedPostData.downloadedDataBase.externalImageDataSize = fileSize;
+			strcpy((char*)post.externalImageDataUrl, name);
+			post.SetFlag(DownloadedDataBase::FLAGS::HAS_EXTERNAL_IMAGE);
+			post.externalImageDataSize = size;
 		}
 
-		nnResult _Async_OfflineDB_DownloadPostDataListParam_DownloadPostDataList(coreinit::OSEvent* event, DownloadedTopicData* downloadedTopicData, DownloadedPostData* downloadedPostData, uint32be* postCountOut, uint32 maxCount, DownloadPostDataListParam* param)
+		// Done on the calling thread, as the console's own call blocks it: the
+		// archive is read from memory, where each call started a thread to do
+		// it and waited for that.
+		static nnResult DownloadPostDataList(DownloadedTopicData* downloadedTopicData, DownloadedPostData* downloadedPostData, uint32be* postCountOut, uint32 maxCount)
 		{
-			stdx::scope_exit _se([&](){coreinit::OSSignalEvent(event);});
-
 			uint64 titleId = CafeSystem::GetForegroundTitleId();
 
 			memset(downloadedTopicData, 0, sizeof(DownloadedTopicData));
@@ -128,8 +89,11 @@ namespace nn
 				return OLV_RESULT_SUCCESS;
 
 			// load post XML
-			std::vector<uint8> xmlData;
-			if (!LoadOfflineDBFile(postXmlFilename, xmlData))
+			uint32 xmlSize = 0;
+			if (!olv_offline_size(g_offlineDBArchive, postXmlFilename, &xmlSize))
+				return OLV_RESULT_SUCCESS;
+			std::vector<uint8> xmlData(xmlSize);
+			if (olv_offline_read(g_offlineDBArchive, postXmlFilename, xmlData.data(), xmlSize, &xmlSize) != OLV_OFFLINE_OK)
 				return OLV_RESULT_SUCCESS;
 			xml::Document doc;
 			bool result = doc.load(xmlData.data(), xmlData.size());
@@ -141,24 +105,26 @@ namespace nn
 				postXmlNodes.push_back(postNode);
 
 			// randomly select up to maxCount posts
-			srand(GetTickCount());
-			uint32 postCount = 0;
-			while(!postXmlNodes.empty() && postCount < maxCount)
+			struct Pick
 			{
-				uint32 index = rand() % postXmlNodes.size();
-				xml::Node& postNode = postXmlNodes[index];
-
-				auto& addedPost = downloadedPostData[postCount];
-				memset(&addedPost, 0, sizeof(DownloadedPostData));
-				if (!ParseXML_DownloadedPostData(addedPost, postNode) )
-					continue;
-				TryLoadCompressedMemoImage(addedPost);
-				CheckForExternalImage(addedPost);
-				postCount++;
-				// remove from post list
-				postXmlNodes[index] = postXmlNodes.back();
-				postXmlNodes.pop_back();
-			}
+				std::vector<xml::Node>& nodes;
+				DownloadedPostData* out;
+			} pick{postXmlNodes, downloadedPostData};
+			std::vector<uint32> pool(postXmlNodes.size());
+			const uint32 postCount = olv_offline_pick((uint32)postXmlNodes.size(), maxCount, GetTickCount(), pool.data(),
+				[](void* ud, uint32 index, uint32 slot) -> bool {
+					Pick& p = *(Pick*)ud;
+					auto& addedPost = p.out[slot];
+					memset(&addedPost, 0, sizeof(DownloadedPostData));
+					if (!ParseXML_DownloadedPostData(addedPost, p.nodes[index]))
+					{
+						memset(&addedPost, 0, sizeof(DownloadedPostData));
+						return false;
+					}
+					TryLoadCompressedMemoImage(addedPost);
+					CheckForExternalImage(addedPost);
+					return true;
+				}, &pick);
 			*postCountOut = postCount;
 			return OLV_RESULT_SUCCESS;
 		}
@@ -174,41 +140,30 @@ namespace nn
 			if(param->_HasFlag(DownloadPostDataListParam::FLAGS::SELF_ONLY))
 				return OLV_RESULT_SUCCESS; // the offlineDB doesn't contain any self posts
 
-			StackAllocator<coreinit::OSEvent> doneEvent;
-			coreinit::OSInitEvent(&doneEvent, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_MANUAL);
-			auto asyncTask = std::async(std::launch::async, _Async_OfflineDB_DownloadPostDataListParam_DownloadPostDataList, doneEvent.GetPointer(), downloadedTopicData, downloadedPostData, postCountOut, maxCount, param);
-			coreinit::OSWaitEvent(&doneEvent);
-			nnResult r = asyncTask.get();
-			return r;
+			return DownloadPostDataList(downloadedTopicData, downloadedPostData, postCountOut, maxCount);
 		}
 
-		nnResult _Async_OfflineDB_DownloadPostDataListParam_DownloadExternalImageData(coreinit::OSEvent* event, DownloadedDataBase* _this, void* imageDataOut, uint32be* imageSizeOut, uint32 maxSize)
-		{
-			stdx::scope_exit _se([&](){coreinit::OSSignalEvent(event);});
-
-			if (!_this->TestFlags(_this, DownloadedDataBase::FLAGS::HAS_EXTERNAL_IMAGE))
-				return OLV_RESULT_MISSING_DATA;
-
-			// not all games may use JPEG files?
-			std::string externalImageFilename = fmt::format("image/{}.jpg", (char*)_this->postId);
-			std::vector<uint8> jpegData;
-			if (!LoadOfflineDBFile(externalImageFilename.c_str(), jpegData))
-				return OLV_RESULT_FAILED_REQUEST;
-
-			memcpy(imageDataOut, jpegData.data(), jpegData.size());
-			*imageSizeOut = jpegData.size();
-
-			return OLV_RESULT_SUCCESS;
-		}
-
+		// The picture into imageDataOut, maxSize octets of room: one that does
+		// not fit is refused, where it was copied whole past the end of it
 		nnResult OfflineDB_DownloadPostDataListParam_DownloadExternalImageData(DownloadedDataBase* _this, void* imageDataOut, uint32be* imageSizeOut, uint32 maxSize)
 		{
-			StackAllocator<coreinit::OSEvent> doneEvent;
-			coreinit::OSInitEvent(&doneEvent, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_MANUAL);
-			auto asyncTask = std::async(std::launch::async, _Async_OfflineDB_DownloadPostDataListParam_DownloadExternalImageData, doneEvent.GetPointer(), _this, imageDataOut, imageSizeOut, maxSize);
-			coreinit::OSWaitEvent(&doneEvent);
-			nnResult r = asyncTask.get();
-			return r;
+			if (!_this->TestFlags(_this, DownloadedDataBase::FLAGS::HAS_EXTERNAL_IMAGE))
+				return OLV_RESULT_MISSING_DATA;
+			// not all games may use JPEG files?
+			char name[64];
+			if (!PostFileName(name, "image/", *_this, ".jpg"))
+				return OLV_RESULT_FAILED_REQUEST;
+			uint32 size = 0;
+			switch (olv_offline_read(g_offlineDBArchive, name, imageDataOut, maxSize, &size))
+			{
+			case OLV_OFFLINE_OK:
+				*imageSizeOut = size;
+				return OLV_RESULT_SUCCESS;
+			case OLV_OFFLINE_TOO_LARGE:
+				return OLV_RESULT_NOT_ENOUGH_SIZE;
+			default:
+				return OLV_RESULT_FAILED_REQUEST;
+			}
 		}
 
 	}
