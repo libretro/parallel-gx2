@@ -4,11 +4,14 @@
  * with comments, quotes, sections around [menu] and keys missing, its
  * title id the CRC-32 the old reader made; an app.xml's hex and decimal
  * fields as stoull read them; a cos.xml's argstr and permissions as
- * ConvertString read them. C89, as the C89 lane builds it. */
+ * ConvertString read them; and the CRC-32 the RPL loader takes. C89, as
+ * the C89 lane builds it. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <encodings/crc32.h>
 
 #include "Cafe/TitleList/title_xml.h"
 
@@ -364,8 +367,28 @@ static void test_cos(void)
    title_cos_free(&c);
 }
 
+/* The CRC-32 the RPL loader checks sections with and chains over a
+ * module's patch description (rpl.cpp): the value the core's own CRC-32
+ * self-test wanted, and the same chained in pieces of each length its
+ * table-at-a-time path takes */
+static void test_crc(void)
+{
+   uint8_t data[89];
+   uint32_t crc;
+   int i;
+   for (i = 0; i < 89; i++)
+      data[i] = (uint8_t)i;
+   CHECK(encoding_crc32(0, data, sizeof(data)) == 0x3FC61683UL);
+   crc = encoding_crc32(0, data, 5);
+   crc = encoding_crc32(crc, data + 5, 17);
+   crc = encoding_crc32(crc, data + 22, 0);
+   crc = encoding_crc32(crc, data + 22, 67);
+   CHECK(crc == 0x3FC61683UL);
+}
+
 int main(void)
 {
+   test_crc();
    test_meta();
    test_meta_numbers();
    test_ini();

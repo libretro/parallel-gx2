@@ -37,7 +37,8 @@ MAPPED_FILE_C := $(SRC)/util/helpers/mapped_file.c
 # anything that keeps one
 RCU_C := $(SRC)/util/helpers/rcu_cell.c
 # A title's meta.xml, meta.ini, app.xml and cos.xml parsed (C89), under
-# ParsedMetaXml.h and TitleInfo.h, and what it needs of libretro-common
-TITLE_XML_C := $(SRC)/Cafe/TitleList/title_xml.c
+# ParsedMetaXml.h and TitleInfo.h (with the ini reader the meta.ini takes),
+# and what it needs of libretro-common
+TITLE_XML_C := $(SRC)/Cafe/TitleList/title_xml.c $(SRC)/util/IniParser/ini_file.c
 TITLE_XML_LRC_C := $(LRC)/formats/xml/rxml.c $(LRC)/encodings/encoding_crc32.c \
 	$(LRC)/features/features_cpu.c

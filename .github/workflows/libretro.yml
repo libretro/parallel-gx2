@@ -379,6 +379,14 @@ jobs:
           make -C test/title_xml clean
           SANITIZER=address,undefined ./test/title_xml/run_tests.sh
 
+      - name: "Ini files"
+        # the C (C89) rules.txt, game profiles and a WUHB's meta.ini are read
+        # with, and the C++ walk over it; plain and under ASan + UBSan
+        run: |
+          ./test/ini_file/run_tests.sh
+          make -C test/ini_file clean
+          SANITIZER=address,undefined ./test/ini_file/run_tests.sh
+
       - name: "FST volume reads"
         # the C (C89) a volume's files are read and checked in: raw clusters
         # against the TMD's content hashes, right, wrong and of a size not a

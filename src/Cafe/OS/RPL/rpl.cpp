@@ -10,7 +10,7 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "util/ChunkedHeap/ChunkedHeap.h"
 
-#include "util/crypto/crc32.h"
+#include <encodings/crc32.h>
 #include "util/helpers/Deflate.h"
 #include "config/ActiveSettings.h"
 #include "Cafe/OS/libs/coreinit/coreinit_DynLoad.h"
@@ -323,7 +323,7 @@ bool RPLLoader_ProcessHeaders(std::string_view moduleName, uint8* rplData, uint3
 	}
 
 	// verify CRC of FILEINFO section
-	uint32 crcCalcFileinfo = crc32_calc(0, rplLoaderContext->sectionData_fileInfo.data(), rplLoaderContext->sectionData_fileInfo.size());
+	uint32 crcCalcFileinfo = encoding_crc32(0, (const uint8*)rplLoaderContext->sectionData_fileInfo.data(), rplLoaderContext->sectionData_fileInfo.size());
 	uint32 crcFileinfo = rplLoaderContext->GetSectionCRC(sectionCount - 1);
 	if (crcCalcFileinfo != crcFileinfo)
 	{
@@ -1268,7 +1268,7 @@ bool RPLLoader_ApplyRelocs(RPLModule* rplLoaderContext, sint32 relaSectionIndex,
 		relocSize = section->sectionSize;
 	}
 	// check CRC
-	uint32 calcCRC = crc32_calc(0, relocData, relocSize);
+	uint32 calcCRC = encoding_crc32(0, (const uint8*)relocData, relocSize);
 	uint32 crc = rplLoaderContext->GetSectionCRC(relaSectionIndex);
 	if (calcCRC != crc)
 	{
@@ -1430,13 +1430,13 @@ void RPLLoader_BeginCemuhookCRC(RPLModule* rpl)
 	// init patches CRC
 	rpl->patchCRC = 0;
 	static const uint8 rplMagic[4] = { 0x7F, 'R', 'P', 'X' };
-	rpl->patchCRC = crc32_calc(rpl->patchCRC, rplMagic, sizeof(rplMagic));
+	rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)rplMagic, sizeof(rplMagic));
 	sint32 sectionCount = rpl->sectionTable.size();
-	rpl->patchCRC = crc32_calc(rpl->patchCRC, &sectionCount, sizeof(sectionCount));
-	rpl->patchCRC = crc32_calc(rpl->patchCRC, &sectionSymTableIndex, sizeof(sectionSymTableIndex));
-	rpl->patchCRC = crc32_calc(rpl->patchCRC, &sectionStrTableIndex, sizeof(sectionStrTableIndex));
+	rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&sectionCount, sizeof(sectionCount));
+	rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&sectionSymTableIndex, sizeof(sectionSymTableIndex));
+	rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&sectionStrTableIndex, sizeof(sectionStrTableIndex));
 	sint32 sectionSectNameTableIndex = rpl->rplHeader.nameSectionIndex;
-	rpl->patchCRC = crc32_calc(rpl->patchCRC, &sectionSectNameTableIndex, sizeof(sectionSectNameTableIndex));
+	rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&sectionSectNameTableIndex, sizeof(sectionSectNameTableIndex));
 
 	// sections
 	for (size_t i = 0; i < rpl->sectionTable.size(); i++)
@@ -1490,16 +1490,16 @@ void RPLLoader_BeginCemuhookCRC(RPLModule* rpl)
 			rawData = rpl->RPLRawData.data() + sectionFileOffset;
 		}
 
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &nameOffset, sizeof(nameOffset));
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &shType, sizeof(shType));
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &flags, sizeof(flags));
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &virtualAddress, sizeof(virtualAddress));
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &rawSize, sizeof(rawSize));
-		rpl->patchCRC = crc32_calc(rpl->patchCRC, &alignment, sizeof(alignment));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&nameOffset, sizeof(nameOffset));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&shType, sizeof(shType));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&flags, sizeof(flags));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&virtualAddress, sizeof(virtualAddress));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&rawSize, sizeof(rawSize));
+		rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)&alignment, sizeof(alignment));
 
 		if (rawData != nullptr && rawSize > 0)
 		{
-			rpl->patchCRC = crc32_calc(rpl->patchCRC, rawData, rawSize);
+			rpl->patchCRC = encoding_crc32(rpl->patchCRC, (const uint8*)rawData, rawSize);
 		}
 		if (memoryAllocated && rawData)
 			free(rawData);

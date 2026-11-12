@@ -285,7 +285,7 @@ std::unordered_map<std::string, GraphicPack2::PresetVar> GraphicPack2::ParsePres
 {
 	ExpressionParser parser;
 	std::unordered_map<std::string, PresetVar> vars;
-	for(auto& itr : rules.GetAllOptions())
+	for (const auto& itr : rules.GetAllOptions())
 	{
 		auto option_name = itr.first;
 		auto option_value = itr.second;

@@ -529,6 +529,19 @@ test-title-xml:
     - make -C test/title_xml clean
     - SANITIZER=address,undefined ./test/title_xml/run_tests.sh
 
+# The C (C89) rules.txt, game profiles and a WUHB's meta.ini are read with.
+test-ini-file:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/ini_file/run_tests.sh
+    - make -C test/ini_file clean
+    - SANITIZER=address,undefined ./test/ini_file/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

@@ -7,6 +7,7 @@
 #include <formats/rxml.h>
 #include <encodings/crc32.h>
 
+#include "util/IniParser/ini_file.h"
 #include "title_xml.h"
 
 static const char *const languages[TITLE_LANGUAGES] = {
@@ -339,163 +340,55 @@ bool title_meta_parse(const void *xml, size_t len, title_meta_t *out,
 
 /* --- meta.ini ------------------------------------------------------------- */
 
-typedef struct span
-{
-   const char *s;
-   size_t n;
-} span_t;
-
-static void trim(span_t *v)
-{
-   while (v->n && (v->s[0] == ' ' || v->s[0] == '\t'))
-   {
-      v->s++;
-      v->n--;
-   }
-   while (v->n && (v->s[v->n - 1] == ' ' || v->s[v->n - 1] == '\t'))
-      v->n--;
-}
-
-static bool name_is(span_t v, const char *name)
-{
-   size_t i;
-   if (v.n != strlen(name))
-      return false;
-   for (i = 0; i < v.n; i++)
-   {
-      char a = v.s[i], b = name[i];
-      if (a >= 'A' && a <= 'Z')
-         a = (char)(a - 'A' + 'a');
-      if (a != b)
-         return false;
-   }
-   return true;
-}
-
-/* As the core's ini reader: lines, # and ; comments outside quotes,
- * [sections] (the first named menu taken), name = value with the value
- * unquoted, names matched ignoring case, the first of a name taken. */
+/* The first [menu]'s author, longname and shortname (ini_file.h), a
+ * missing one empty */
 bool title_meta_parse_ini(const void *ini, size_t len, title_meta_t *out)
 {
    static const char *const keys[3] = {"author", "longname", "shortname"};
-   const char *p = (const char*)ini;
-   const char *end = p + len;
-   span_t found[3];
-   bool have[3] = {false, false, false};
-   int section = 0; /* 0 before [menu], 1 in it, 2 after it */
-   size_t crc_len, at;
+   ini_span_t found[3];
+   ini_file_t *f;
+   size_t menu, crc_len, at;
    char *crc_in;
    int k;
    memset(out, 0, sizeof(*out));
-   if (!ini)
+   if (!ini || !(f = ini_file_parse(ini, len)))
       return false;
-   if (len >= 3 && (uint8_t)p[0] == 0xEF && (uint8_t)p[1] == 0xBB && (uint8_t)p[2] == 0xBF)
-      p += 3;
-   while (p < end && section < 2)
+   menu = ini_file_section(f, "menu");
+   if (menu == f->section_count)
    {
-      span_t line, name, value;
-      bool quote = false;
-      size_t i;
-      const char *eq;
-      while (p < end && (*p == '\r' || *p == '\n'))
-         p++;
-      line.s = p;
-      while (p < end && *p != '\r' && *p != '\n')
-         p++;
-      line.n = (size_t)(p - line.s);
-      while (line.n && (line.s[0] == ' ' || line.s[0] == '\t'))
-      {
-         line.s++;
-         line.n--;
-      }
-      for (i = 0; i < line.n; i++)
-      {
-         if (line.s[i] == '"')
-            quote = !quote;
-         if ((line.s[i] == '#' || line.s[i] == ';') && !quote)
-         {
-            line.n = i;
-            break;
-         }
-      }
-      if (!line.n)
-         continue;
-      if (line.s[0] == '[')
-      {
-         /* the name in the brackets; with no ], all of the line */
-         span_t sec = line;
-         for (i = 1; i < line.n; i++)
-            if (line.s[i] == ']')
-            {
-               sec.s = line.s + 1;
-               sec.n = i - 1;
-               break;
-            }
-         if (section == 1)
-            section = 2;
-         else if (sec.n == 4 && memcmp(sec.s, "menu", 4) == 0)
-            section = 1;
-         continue;
-      }
-      if (section != 1)
-         continue;
-      eq = (const char*)memchr(line.s, '=', line.n);
-      if (!eq)
-         continue;
-      name.s = line.s;
-      name.n = (size_t)(eq - line.s);
-      value.s = eq + 1;
-      value.n = line.n - name.n - 1;
-      trim(&name);
-      trim(&value);
-      if (!name.n)
-         continue;
-      if (value.n && value.s[0] == '"')
-      {
-         value.s++;
-         value.n--;
-         if (value.n >= 2 && value.s[value.n - 1] == '"')
-            value.n--;
-         else
-            continue;
-      }
-      for (k = 0; k < 3; k++)
-         if (!have[k] && name_is(name, keys[k]))
-         {
-            found[k] = value;
-            have[k] = true;
-         }
-   }
-   if (section == 0)
+      ini_file_free(f);
       return false;
+   }
    for (k = 0; k < 3; k++)
-      if (!have[k])
-      {
-         found[k].s = "";
-         found[k].n = 0;
-      }
-   out->publisher[LANGUAGE_EN] = dup_n(found[0].s, found[0].n);
-   out->long_name[LANGUAGE_EN] = dup_n(found[1].s, found[1].n);
-   out->short_name[LANGUAGE_EN] = dup_n(found[2].s, found[2].n);
+   {
+      const ini_option_t *o = ini_file_find(f, menu, keys[k], strlen(keys[k]));
+      found[k].s = o ? o->value.s : "";
+      found[k].len = o ? o->value.len : 0;
+   }
+   out->publisher[LANGUAGE_EN] = dup_n(found[0].s, found[0].len);
+   out->long_name[LANGUAGE_EN] = dup_n(found[1].s, found[1].len);
+   out->short_name[LANGUAGE_EN] = dup_n(found[2].s, found[2].len);
    /* the title id: 0005000F, then the CRC-32 of the three */
-   crc_len = found[0].n + found[1].n + found[2].n;
+   crc_len = found[0].len + found[1].len + found[2].len;
    crc_in = (char*)malloc(crc_len + 1);
    if (!crc_in || !out->publisher[LANGUAGE_EN] || !out->long_name[LANGUAGE_EN]
          || !out->short_name[LANGUAGE_EN])
    {
       free(crc_in);
+      ini_file_free(f);
       title_meta_free(out);
       return false;
    }
    at = 0;
    for (k = 0; k < 3; k++)
    {
-      memcpy(crc_in + at, found[k].s, found[k].n);
-      at += found[k].n;
+      memcpy(crc_in + at, found[k].s, found[k].len);
+      at += found[k].len;
    }
    out->title_id = ((uint64_t)0x0005000FUL << 32)
       | encoding_crc32(0, (const uint8_t*)crc_in, crc_len);
    free(crc_in);
+   ini_file_free(f);
    return true;
 }
 

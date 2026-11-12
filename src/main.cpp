@@ -166,7 +166,6 @@ void ppcAsmTest();
 void gx2CopySurfaceTest();
 void ExpressionParser_test();
 void FSTVolumeTest();
-void CRCTest();
 
 void UnitTests()
 {
@@ -174,7 +173,6 @@ void UnitTests()
 	gx2CopySurfaceTest();
 	ppcAsmTest();
 	FSTVolumeTest();
-	CRCTest();
 }
 
 bool isConsoleConnected = false;
