@@ -61,7 +61,6 @@
 #include <random>
 #include <set>
 
-extern std::atomic<uint64> g_fileCacheProbes;
 
 // --- counting the heap -------------------------------------------------------
 
@@ -171,7 +170,7 @@ static void MeasureFileCache()
 			return;
 		}
 		uint32_t seed = 1;
-		g_fileCacheProbes = 0;
+		file_cache_probes_reset();
 		for (int i = 0; i < ENTRIES; i++)
 		{
 			std::vector<uint8_t> data(256 + (i * 37) % 4096);
@@ -185,7 +184,7 @@ static void MeasureFileCache()
 		}
 		// written by the cache's writer thread
 		cache->WaitForWrites();
-		s_metrics["filecache table entries looked at to write 1000 entries"] = g_fileCacheProbes.load();
+		s_metrics["filecache table entries looked at to write 1000 entries"] = file_cache_probes();
 		delete cache;
 	}
 	FileCache* cache = FileCache::Open(path, false, 1);
@@ -199,7 +198,7 @@ static void MeasureFileCache()
 	cache->GetFile({ 1, 7 }, out); // whatever the first read sets up once
 	s_allocs = 0;
 	s_allocBytes = 0;
-	g_fileCacheProbes = 0;
+	file_cache_probes_reset();
 	s_counting = true;
 	int read = 0;
 	for (int i = 0; i < ENTRIES; i++)
@@ -209,7 +208,7 @@ static void MeasureFileCache()
 			read++;
 	}
 	s_counting = false;
-	s_metrics["filecache table entries looked at to find 1000 entries"] = g_fileCacheProbes.load();
+	s_metrics["filecache table entries looked at to find 1000 entries"] = file_cache_probes();
 	delete cache;
 	fs::remove(path, ec);
 	if (read != ENTRIES)

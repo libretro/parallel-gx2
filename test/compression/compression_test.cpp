@@ -809,11 +809,10 @@ static void TestFileCacheConcurrentReads()
 	}
 }
 
-extern void (*g_fileCacheReadHook)(uint64 name1, uint64 name2);
 static std::atomic<int> s_holdState{0}; // 1 armed, 2 holding a reader, 3 let go
 static std::atomic<uint64> s_holdName{0};
 
-static void HoldReader(uint64 name1, uint64)
+static void HoldReader(uint64_t name1, uint64_t)
 {
 	if (name1 != s_holdName.load())
 		return;
@@ -846,7 +845,7 @@ static void TestFileCacheHeldReader()
 		cache->WaitForWrites();
 		s_holdName = 7;
 		s_holdState = 1;
-		g_fileCacheReadHook = HoldReader;
+		file_cache_read_hook = HoldReader;
 		std::vector<uint8_t> got;
 		bool ok = false;
 		std::thread reader([&] { ok = cache->GetFile({7, 9}, got); });
@@ -868,7 +867,7 @@ static void TestFileCacheHeldReader()
 		cache->WaitForWrites();
 		s_holdState = 3;
 		reader.join();
-		g_fileCacheReadHook = nullptr;
+		file_cache_read_hook = nullptr;
 		s_holdState = 0;
 		CHECK(ok && got == VersionedData(7, 0));
 		CHECK(!cache->HasFile({7, 9}));

@@ -580,6 +580,20 @@ test-zlib-stream:
     - make -C test/zlib_stream clean
     - SANITIZER=address,undefined ./test/zlib_stream/run_tests.sh
 
+# The C (C89) the shader, pipeline and graphic pack caches are kept in.
+test-file-cache:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/file_cache/run_tests.sh
+    - make -C test/file_cache clean
+    - SANITIZER=thread ./test/file_cache/run_tests.sh
+    - make -C test/file_cache clean
+    - SANITIZER=address,undefined ./test/file_cache/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

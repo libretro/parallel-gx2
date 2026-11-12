@@ -1,4 +1,4 @@
-// What FileCache.cpp, VulkanPipelineKey.cpp and VulkanAPI.cpp take from the rest of the core
+// What VulkanPipelineKey.cpp and VulkanAPI.cpp take from the rest of the core
 #include <chrono>
 #include <string_view>
 

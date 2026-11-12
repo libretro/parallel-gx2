@@ -1,4 +1,4 @@
-// What FileCache.cpp takes from the rest of the core
+// What the code under test takes from the rest of the core
 #include <chrono>
 #include <string_view>
 

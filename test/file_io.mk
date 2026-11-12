@@ -41,6 +41,9 @@ RCU_C := $(SRC)/util/helpers/rcu_cell.c
 MEM_STREAM_C := $(SRC)/util/helpers/mem_stream.c
 # zlib streams through libretro-common's deflate (C89), under Deflate.h
 ZLIB_STREAM_C := $(SRC)/util/helpers/zlib_stream.c
+# The shader and pipeline cache files (C89), under FileCache.h, and the
+# streams they compress and map entries with
+FILE_CACHE_C := $(SRC)/Cemu/FileCache/file_cache.c $(ZLIB_STREAM_C) $(MAPPED_FILE_C)
 # The XML tree (C89) under Xml.h, for the tests that read or write XML
 XML_TREE_C := $(SRC)/util/xml/xml_tree.c
 # A title's meta.xml, meta.ini, app.xml and cos.xml parsed (C89), under

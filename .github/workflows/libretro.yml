@@ -416,6 +416,18 @@ jobs:
           make -C test/zlib_stream clean
           SANITIZER=address,undefined ./test/zlib_stream/run_tests.sh
 
+      - name: "Cache files"
+        # the C (C89) the shader, pipeline and graphic pack caches are kept
+        # in, from the inside: its index, its free space, its file table's
+        # growth, files reopened, V2 files and broken entries; plain, under
+        # TSan and under ASan + UBSan
+        run: |
+          ./test/file_cache/run_tests.sh
+          make -C test/file_cache clean
+          SANITIZER=thread ./test/file_cache/run_tests.sh
+          make -C test/file_cache clean
+          SANITIZER=address,undefined ./test/file_cache/run_tests.sh
+
       - name: "FST volume reads"
         # the C (C89) a volume's files are read and checked in: raw clusters
         # against the TMD's content hashes, right, wrong and of a size not a

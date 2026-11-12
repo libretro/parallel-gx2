@@ -69,6 +69,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/util/crypto/hmac_md5.c \
 	$(CORE_DIR)/src/util/helpers/mem_stream.c \
 	$(CORE_DIR)/src/util/helpers/zlib_stream.c \
+	$(CORE_DIR)/src/Cemu/FileCache/file_cache.c \
 	$(CORE_DIR)/src/util/crypto/aes128.c
 CORE_SOURCES_CXX :=
 CORE_SOURCES_ASM :=
@@ -321,7 +322,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleInfo.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleList.cpp \
 	$(CORE_DIR)/src/Cemu/ExpressionParser/ExpressionParser.cpp \
-	$(CORE_DIR)/src/Cemu/FileCache/FileCache.cpp \
 	$(CORE_DIR)/src/Cemu/Logging/CemuLogging.cpp \
 	$(CORE_DIR)/src/Cemu/PPCAssembler/ppcAssembler.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi.cpp \
