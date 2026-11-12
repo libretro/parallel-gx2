@@ -4,7 +4,7 @@
 #include "util/helpers/EventWake.h"
 
 #include "util/helpers/helpers.h"
-#include "util/xml/Xml.h"
+#include "Cafe/TitleList/title_xml.h"
 
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 
@@ -160,36 +160,26 @@ void CafeTitleList::LoadCacheFile()
 	MappedFile xmlData(ReadPaths().cacheFile);
 	if (!xmlData.opened())
 		return;
-	xml::Document doc;
-	if (!doc.load(xmlData.data(), xmlData.size()))
+	// read in C (title_xml.c)
+	title_list_entry_t* entries = nullptr;
+	size_t count = 0;
+	if (!title_list_parse(xmlData.data(), xmlData.size(), &entries, &count))
 		return;
 	std::vector<TitleInfo*> cached;
-	for (const auto& titleInfoNode : doc.child("title_list"))
+	for (size_t i = 0; i < count; i++)
 	{
-		TitleId titleId;
-		if( !TitleIdParser::ParseFromStr(titleInfoNode.attribute("titleId").as_string(), titleId))
-			continue;
-		uint16 titleVersion = titleInfoNode.attribute("version").as_uint();
-		uint32 sdkVersion = titleInfoNode.attribute("sdk_version").as_uint();
-		TitleInfo::TitleDataFormat format = (TitleInfo::TitleDataFormat)ConvertString<uint32>(titleInfoNode.child_value("format"));
-		CafeConsoleRegion region = (CafeConsoleRegion)ConvertString<uint32>(titleInfoNode.child_value("region"));
-		std::string name = titleInfoNode.child_value("name");
-		std::string path = titleInfoNode.child_value("path");
-		std::string sub_path = titleInfoNode.child_value("sub_path");
-		uint32 group_id = ConvertString<uint32>(titleInfoNode.attribute("group_id").as_string(), 16);
-		uint32 app_type = ConvertString<uint32>(titleInfoNode.attribute("app_type").as_string(), 16);
-
+		const title_list_entry_t& e = entries[i];
 		TitleInfo::CachedInfo cacheEntry;
-		cacheEntry.titleId = titleId;
-		cacheEntry.titleVersion = titleVersion;
-		cacheEntry.sdkVersion = sdkVersion;
-		cacheEntry.titleDataFormat = format;
-		cacheEntry.region = region;
-		cacheEntry.titleName = std::move(name);
-		cacheEntry.path = _utf8ToPath(path);
-		cacheEntry.subPath = std::move(sub_path);
-		cacheEntry.group_id = group_id;
-		cacheEntry.app_type = app_type;
+		cacheEntry.titleId = e.title_id;
+		cacheEntry.titleVersion = (uint16)e.version;
+		cacheEntry.sdkVersion = e.sdk_version;
+		cacheEntry.titleDataFormat = (TitleInfo::TitleDataFormat)e.format;
+		cacheEntry.region = (CafeConsoleRegion)e.region;
+		cacheEntry.titleName = e.name;
+		cacheEntry.path = _utf8ToPath(e.path);
+		cacheEntry.subPath = e.sub_path;
+		cacheEntry.group_id = e.group_id;
+		cacheEntry.app_type = e.app_type;
 
 		TitleInfo* ti = new TitleInfo(cacheEntry);
 		if (!ti->IsValid())
@@ -200,6 +190,7 @@ void CafeTitleList::LoadCacheFile()
 		}
 		cached.emplace_back(ti);
 	}
+	title_list_free(entries, count);
 	bool added = false;
 	UpdateList([&](CafeTitleListSnapshot& list) {
 		for (TitleInfo* ti : cached)
@@ -217,32 +208,45 @@ void CafeTitleList::StoreCacheFile()
 	if (cacheFile.empty())
 		return;
 
-	xml::Document doc;
-	auto title_list_node = doc.append_child("title_list");
-
+	// written in C (title_xml.c)
+	std::vector<TitleInfo::CachedInfo> infos;
 	{
 		auto list = sTLState->Read();
+		infos.reserve(list->titles.size());
 		for (const auto& tiIt : list->titles)
-		{
-			TitleInfo::CachedInfo info = tiIt->MakeCacheEntry();
-			auto titleInfoNode = title_list_node.append_child("title");
-			titleInfoNode.append_attribute("titleId").set_value(fmt::format("{:016x}", info.titleId).c_str());
-			titleInfoNode.append_attribute("version").set_value(fmt::format("{:}", info.titleVersion).c_str());
-			titleInfoNode.append_attribute("sdk_version").set_value(fmt::format("{:}", info.sdkVersion).c_str());
-			titleInfoNode.append_attribute("group_id").set_value(fmt::format("{:08x}", info.group_id).c_str());
-			titleInfoNode.append_attribute("app_type").set_value(fmt::format("{:08x}", info.app_type).c_str());
-			titleInfoNode.append_child("region").text().set(fmt::format("{}", (uint32)info.region).c_str());
-			titleInfoNode.append_child("name").text().set(info.titleName.c_str());
-			titleInfoNode.append_child("format").text().set(fmt::format("{}", (uint32)info.titleDataFormat).c_str());
-			titleInfoNode.append_child("path").text().set(_pathToUtf8(info.path).c_str());
-			if(!info.subPath.empty())
-				titleInfoNode.append_child("sub_path").text().set(_pathToUtf8(info.subPath).c_str());
-		}
+			infos.emplace_back(tiIt->MakeCacheEntry());
 	}
-
+	std::vector<std::string> paths;
+	std::vector<title_list_entry_t> entries;
+	paths.reserve(infos.size());
+	entries.reserve(infos.size());
+	for (TitleInfo::CachedInfo& info : infos)
+	{
+		paths.emplace_back(_pathToUtf8(info.path));
+		title_list_entry_t e{};
+		e.title_id = info.titleId;
+		e.version = info.titleVersion;
+		e.sdk_version = info.sdkVersion;
+		e.format = (uint32)info.titleDataFormat;
+		e.region = (uint32)info.region;
+		e.group_id = info.group_id;
+		e.app_type = info.app_type;
+		e.name = info.titleName.data();
+		e.path = paths.back().data();
+		e.sub_path = info.subPath.data();
+		entries.emplace_back(e);
+	}
+	size_t len = 0;
+	char* xml = title_list_save(entries.data(), entries.size(), &len);
+	if (!xml)
+	{
+		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(cacheFile));
+		return;
+	}
 	// through a file beside it that then takes its name
-	const std::string out = doc.save(" ");
-	if (!ReplaceFileContents(cacheFile, out.data(), out.size()))
+	const bool stored = ReplaceFileContents(cacheFile, xml, len);
+	free(xml);
+	if (!stored)
 		cemuLog_log(LogType::Force, "Unable to store title list in {}", _pathToUtf8(cacheFile));
 }
 

@@ -4,8 +4,9 @@
  * with comments, quotes, sections around [menu] and keys missing, its
  * title id the CRC-32 the old reader made; an app.xml's hex and decimal
  * fields as stoull read them; a cos.xml's argstr and permissions as
- * ConvertString read them; and the CRC-32 the RPL loader takes. C89, as
- * the C89 lane builds it. */
+ * ConvertString read them; the title list's cache file read and written
+ * as the C++ before did; and the CRC-32 the RPL loader takes. C89, as the
+ * C89 lane builds it. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,8 +387,101 @@ static void test_crc(void)
    CHECK(crc == 0x3FC61683UL);
 }
 
+static void test_title_list(void)
+{
+   static const char *const lines[] = {
+      "<?xml version=\"1.0\"?>\n<title_list>\n",
+      " <title titleId=\"0005000010101C00\" version=\"70000\" sdk_version=\"21204\" group_id=\"0x1A\" app_type=\"\">\n",
+      "  <region>-0x1</region><name>Zelda &amp; Link</name><format>0x3</format>\n",
+      "  <path>/games/a.wua</path><sub_path>0005000010101c00_v0</sub_path>\n",
+      " </title>\n",
+      " <title titleId=\"0005000010101C0\"/>\n",
+      " <title titleId=\"000500001010zC00\"/>\n",
+      " <title/>\n",
+      " <other titleId=\"00050000101d7500extra\" version=\"\" sdk_version=\"x\" group_id=\"zz\">\n",
+      "  <region> 12</region><name>   </name><format>-5</format>\n",
+      " </other>\n",
+      "</title_list>\n",
+      NULL};
+   title_list_entry_t *e = NULL, *back = NULL;
+   title_list_entry_t made[2];
+   size_t n = 0, nb = 0, len = 0;
+   size_t doclen = join(lines);
+   char *saved;
+   CHECK(title_list_parse(doc, doclen, &e, &n));
+   CHECK(n == 2);
+   if (n == 2)
+   {
+      CHECK(e[0].title_id == ((uint64_t)0x00050000UL << 32 | 0x10101C00UL));
+      CHECK(e[0].version == 70000 && e[0].sdk_version == 21204);
+      CHECK(e[0].group_id == 0x1A && e[0].app_type == 0);
+      CHECK(e[0].region == 0xFFFFFFFFUL && e[0].format == 3);
+      CHECK(same(e[0].name, "Zelda & Link") && same(e[0].path, "/games/a.wua"));
+      CHECK(same(e[0].sub_path, "0005000010101c00_v0"));
+      /* any element; sixteen hex digits first; what is missing, 0 or "" */
+      CHECK(e[1].title_id == ((uint64_t)0x00050000UL << 32 | 0x101D7500UL));
+      CHECK(e[1].version == 0 && e[1].sdk_version == 0 && e[1].group_id == 0);
+      CHECK(e[1].region == 12 && e[1].format == 0);
+      CHECK(same(e[1].name, "") && same(e[1].path, "") && same(e[1].sub_path, ""));
+   }
+   title_list_free(e, n);
+   /* another root: no titles; not XML: no list */
+   strcpy(doc, "<menu><title titleId=\"0005000010101C00\"/></menu>");
+   CHECK(title_list_parse(doc, strlen(doc), &e, &n) && n == 0 && e == NULL);
+   doclen = join(lines);
+   CHECK(!title_list_parse(doc, doclen / 2, &e, &n) && n == 0);
+   CHECK(!title_list_parse("", 0, &e, &n));
+
+   /* written as the C++ wrote it, and read back */
+   memset(made, 0, sizeof(made));
+   made[0].title_id = ((uint64_t)0x00050000UL << 32) | 0x10101C00UL;
+   made[0].version = 0x10020; /* a uint16 in the file */
+   made[0].sdk_version = 4000000000UL;
+   made[0].format = 3;
+   made[0].region = 2;
+   made[0].group_id = 0x1C9;
+   made[0].app_type = 0x80000000UL;
+   made[0].name = (char*)"A & <B>";
+   made[0].path = (char*)"/x/a.wua";
+   made[0].sub_path = (char*)"0005000010101c00_v32";
+   made[1].title_id = 0xABC;
+   made[1].name = (char*)"";
+   made[1].path = (char*)"/y";
+   made[1].sub_path = (char*)"";
+   saved = title_list_save(made, 2, &len);
+   CHECK(saved && len == strlen(saved));
+   if (saved)
+   {
+      CHECK(strncmp(saved, "<?xml", 5) == 0);
+      CHECK(strstr(saved, "<title titleId=\"0005000010101c00\" version=\"32\" sdk_version=\"4000000000\" group_id=\"000001c9\" app_type=\"80000000\">") != NULL);
+      CHECK(strstr(saved, "<name>A &amp; &lt;B&gt;</name>") != NULL);
+      CHECK(strstr(saved, "<region>2</region>") && strstr(saved, "<format>3</format>"));
+      CHECK(strstr(saved, "<title titleId=\"0000000000000abc\" version=\"0\" sdk_version=\"0\" group_id=\"00000000\" app_type=\"00000000\">") != NULL);
+      CHECK(strstr(saved, "<name />") != NULL);
+      /* a sub_path only where there is one */
+      CHECK(strstr(saved, "<sub_path>0005000010101c00_v32</sub_path>") != NULL);
+      CHECK(strstr(strstr(saved, "abc"), "sub_path") == NULL);
+      /* one element a line, indented a space a level */
+      CHECK(strstr(saved, "\n <title ") != NULL && strstr(saved, "\n  <path>/y</path>") != NULL);
+      CHECK(title_list_parse(saved, len, &back, &nb) && nb == 2);
+      if (nb == 2)
+      {
+         CHECK(back[0].title_id == made[0].title_id && back[0].version == 32);
+         CHECK(back[0].sdk_version == made[0].sdk_version && back[0].group_id == 0x1C9 && back[0].app_type == 0x80000000UL);
+         CHECK(same(back[0].name, "A & <B>") && same(back[0].sub_path, made[0].sub_path));
+         CHECK(back[1].title_id == 0xABC && same(back[1].path, "/y") && same(back[1].sub_path, ""));
+      }
+      title_list_free(back, nb);
+      free(saved);
+   }
+   saved = title_list_save(NULL, 0, &len);
+   CHECK(saved && strstr(saved, "<title_list />") != NULL);
+   free(saved);
+}
+
 int main(void)
 {
+   test_title_list();
    test_crc();
    test_meta();
    test_meta_numbers();

@@ -493,3 +493,172 @@ bool title_cos_parse(const void *xml, size_t len, title_cos_t *out)
    rxml_free_document(doc);
    return true;
 }
+
+/* --- the title list's cache file ------------------------------------------ */
+
+/* as the core's ConvertString(text): a 0x (or -0x) number in hex, else
+ * decimal */
+static uint32_t as_convert_any(const char *text)
+{
+   const char *s = text;
+   size_t i;
+   while (is_c_space(*s))
+      s++;
+   i = *s == '-' ? 1 : 0;
+   if (s[0] && s[1] && s[i] == '0' && (s[i + 1] | 32) == 'x')
+      return (uint32_t)as_convert(s, 16, 0xFFFFFFFFUL);
+   return (uint32_t)as_convert(s, 10, 0xFFFFFFFFUL);
+}
+
+/* an attribute's number as the core's XML reader's as_uint: 0 for none or
+ * no digits */
+static uint32_t attr_uint(const struct rxml_node *n, const char *name)
+{
+   const char *v = rxml_node_attrib((struct rxml_node*)n, name);
+   return v && *v ? as_uint(v, 0) : 0;
+}
+
+void title_list_free(title_list_entry_t *entries, size_t count)
+{
+   size_t i;
+   for (i = 0; entries && i < count; i++)
+   {
+      free(entries[i].name);
+      free(entries[i].path);
+      free(entries[i].sub_path);
+   }
+   free(entries);
+}
+
+bool title_list_parse(const void *xml, size_t len, title_list_entry_t **entries,
+      size_t *count)
+{
+   rxml_document_t *doc;
+   const struct rxml_node *root, *c;
+   title_list_entry_t *out = NULL;
+   size_t n = 0, cap = 0;
+   *entries = NULL;
+   *count = 0;
+   if (!(doc = load(xml, len, NULL)))
+      return false;
+   root = rxml_root_node(doc);
+   /* another root: a document with no titles */
+   for (c = root->name && !strcmp(root->name, "title_list") ? root->children : NULL; c; c = c->next)
+   {
+      const char *id = rxml_node_attrib((struct rxml_node*)c, "titleId");
+      const char *group, *app;
+      title_list_entry_t *e;
+      uint64_t tid = 0;
+      int i;
+      /* sixteen hex digits first */
+      if (!id)
+         continue;
+      for (i = 0; i < 16; i++)
+      {
+         int d = digit_of(id[i], 16);
+         if (d < 0)
+            break;
+         tid = (tid << 4) | (unsigned)d;
+      }
+      if (i < 16)
+         continue;
+      if (n == cap)
+      {
+         size_t grown = cap ? cap * 2 : 16;
+         title_list_entry_t *g = (title_list_entry_t*)realloc(out, grown * sizeof(*g));
+         if (!g)
+            break;
+         out = g;
+         cap = grown;
+      }
+      e = &out[n];
+      memset(e, 0, sizeof(*e));
+      e->title_id = tid;
+      e->version = attr_uint(c, "version");
+      e->sdk_version = attr_uint(c, "sdk_version");
+      e->format = as_convert_any(text_of(child_named(c, "format")));
+      e->region = as_convert_any(text_of(child_named(c, "region")));
+      group = rxml_node_attrib((struct rxml_node*)c, "group_id");
+      app = rxml_node_attrib((struct rxml_node*)c, "app_type");
+      e->group_id = (uint32_t)as_convert(group ? group : "", 16, 0xFFFFFFFFUL);
+      e->app_type = (uint32_t)as_convert(app ? app : "", 16, 0xFFFFFFFFUL);
+      e->name = dup_str(text_of(child_named(c, "name")));
+      e->path = dup_str(text_of(child_named(c, "path")));
+      e->sub_path = dup_str(text_of(child_named(c, "sub_path")));
+      n++;
+      if (!e->name || !e->path || !e->sub_path)
+         break;
+   }
+   rxml_free_document(doc);
+   if (c)
+   {
+      /* stopped for want of memory */
+      title_list_free(out, n);
+      return false;
+   }
+   *entries = out;
+   *count = n;
+   return true;
+}
+
+static void hex_digits(char *out, uint64_t v, int digits)
+{
+   int i;
+   for (i = digits - 1; i >= 0; i--, v >>= 4)
+      out[i] = "0123456789abcdef"[v & 15];
+   out[digits] = '\0';
+}
+
+static void write_child(rxml_writer_t *w, const char *name, const char *text)
+{
+   rxml_write_open(w, name);
+   if (*text)
+      rxml_write_text(w, text);
+   rxml_write_close(w);
+}
+
+char *title_list_save(const title_list_entry_t *entries, size_t count,
+      size_t *len)
+{
+   rxml_writer_t *w = rxml_writer_new(" ");
+   const char *data;
+   char *out = NULL;
+   size_t n = 0, i;
+   if (!w)
+      return NULL;
+   rxml_write_declaration(w);
+   rxml_write_open(w, "title_list");
+   for (i = 0; i < count; i++)
+   {
+      const title_list_entry_t *e = &entries[i];
+      char num[24];
+      rxml_write_open(w, "title");
+      hex_digits(num, e->title_id, 16);
+      rxml_write_attrib(w, "titleId", num);
+      sprintf(num, "%u", (unsigned)(e->version & 0xFFFF));
+      rxml_write_attrib(w, "version", num);
+      sprintf(num, "%lu", (unsigned long)e->sdk_version);
+      rxml_write_attrib(w, "sdk_version", num);
+      hex_digits(num, e->group_id, 8);
+      rxml_write_attrib(w, "group_id", num);
+      hex_digits(num, e->app_type, 8);
+      rxml_write_attrib(w, "app_type", num);
+      sprintf(num, "%lu", (unsigned long)e->region);
+      write_child(w, "region", num);
+      write_child(w, "name", e->name ? e->name : "");
+      sprintf(num, "%lu", (unsigned long)e->format);
+      write_child(w, "format", num);
+      write_child(w, "path", e->path ? e->path : "");
+      if (e->sub_path && *e->sub_path)
+         write_child(w, "sub_path", e->sub_path);
+      rxml_write_close(w);
+   }
+   rxml_write_close(w);
+   data = rxml_writer_data(w, &n);
+   if (data && !rxml_writer_failed(w))
+      out = dup_n(data, n);
+   rxml_writer_free(w);
+   if (out && len)
+      *len = n;
+   return out;
+}
