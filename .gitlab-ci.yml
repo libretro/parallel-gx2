@@ -542,6 +542,18 @@ test-ini-file:
     - make -C test/ini_file clean
     - SANITIZER=address,undefined ./test/ini_file/run_tests.sh
 
+# The C (C89) HMAC-MD5 NEX signs packets and tickets with.
+test-hmac-md5:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/hmac_md5/run_tests.sh
+    - make -C test/hmac_md5 clean
+    - SANITIZER=address,undefined ./test/hmac_md5/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

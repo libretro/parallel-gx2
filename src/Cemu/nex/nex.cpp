@@ -2,7 +2,7 @@
 #include "nex.h"
 #include "nexThread.h"
 
-#include "util/crypto/md5.h"
+#include "util/crypto/hmac_md5.h"
 
 // for inet_pton:
 #if BOOST_OS_WINDOWS

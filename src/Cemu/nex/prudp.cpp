@@ -1,5 +1,5 @@
 #include "prudp.h"
-#include "util/crypto/md5.h"
+#include "util/crypto/hmac_md5.h"
 
 #include <bitset>
 #include <random>

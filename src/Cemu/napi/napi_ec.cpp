@@ -5,7 +5,7 @@
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 
 #include "Cemu/ncrypto/ncrypto.h"
-#include "util/crypto/md5.h"
+#include <lrc_hash.h>
 #include "config/LaunchSettings.h"
 #include "config/ActiveSettings.h"
 #include "config/NetworkSettings.h"

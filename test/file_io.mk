@@ -36,6 +36,8 @@ MAPPED_FILE_C := $(SRC)/util/helpers/mapped_file.c
 # The lock-free cell under RcuCell.h (C89), for the tests that link
 # anything that keeps one
 RCU_C := $(SRC)/util/helpers/rcu_cell.c
+# The XML tree (C89) under Xml.h, for the tests that read or write XML
+XML_TREE_C := $(SRC)/util/xml/xml_tree.c
 # A title's meta.xml, meta.ini, app.xml and cos.xml parsed (C89), under
 # ParsedMetaXml.h and TitleInfo.h (with the ini reader the meta.ini takes),
 # and what it needs of libretro-common
