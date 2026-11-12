@@ -39,6 +39,8 @@ RCU_C := $(SRC)/util/helpers/rcu_cell.c
 # Big-endian records read from and written to memory (C89), under
 # Serializer.h, for the tests that link the shader and pipeline caches
 MEM_STREAM_C := $(SRC)/util/helpers/mem_stream.c
+# zlib streams through libretro-common's deflate (C89), under Deflate.h
+ZLIB_STREAM_C := $(SRC)/util/helpers/zlib_stream.c
 # The XML tree (C89) under Xml.h, for the tests that read or write XML
 XML_TREE_C := $(SRC)/util/xml/xml_tree.c
 # A title's meta.xml, meta.ini, app.xml and cos.xml parsed (C89), under

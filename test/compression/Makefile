@@ -33,7 +33,7 @@ LRC_SRCS := $(LRC)/encodings/encoding_deflate.c $(LRC)/encodings/encoding_crc32.
 include ../file_io.mk
 LRC_SRCS += $(FILE_IO_C)
 FLAGS += $(FILE_IO_FLAGS)
-CXX_SRCS := compression_test.cpp $(SRC)/util/helpers/Deflate.cpp \
+CXX_SRCS := compression_test.cpp \
 	$(SRC)/Cafe/OS/libs/zlib125/zlib125_stream.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/ShaderSerializer.cpp \
 	$(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
@@ -60,9 +60,9 @@ pack_graphic_packs_host: ../../tools/pack_graphic_packs.c
 graphic_packs.c: pack_graphic_packs_host fixture/stamp
 	./pack_graphic_packs_host fixture $@
 
-compression_test$(EXE): $(MAPPED_FILE_C) $(MEM_STREAM_C) $(CXX_SRCS) $(LRC_SRCS) graphic_packs.c golden_deflate.h golden_entries.h
+compression_test$(EXE): $(MAPPED_FILE_C) $(MEM_STREAM_C) $(ZLIB_STREAM_C) $(CXX_SRCS) $(LRC_SRCS) graphic_packs.c golden_deflate.h golden_entries.h
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
-	for f in $(MAPPED_FILE_C) $(MEM_STREAM_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(MAPPED_FILE_C) $(MEM_STREAM_C) $(ZLIB_STREAM_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	# as the core builds it: C++
 	$(CXX) $(FLAGS) -x c++ -c graphic_packs.c -o graphic_packs.o
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@

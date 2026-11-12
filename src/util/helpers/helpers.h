@@ -257,4 +257,3 @@ bool IsWindows10OrGreater();
 
 fs::path GetParentProcess();
 
-std::optional<std::vector<uint8>> zlibDecompress(const std::vector<uint8>& compressed, size_t sizeHint = 32*1024);

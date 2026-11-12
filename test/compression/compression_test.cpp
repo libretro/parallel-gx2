@@ -1,7 +1,8 @@
 // zlib and Zstandard through libretro-common, in place of the zlib and zstd
 // libraries the core used to build:
-//  - Deflate (util/helpers/Deflate.cpp) reads the streams zlib writes, its
-//    streams read back, and it tells a short output from a bad stream;
+//  - Deflate (util/helpers/zlib_stream.c, under Deflate.h) reads the
+//    streams zlib writes, its streams read back, and it tells a short
+//    output from a bad stream;
 //  - the console's zlib125 (Cafe/OS/libs/zlib125), on the host side of a
 //    guest z_stream: inflate and deflate a byte at a time, the containers,
 //    the flushes, reset, adler, totals and the return codes games check;

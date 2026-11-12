@@ -10,7 +10,6 @@
 
 #include <boost/random/uniform_int.hpp>
 
-#include <encodings/deflate.h>
 
 
 #if BOOST_OS_WINDOWS
@@ -429,44 +428,4 @@ std::string GenerateRandomString(const size_t length, const std::string_view cha
 	);
 
 	return result;
-}
-
-std::optional<std::vector<uint8>> zlibDecompress(const std::vector<uint8>& compressed, size_t sizeHint)
-{
-	// zlib or gzip, told apart by the header
-	void* z = rinflate_new(47);
-	if (!z)
-		return {};
-	std::vector<uint8> decompressed;
-	size_t outWritten = 0;
-	size_t bytesPerIteration = sizeHint ? sizeHint : 1;
-	rinflate_set_in(z, compressed.data(), compressed.size());
-	for (;;)
-	{
-		decompressed.resize(decompressed.size() + bytesPerIteration);
-		rinflate_set_out(z, decompressed.data() + outWritten, decompressed.size() - outWritten);
-		size_t wrote = 0;
-		int st;
-		// the decoder keeps what it wrote before as history, wherever the output is next
-		do
-		{
-			size_t read = 0, more = 0;
-			st = rinflate_process(z, &read, &more);
-			wrote += more;
-			if (!read && !more)
-				break;
-		} while (st == RDEFLATE_PROCESS_NEXT && outWritten + wrote < decompressed.size());
-		outWritten += wrote;
-		if (st == RDEFLATE_PROCESS_END)
-			break;
-		if (st == RDEFLATE_PROCESS_ERROR || outWritten < decompressed.size())
-		{
-			rinflate_free(z);
-			return {};
-		}
-		bytesPerIteration *= 2;
-	}
-	rinflate_free(z);
-	decompressed.resize(outWritten);
-	return decompressed;
 }

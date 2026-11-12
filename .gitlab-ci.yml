@@ -566,6 +566,20 @@ test-mem-stream:
     - make -C test/mem_stream clean
     - SANITIZER=address,undefined ./test/mem_stream/run_tests.sh
 
+# The C (C89) zlib streams go through, threads sharing its inflaters.
+test-zlib-stream:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/zlib_stream/run_tests.sh
+    - make -C test/zlib_stream clean
+    - SANITIZER=thread ./test/zlib_stream/run_tests.sh
+    - make -C test/zlib_stream clean
+    - SANITIZER=address,undefined ./test/zlib_stream/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test
