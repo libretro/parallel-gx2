@@ -131,36 +131,6 @@ bool GraphicPack2::LoadGraphicPack(const fs::path& rulesPath, IniParser& rules)
 	try
 	{
 		auto gp = std::make_shared<GraphicPack2>(rulesPath, rules);
-
-		// check if enabled and preset set
-		const auto& config_entries = GetConfigHandle().data().graphic_pack_entries;
-
-		// legacy absolute path checking for not breaking compatibility
-		auto file = gp->GetRulesPath();
-		auto it = config_entries.find(file.lexically_normal());
-		if (it == config_entries.cend())
-		{
-			// check for relative path
-			it = config_entries.find(_utf8ToPath(gp->GetNormalizedPathString()));
-		}
-
-		if (it != config_entries.cend())
-		{
-			bool enabled = true;
-			for (auto& kv : it->second)
-			{
-				if (boost::iequals(kv.first, "_disabled"))
-				{
-					enabled = false;
-					continue;
-				}
-
-				gp->SetActivePreset(kv.first, kv.second, false);
-			}
-
-			gp->SetEnabled(enabled);
-		}
-
 		gp->UpdatePresetVisibility();
 		gp->ValidatePresetSelections();
 

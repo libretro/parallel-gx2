@@ -3276,11 +3276,9 @@ static std::vector<retro_core_option_v2_definition> s_pack_option_defs;
 // changes to a game survive the bundled set being replaced by a core update.
 // withReplaced loads the replaced ones as well, only so that their options
 // can be declared (see LibretroPackOption).
-// Graphic pack entries in settings.xml, from standalone Cemu, play no part.
 static void libretro_load_graphic_packs(bool withReplaced = false)
 {
 	GraphicPack2::ClearGraphicPacks();
-	GetConfigHandle().data().graphic_pack_entries.clear();
 
 	const auto packFolders = [](const fs::path& base) {
 		std::vector<fs::path> folders;
@@ -3833,7 +3831,7 @@ RETRO_API void retro_init()
 	// it let a standalone install's settings.xml, or one left over from an
 	// older build of the core, decide things no option showed and contradict
 	// the ones that did. Nothing saves it either.
-	GetConfig().SetMLCPath(s_mlc_path, false);
+	GetConfig().SetMLCPath(s_mlc_path);
 	cemuLog_log(LogType::Force, "mlc01: {}", _pathToUtf8(ActiveSettings::GetMlcPath()));
 	libretro_create_default_mlc_files(ActiveSettings::GetMlcPath());
 

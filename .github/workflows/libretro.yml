@@ -99,6 +99,12 @@ jobs:
         # make fetches them, where the build used to stop at glm/glm.hpp
         run: ./tools/check_submodule_fetch.sh
 
+      - name: "No settings file"
+        # the core's settings come from Cemu's defaults and the core
+        # options: no settings.xml read or written, nothing kept that only
+        # it could switch on
+        run: ./tools/check_no_settings_file.sh
+
       - name: "Unused source files found"
         # the check the Linux builds run on their objects, against a tree
         # whose answer is known

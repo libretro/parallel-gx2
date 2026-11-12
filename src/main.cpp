@@ -116,9 +116,9 @@ void CemuCommonInit()
 
 	CEMU_INIT_STAGE("exception handler");
     ExceptionHandler_Init();
-	// read config
+	// read config: network_services.xml (settings.xml is not read, the
+	// core options set what it would)
 	CEMU_INIT_STAGE("config");
-	GetConfigHandle().Load();
 	if (NetworkConfig::XMLExists())
 		n_config.Load();
 	// parallelize expensive init code

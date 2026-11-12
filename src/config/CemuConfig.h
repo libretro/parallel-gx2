@@ -1,69 +1,8 @@
 #pragma once
 
 #include "ConfigValue.h"
-#include "XMLConfig.h"
 
 enum class NetworkService;
-
-struct GameEntry
-{
-	GameEntry() = default;
-
-	std::wstring rpx_file;
-	std::wstring legacy_name;
-	std::string product_code;
-	std::string company_code;
-
-	std::string custom_name;
-
-	sint32 icon = -1;
-	sint32 icon_small = -1;
-	sint32 legacy_version = 0;
-	sint32 legacy_update_version = -1;
-	sint32 legacy_dlc_version = -1;
-	uint64 title_id = 0;
-	uint32 legacy_region = 0;
-
-	std::wstring save_folder;
-	std::wstring update_folder;
-	std::wstring dlc_folder;
-
-	uint64 legacy_time_played = 0;
-	uint64 legacy_last_played = 0;
-
-	bool favorite = false;
-
-	bool is_update = false;
-};
-
-struct GraphicPackEntry
-{
-	GraphicPackEntry(std::wstring_view filename,std::string_view category, std::string_view preset)
-		: filename(filename)
-	{
-		presets[std::string{category}] = preset;
-	}
-
-	GraphicPackEntry(std::wstring_view filename, std::string_view preset)
-		: filename(filename)
-	{
-		presets[""] = preset;
-	}
-
-	GraphicPackEntry(std::wstring filename)
-		: filename(std::move(filename))
-	{}
-
-	struct Preset
-	{
-		std::string name;
-		std::string category;
-	};
-	std::unordered_map<std::string, std::string> presets; // category, active_preset
-
-	std::wstring filename;
-	bool enabled = true;
-};
 
 enum GraphicAPI
 {
@@ -398,49 +337,19 @@ struct CemuConfig
 
 	CemuConfig(const CemuConfig&) = delete;
 
-	// sets mlc path, updates permanent config value, saves config
-	void SetMLCPath(fs::path path, bool save = true);
+	// sets mlc path
+	void SetMLCPath(fs::path path);
 
 	ConfigValue<uint64> log_flag{ 0 };
 	ConfigValue<bool> advanced_ppc_logging{ false };
 
-	ConfigValue<bool> permanent_storage{ true };
-
 	ConfigValue<std::string> mlc_path{};
-	ConfigValue<std::string> proxy_server{};
-
-	// temporary workaround because feature crashes on macOS
-#if BOOST_OS_MACOS
-#define DISABLE_SCREENSAVER_DEFAULT false
-#else
-#define DISABLE_SCREENSAVER_DEFAULT true
-#endif
-	ConfigValue<bool> disable_screensaver{DISABLE_SCREENSAVER_DEFAULT};
-#undef DISABLE_SCREENSAVER_DEFAULT
-	ConfigValue<bool> play_boot_sound{false};
 
 	std::vector<std::string> game_paths;
-	std::mutex game_cache_entries_mutex;
-	std::vector<GameEntry> game_cache_entries;
-
-	// optimized access
-	std::set<uint64> game_cache_favorites; // per titleId
-
-	struct _path_hash {
-		std::size_t operator()(const fs::path& path) const {
-			return fs::hash_value(path);
-		}
-	};
-	// <filename, <category, preset>>
-	std::unordered_map<fs::path, std::unordered_map<std::string, std::string>, _path_hash> graphic_pack_entries;
-
-	ConfigValueBounds<CPUMode> cpu_mode{ CPUMode::Auto };
 	ConfigValueBounds<CafeConsoleLanguage> console_language{ CafeConsoleLanguage::EN };
 
 	// graphics
 	ConfigValue<GraphicAPI> graphic_api{ kDefaultGraphicsAPI };
-	std::array<uint8, 16> legacy_graphic_device_uuid{}; // placeholder option for backwards compatibility with settings from 2.6 and before (renamed to "vkDevice")
-	std::array<uint8, 16> vk_graphic_device_uuid;
 	uint64 mtl_graphic_device_uuid{ 0 };
 	ConfigValue<int> vsync{ 0 }; // 0 = off, 1+ = depending on render backend
 	ConfigValue<bool> gx2drawdone_sync { true };
@@ -489,7 +398,7 @@ struct CemuConfig
 	// audio
 	sint32 audio_api = 0;
 	sint32 audio_delay = 2;
-	AudioChannels tv_channels = kStereo, pad_channels = kStereo, input_channels = kMono;
+	AudioChannels tv_channels = kStereo, pad_channels = kStereo;
 	sint32 tv_volume = 50, pad_volume = 0, input_volume = 50, portal_volume = 50;
 	std::wstring tv_device{ L"default" }, pad_device, input_device, portal_device;
 
@@ -502,28 +411,12 @@ struct CemuConfig
 		std::unordered_map<uint32, NetworkService> service_select; // per-account service index. Key is persistentId
 	}account{};
 
-	// input
-	struct
-	{
-		ConfigValue<std::string> host{"127.0.0.1"};
-		ConfigValue<uint16> port{ 26760 };
-	}dsu_client{};
-
 	// debug
 	ConfigValueBounds<CrashDump> crash_dump{ CrashDump::Disabled };
-	ConfigValue<uint16> gdb_port{ 1337 };
 #ifdef ENABLE_METAL
 	ConfigValue<std::string> gpu_capture_dir{ "" };
 	ConfigValue<bool> framebuffer_fetch{ true };
 #endif
-
-	XMLConfigParser Load(XMLConfigParser& parser);
-	XMLConfigParser Save(XMLConfigParser& parser);
-
-	bool IsGameListFavorite(uint64 titleId);
-	void SetGameListFavorite(uint64 titleId, bool isFavorite);
-	bool GetGameListCustomName(uint64 titleId, std::string& customName);
-	void SetGameListCustomName(uint64 titleId, std::string customName);
 
 	NetworkService GetAccountNetworkService(uint32 persistentId);
 	void SetAccountSelectedService(uint32 persistentId, NetworkService serviceIndex);
@@ -548,21 +441,12 @@ struct CemuConfig
 			return 2;
 		}
 	}
-
-  private:
-	GameEntry* GetGameEntryByTitleId(uint64 titleId);
-	GameEntry* CreateGameEntry(uint64 titleId);
 };
 
-typedef XMLDataConfig<CemuConfig> XMLCemuConfig_t;
-
-inline XMLCemuConfig_t& GetConfigHandle()
-{
-	static XMLCemuConfig_t config;
-	return config;
-}
-
+// The core's settings: Cemu's defaults, then what the core options set.
+// settings.xml is neither read nor written.
 inline CemuConfig& GetConfig()
 {
-	return GetConfigHandle().data();
+	static CemuConfig config;
+	return config;
 }

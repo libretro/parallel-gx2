@@ -360,7 +360,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/util/Zir/Core/IR.cpp \
 	$(CORE_DIR)/src/util/Zir/EmitterGLSL/ZpIREmitGLSL.cpp \
 	$(CORE_DIR)/src/util/Zir/Passes/RegisterAllocatorForGLSL.cpp \
-	$(CORE_DIR)/src/util/bootSound/BootSoundReader.cpp \
 	$(CORE_DIR)/src/util/helpers/helpers.cpp \
 	$(CORE_DIR)/src/util/highresolutiontimer/HighResolutionTimer.cpp
 

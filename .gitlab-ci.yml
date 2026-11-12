@@ -847,6 +847,17 @@ test-gpu-waits:
   script:
     - ./tools/check_gpu_waits.sh
 
+# The core's settings come from Cemu's defaults and the core options: no
+# settings.xml read or written, nothing kept that only it could switch on.
+test-no-settings-file:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_no_settings_file.sh
+
 # The check the GitHub Linux builds run on their objects (every source file
 # of the core's own reached from the retro_* entry points), against a tree
 # whose answer is known.
