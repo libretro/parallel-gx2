@@ -3,151 +3,84 @@
 #include "Cafe/Filesystem/fscDeviceHostFS.h"
 
 #include "Common/FileStream.h"
+#include "Cafe/Filesystem/host_fs.h"
 
-/* FSCVirtualFile implementation for HostFS */
+/* FSCVirtualFile implementation for HostFS, over the C (host_fs.c) */
 
 FSCVirtualFile_Host::~FSCVirtualFile_Host()
 {
-	if (m_type == FSC_TYPE_FILE)
-		delete m_fs;
+	host_fs_close(m_node);
 }
 
 sint32 FSCVirtualFile_Host::fscGetType()
 {
-	return m_type;
+	return host_fs_is_dir(m_node) ? FSC_TYPE_DIRECTORY : FSC_TYPE_FILE;
 }
 
 uint32 FSCVirtualFile_Host::fscDeviceHostFSFile_getFileSize()
 {
-	if (m_type == FSC_TYPE_FILE)
-	{
-		if (m_fileSize > 0xFFFFFFFFULL)
-			cemu_assert_suspicious(); // files larger than 4GB are not supported by Wii U filesystem
-		return (uint32)m_fileSize;
-	}
-	else if (m_type == FSC_TYPE_DIRECTORY)
-	{
-		// todo
-		return (uint32)0;
-	}
-	return 0;
+	const uint64 size = host_fs_size(m_node);
+	if (size > 0xFFFFFFFFULL)
+		cemu_assert_suspicious(); // files larger than 4GB are not supported by Wii U filesystem
+	return (uint32)size;
 }
 
 uint64 FSCVirtualFile_Host::fscQueryValueU64(uint32 id)
 {
-	if (m_type == FSC_TYPE_FILE)
-	{
-		if (id == FSC_QUERY_SIZE)
-			return fscDeviceHostFSFile_getFileSize();
-		else if (id == FSC_QUERY_WRITEABLE)
-			return m_isWritable;
-		else
-			cemu_assert_unimplemented();
-	}
-	else if (m_type == FSC_TYPE_DIRECTORY)
-	{
-		if (id == FSC_QUERY_SIZE)
-			return fscDeviceHostFSFile_getFileSize();
-		else
-			cemu_assert_unimplemented();
-	}
+	if (id == FSC_QUERY_SIZE)
+		return fscDeviceHostFSFile_getFileSize();
+	if (id == FSC_QUERY_WRITEABLE && !host_fs_is_dir(m_node))
+		return host_fs_writable(m_node);
 	cemu_assert_unimplemented();
 	return 0;
 }
 
 uint32 FSCVirtualFile_Host::fscWriteData(void* buffer, uint32 size)
 {
-	if (m_type != FSC_TYPE_FILE)
-		return 0;
-	if (size >= (2UL * 1024UL * 1024UL * 1024UL))
-	{
+	if (!host_fs_is_dir(m_node) && size >= (2UL * 1024UL * 1024UL * 1024UL))
 		cemu_assert_suspicious();
-		return 0;
-	}
-	sint32 writtenBytes = m_fs->writeData(buffer, (sint32)size);
-	m_seek += (uint64)writtenBytes;
-	m_fileSize = std::max(m_fileSize, m_seek);
-	return (uint32)writtenBytes;
+	return host_fs_write(m_node, buffer, size);
 }
 
 uint32 FSCVirtualFile_Host::fscReadData(void* buffer, uint32 size)
 {
-	if (m_type != FSC_TYPE_FILE)
-		return 0;
-	if (size >= (2UL * 1024UL * 1024UL * 1024UL))
-	{
+	if (!host_fs_is_dir(m_node) && size >= (2UL * 1024UL * 1024UL * 1024UL))
 		cemu_assert_suspicious();
-		return 0;
-	}
-	uint32 bytesLeft = (uint32)(m_fileSize - m_seek);
-	bytesLeft = std::min(bytesLeft, 0x7FFFFFFFu);
-	sint32 bytesToRead = std::min(bytesLeft, size);
-	uint32 bytesRead = m_fs->readData(buffer, bytesToRead);
-	m_seek += bytesRead;
-	return bytesRead;
+	return host_fs_read(m_node, buffer, size);
 }
 
 void FSCVirtualFile_Host::fscSetSeek(uint64 seek)
 {
-	if (m_type != FSC_TYPE_FILE)
-		return;
-	this->m_seek = seek;
-	cemu_assert_debug(seek <= m_fileSize);
-	m_fs->SetPosition(seek);
+	cemu_assert_debug(host_fs_is_dir(m_node) || seek <= host_fs_size(m_node));
+	host_fs_seek(m_node, seek);
 }
 
 uint64 FSCVirtualFile_Host::fscGetSeek()
 {
-	if (m_type != FSC_TYPE_FILE)
-		return 0;
-	return m_seek;
+	return host_fs_tell(m_node);
 }
 
 void FSCVirtualFile_Host::fscSetFileLength(uint64 endOffset)
 {
-	if (m_type != FSC_TYPE_FILE)
+	if (host_fs_is_dir(m_node))
 		return;
-	m_fs->SetPosition(endOffset);
-	bool r = m_fs->SetEndOfFile();
-	m_seek = std::min(m_seek, endOffset);
-	m_fileSize = m_seek;
-	m_fs->SetPosition(m_seek);
-	if (!r)
+	if (!host_fs_set_length(m_node, endOffset))
 		cemuLog_log(LogType::Force, "fscSetFileLength: Failed to set size to 0x{:x}", endOffset);
 }
 
 bool FSCVirtualFile_Host::fscDirNext(FSCDirEntry* dirEntry)
 {
-	if (m_type != FSC_TYPE_DIRECTORY)
-		return false;
-
-	if (!m_dir)
-	{
-		// opened on the first entry asked for
-		m_dir.reset(new FileStream::Dir(*m_path));
-		if (!m_dir->Opened())
-			cemuLog_log(LogType::Force, "Failed to iterate directory: {}", _pathToUtf8(*m_path));
-	}
-	if (!m_dir->Next())
-		return false;
-
 	// the name and type as the directory read gave them: nothing allocated
-	const std::string_view fileName = m_dir->Name();
-	const size_t n = std::min(fileName.size(), sizeof(dirEntry->path) - 1);
-	memcpy(dirEntry->path, fileName.data(), n);
-	dirEntry->path[n] = '\0';
-	if (m_dir->IsDirectory())
-	{
-		dirEntry->isDirectory = true;
-		dirEntry->isFile = false;
-		dirEntry->fileSize = 0;
-	}
-	else
-	{
-		dirEntry->isDirectory = false;
-		dirEntry->isFile = true;
-		dirEntry->fileSize = m_dir->Size();
-	}
+	bool isDir = false, failed = false;
+	uint64_t size = 0;
+	const bool any = host_fs_dir_next(m_node, dirEntry->path, sizeof(dirEntry->path), &isDir, &size, &failed);
+	if (failed)
+		cemuLog_log(LogType::Force, "Failed to iterate directory");
+	if (!any)
+		return false;
+	dirEntry->isDirectory = isDir;
+	dirEntry->isFile = !isDir;
+	dirEntry->fileSize = size;
 	return true;
 }
 
@@ -155,9 +88,7 @@ void FSCVirtualFile_Host::fscFlush()
 {
 	// Only writable files hold anything worth flushing; the read side has
 	// nothing pending, and directories have no stream at all.
-	if (m_type != FSC_TYPE_FILE || !m_isWritable || !m_fs)
-		return;
-	m_fs->Flush();
+	host_fs_flush(m_node);
 }
 
 FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
@@ -165,56 +96,28 @@ FSCVirtualFile* FSCVirtualFile_Host::OpenFile(const fs::path& path, FSC_ACCESS_F
 	if (!HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE) && !HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
 		cemu_assert_debug(false); // not allowed. At least one of both flags must be set
 
-	// attempt to open as file
+	unsigned flags = 0;
 	if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_FILE))
-	{
-		FileStream* fs{};
-		bool writeAccessRequested = HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::WRITE_PERMISSION);
-		if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::FILE_ALLOW_CREATE))
-		{
-			fs = FileStream::openFile2(path, writeAccessRequested);
-			if (!fs)
-			{
-				cemu_assert_debug(writeAccessRequested);
-				fs = FileStream::createFile2(path);
-				if (!fs)
-					cemuLog_log(LogType::Force, "FSC: File create failed for {}", _pathToUtf8(path));
-			}
-		}
-		else if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::FILE_ALWAYS_CREATE))
-		{
-			fs = FileStream::createFile2(path);
-			if (!fs)
-				cemuLog_log(LogType::Force, "FSC: File create failed for {}", _pathToUtf8(path));
-		}
-		else
-		{
-			fs = FileStream::openFile2(path, writeAccessRequested);
-		}
-		if (fs)
-		{
-			FSCVirtualFile_Host* vf = new FSCVirtualFile_Host(FSC_TYPE_FILE);
-			vf->m_fs = fs;
-			vf->m_isWritable = writeAccessRequested;
-			vf->m_fileSize = fs->GetSize();
-			fscStatus = FSC_STATUS_OK;
-			return vf;
-		}
-	}
-
-	// attempt to open as directory
+		flags |= HOST_FS_OPEN_FILE;
 	if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::OPEN_DIR))
+		flags |= HOST_FS_OPEN_DIR;
+	if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::WRITE_PERMISSION))
+		flags |= HOST_FS_WRITE;
+	if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::FILE_ALLOW_CREATE))
+		flags |= HOST_FS_ALLOW_CREATE;
+	else if (HAS_FLAG(accessFlags, FSC_ACCESS_FLAG::FILE_ALWAYS_CREATE))
+		flags |= HOST_FS_ALWAYS_CREATE;
+	bool createFailed = false;
+	host_fs_node* node = host_fs_open(_pathToUtf8(path).c_str(), flags, &createFailed);
+	if (createFailed)
+		cemuLog_log(LogType::Force, "FSC: File create failed for {}", _pathToUtf8(path));
+	if (!node)
 	{
-		if (FileStream::IsDirectory(path))
-		{
-			FSCVirtualFile_Host* vf = new FSCVirtualFile_Host(FSC_TYPE_DIRECTORY);
-			vf->m_path.reset(new std::filesystem::path(path));
-			fscStatus = FSC_STATUS_OK;
-			return vf;
-		}
+		fscStatus = FSC_STATUS_FILE_NOT_FOUND;
+		return nullptr;
 	}
-	fscStatus = FSC_STATUS_FILE_NOT_FOUND;
-	return nullptr;
+	fscStatus = FSC_STATUS_OK;
+	return new FSCVirtualFile_Host(node);
 }
 
 /* Device implementation */

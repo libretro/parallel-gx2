@@ -618,6 +618,18 @@ test-title-detect:
     - make -C test/title_detect clean
     - SANITIZER=address,undefined ./test/title_detect/run_tests.sh
 
+# The C (C89) a title's host folder is read and written through.
+test-host-fs:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/host_fs/run_tests.sh
+    - make -C test/host_fs clean
+    - SANITIZER=address,undefined ./test/host_fs/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

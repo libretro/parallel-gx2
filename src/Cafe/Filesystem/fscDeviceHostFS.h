@@ -1,6 +1,7 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Common/FileStream.h"
 
+// a file or directory of a mounted host folder, over the C (host_fs.c)
 class FSCVirtualFile_Host : public FSCVirtualFile
 {
 public:
@@ -21,16 +22,7 @@ public:
 	void fscFlush() override;
 
 private:
-	FSCVirtualFile_Host(uint32 type) : m_type(type) {};
+	explicit FSCVirtualFile_Host(struct host_fs_node* node) : m_node(node) {};
 
-private:
-	uint32 m_type; // FSC_TYPE_*
-	class FileStream* m_fs{};
-	// file
-	uint64 m_seek{ 0 };
-	uint64 m_fileSize{ 0 };
-	bool m_isWritable{ false };
-	// directory
-	std::unique_ptr<std::filesystem::path> m_path{};
-	std::unique_ptr<class FileStream::Dir> m_dir{};
+	struct host_fs_node* m_node;
 };
