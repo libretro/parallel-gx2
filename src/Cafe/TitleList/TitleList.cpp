@@ -5,6 +5,7 @@
 
 #include "util/helpers/helpers.h"
 #include "Cafe/TitleList/title_xml.h"
+#include "Cafe/TitleList/title_detect.h"
 
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 
@@ -442,28 +443,6 @@ bool CafeTitleList::RefreshWorkerThread()
 	}
 }
 
-bool _IsKnownFileNameOrExtension(const fs::path& path)
-{
-	std::string fileExtension = _pathToUtf8(path.extension());
-	for (auto& it : fileExtension)
-		it = _ansiToLower(it);
-	if(fileExtension == ".tmd")
-	{
-		// must be "title.tmd"
-		std::string fileName = _pathToUtf8(path.filename());
-		for (auto& it : fileName)
-			it = _ansiToLower(it);
-		return fileName == "title.tmd";
-	}
-	return
-		fileExtension == ".wud" ||
-		fileExtension == ".wux" ||
-		fileExtension == ".iso" ||
-		fileExtension == ".wua" ||
-		fileExtension == ".wuhb";
-	// note: To detect extracted titles with RPX we rely on the presence of the content,code,meta directory structure
-}
-
 void CafeTitleList::ScanGamePath(const fs::path& path)
 {
 	// scan the whole directory first to determine if this is a title folder
@@ -492,9 +471,7 @@ void CafeTitleList::ScanGamePath(const fs::path& path)
 	for (auto& it : filesInDirectory)
 	{
 		// since checking individual files is slow, we limit it to known file names or extensions
-		if (!it.has_extension())
-			continue;
-		if (!_IsKnownFileNameOrExtension(it))
+		if (!title_scan_wanted(_pathToUtf8(it.filename()).c_str()))
 			continue;
 		AddTitleFromPath(it);
 	}
@@ -535,20 +512,7 @@ void CafeTitleList::ScanMLCPath(const fs::path& path)
 		if (!d.IsDirectory())
 			continue;
 		// only scan directories which match the title id naming scheme
-		const std::string_view dirName = d.Name();
-		if(dirName.size() != 8)
-			continue;
-		bool containsNoHexCharacter = false;
-		for (auto& it : dirName)
-		{
-			if(it >= 'A' && it <= 'F' ||
-				it >= 'a' && it <= 'f' ||
-				it >= '0' && it <= '9')
-				continue;
-			containsNoHexCharacter = true;
-			break;
-		}
-		if(containsNoHexCharacter)
+		if (!title_scan_mlc_folder(std::string(d.Name()).c_str()))
 			continue;
 
 		const fs::path titlePath = d.Path();

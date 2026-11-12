@@ -44,6 +44,8 @@ ZLIB_STREAM_C := $(SRC)/util/helpers/zlib_stream.c
 # The shader and pipeline cache files (C89), under FileCache.h, and the
 # streams they compress and map entries with
 FILE_CACHE_C := $(SRC)/Cemu/FileCache/file_cache.c $(ZLIB_STREAM_C) $(MAPPED_FILE_C)
+# What a file or folder is, by its name or its first octets (C89)
+TITLE_DETECT_C := $(SRC)/Cafe/TitleList/title_detect.c
 # The XML tree (C89) under Xml.h, for the tests that read or write XML
 XML_TREE_C := $(SRC)/util/xml/xml_tree.c
 # A title's meta.xml, meta.ini, app.xml and cos.xml parsed (C89), under

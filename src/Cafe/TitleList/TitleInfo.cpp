@@ -3,58 +3,15 @@
 #include "Cafe/Filesystem/WUHB/wuhb.h"
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Common/FileStream.h"
-#include "Common/FileStream.h"
 #include "Cafe/Filesystem/ZArchiveVFS.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/helpers.h"
+#include "Cafe/TitleList/title_detect.h"
 
-// detect format by reading file header/footer
+// detect format by reading file header/footer (C, title_detect.c)
 CafeTitleFileType DetermineCafeSystemFileType(fs::path filePath)
 {
-	std::unique_ptr<FileStream> fs(FileStream::openFile2(filePath));
-	if (!fs)
-		return CafeTitleFileType::UNKNOWN;
-	// very small files (<32 bytes) are always considered unknown
-	uint64 fileSize = fs->GetSize();
-	if (fileSize < 32)
-		return CafeTitleFileType::UNKNOWN;
-	// read header bytes
-	uint8 headerRaw[32]{};
-	fs->readData(headerRaw, sizeof(headerRaw));
-	// check for WUX
-	uint8 wuxHeaderMagic[8] = { 0x57,0x55,0x58,0x30,0x2E,0xD0,0x99,0x10 };
-	if (memcmp(headerRaw, wuxHeaderMagic, sizeof(wuxHeaderMagic)) == 0)
-		return CafeTitleFileType::WUX;
-	// check for RPX
-	uint8 rpxHeaderMagic[9] = { 0x7F,0x45,0x4C,0x46,0x01,0x02,0x01,0xCA,0xFE };
-	if (memcmp(headerRaw, rpxHeaderMagic, sizeof(rpxHeaderMagic)) == 0)
-		return CafeTitleFileType::RPX;
-	// check for ELF
-	uint8 elfHeaderMagic[9] = { 0x7F,0x45,0x4C,0x46,0x01,0x02,0x01,0x00,0x00 };
-	if (memcmp(headerRaw, elfHeaderMagic, sizeof(elfHeaderMagic)) == 0)
-		return CafeTitleFileType::ELF;
-	// check for WUD
-	uint8 wudMagic1[4] = { 0x57,0x55,0x50,0x2D }; // wud files should always start with "WUP-..."
-	uint8 wudMagic2[4] = { 0xCC,0x54,0x9E,0xB9 };
-	if (fileSize >= 0x10000)
-	{
-		uint8 magic1[4];
-		fs->SetPosition(0);
-		fs->readData(magic1, 4);
-		if (memcmp(magic1, wudMagic1, 4) == 0)
-		{
-			uint8 magic2[4];
-			fs->SetPosition(0x10000);
-			fs->readData(magic2, 4);
-			if (memcmp(magic2, wudMagic2, 4) == 0)
-			{
-				return CafeTitleFileType::WUD;
-			}
-		}
-	}
-	// check for WUA
-	// todo
-	return CafeTitleFileType::UNKNOWN;
+	return (CafeTitleFileType)title_file_type(FileStream::HostPath(filePath).c_str());
 }
 
 TitleInfo::TitleInfo(const fs::path& path)
@@ -140,38 +97,12 @@ TitleInfo::CachedInfo TitleInfo::MakeCacheEntry()
 // WUA can contain multiple titles. Root directory contains one directory for each title. The name must match: <titleId>_v<version>
 bool TitleInfo::ParseWuaTitleFolderName(std::string_view name, TitleId& titleIdOut, uint16& titleVersionOut)
 {
-	std::string_view sv = name;
-	if (sv.size() < 16 + 2)
+	uint64_t id;
+	uint16_t version;
+	if (!title_wua_folder(name.data(), name.size(), &id, &version))
 		return false;
-	TitleId parsedId;
-	if (!TitleIdParser::ParseFromStr(sv, parsedId))
-		return false;
-	sv.remove_prefix(16);
-	if (sv[0] != '_' || (sv[1] != 'v' && sv[1] != 'v'))
-		return false;
-	sv.remove_prefix(2);
-	if (sv.empty())
-		return false;
-	if (sv[0] == '0' && sv.size() != 1) // leading zero not allowed
-		return false;
-	uint32 v = 0;
-	while (!sv.empty())
-	{
-		uint8 c = sv[0];
-		sv.remove_prefix(1);
-		v *= 10;
-		if (c >= '0' && c <= '9')
-			v += (uint32)(c - '0');
-		else
-		{
-			v = 0xFFFFFFFF;
-			break;
-		}
-	}
-	if (v > 0xFFFF)
-		return false;
-	titleIdOut = parsedId;
-	titleVersionOut = v;
+	titleIdOut = id;
+	titleVersionOut = version;
 	return true;
 }
 
@@ -183,7 +114,8 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 	if (FileStream::IsRegularFile(path))
 	{
 		std::string filenameStr = _pathToUtf8(path.filename());
-		if (boost::iends_with(filenameStr, ".rpx"))
+		const enum title_name_kind kind = title_name_kind(filenameStr.c_str());
+		if (kind == TITLE_NAME_RPX)
 		{
 			// is in code folder?
 			fs::path parentPath = path.parent_path();
@@ -199,21 +131,19 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 				}
 			}
 		}
-		else if (boost::iends_with(filenameStr, ".wud") ||
-				 boost::iends_with(filenameStr, ".wux") ||
-				 boost::iends_with(filenameStr, ".iso"))
+		else if (kind == TITLE_NAME_DISC)
 		{
 			formatOut = TitleDataFormat::WUD;
 			pathOut = path;
 			return true;
 		}
-		else if (boost::iequals(filenameStr, "title.tmd"))
+		else if (kind == TITLE_NAME_TMD)
 		{
 			formatOut = TitleDataFormat::NUS;
 			pathOut = path;
 			return true;
 		}
-		else if (boost::iends_with(filenameStr, ".wua"))
+		else if (kind == TITLE_NAME_WUA)
 		{
 			formatOut = TitleDataFormat::WIIU_ARCHIVE;
 			pathOut = path;
@@ -267,7 +197,7 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 			}
 			return foundBase;
 		}
-		else if (boost::iends_with(filenameStr, ".wuhb"))
+		else if (kind == TITLE_NAME_WUHB)
 		{
 			if (wuhb_t* reader = wuhb_open(FileStream::HostPath(path).c_str(), 0))
 			{
@@ -290,7 +220,7 @@ bool TitleInfo::DetectFormat(const fs::path& path, fs::path& pathOut, TitleDataF
 		}
 		// WUHB carries its own magic value, so the reader can answer for a file
 		// whose name told us nothing
-		if (fileType == CafeTitleFileType::UNKNOWN && !boost::iends_with(filenameStr, ".wuhb"))
+		if (fileType == CafeTitleFileType::UNKNOWN && kind != TITLE_NAME_WUHB)
 		{
 			if (wuhb_t* reader = wuhb_open(FileStream::HostPath(path).c_str(), 0))
 			{
