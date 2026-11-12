@@ -22,50 +22,16 @@ namespace NCrypto
 	};
 
 	/* ECC Certificate */
-	struct ECCPrivKey
-	{
-		uint8 keyData[30];
-
-		[[nodiscard]] static ECCPrivKey generate();
-
-		static ECCPrivKey getDeviceCertPrivateKey();
-	};
-
 	struct ECCPubKey
 	{
 		uint8 x[30];
 		uint8 y[30];
-
-		/* 0x04 || x || y, as libretro-common's b233_* take it */
-		void getPoint(uint8* point) const;
-
-		[[nodiscard]] static ECCPubKey generateFromPrivateKey(ECCPrivKey& privKey);
 	};
 
 	struct ECCSig
 	{
 		uint8 r[30];
 		uint8 s[30];
-
-		bool doesMatch(ECCSig& otherSig) const
-		{
-			return memcmp(this->r, otherSig.r, sizeof(this->r)) == 0 && memcmp(this->s, otherSig.s, sizeof(this->s)) == 0;
-		}
-
-		std::string encodeToBase64()
-		{
-			return base64Encode(this, 60);
-		}
-	};
-
-	struct CHash256 // SHA256
-	{
-		uint8 b[32];
-	};
-
-	struct CHash160 // SHA1
-	{
-		uint8 b[20];
 	};
 
 	struct CertECC
@@ -86,69 +52,13 @@ namespace NCrypto
 		/* +0x108 */ ECCPubKey			publicKey; //uint8				publicKey[0x3C];
 		/* +0x144 */ uint8				padding[0x180 - 0x144];
 
-		bool decodeFromBase64(std::string_view input);
 		std::string encodeToBase64();
 
-		bool verifySignatureViaPubKey(ECCPubKey& signerPubKey);
-		void sign(ECCPrivKey& signerPrivKey);
-
 		static CertECC GetDeviceCertificate();
-		static CertECC generateCertificate(uint32 signerTitleIdHigh, uint32 signerTitleIdLow, ECCPrivKey& privKeySigner, ECCPrivKey& privKeyIn, ECCPubKey& pubKeyOut);
 	};
 
 	static_assert(sizeof(CertECC) == 0x180);
 
-
-	/* ETicket */
-
-	/* Title meta data */
-
-	class TMDParser
-	{
-	public:
-		enum class TMDContentFlags : uint16
-		{
-			// 0x0001 -> Is encrypted?
-			FLAG_SHA1 = 0x2000, // if not set, use SHA256
-			FLAG_HASHED_CONTENT = 0x0002, // .app uses hashed format
-		};
-
-		struct ContentEntry
-		{
-			uint32 contentId;
-			uint16 index;
-			TMDContentFlags contentFlags;
-			uint64 size;
-			uint8 hash32[32];
-		};
-
-		uint64 getTitleId() const
-		{
-			return m_titleId;
-		}
-
-		uint16 getTitleVersion() const
-		{
-			return m_titleVersion;
-		}
-
-		bool parse(const uint8* data, size_t size);
-		std::vector<ContentEntry>& GetContentList()
-		{
-			return m_content;
-		}
-
-	private:
-		uint64 m_titleId;
-		uint16 m_titleVersion;
-		std::vector<ContentEntry> m_content;
-	};
-
-	DEFINE_ENUM_FLAG_OPERATORS(TMDParser::TMDContentFlags);
-
-	void GenerateHashSHA256(const void* data, size_t len, CHash256& hashOut);
-	ECCSig signHash(uint32 signerTitleIdHigh, uint32 signerTitleIdLow, uint8* hash, sint32 hashLen, CertECC& certChainOut);
-	bool verifyHashSignature(uint8* hash, sint32 hashLen, ECCPubKey& certChainPubKey, ECCSig& sig);
 
 	uint32 GetDeviceId();
 	std::string GetSerial();
@@ -157,9 +67,4 @@ namespace NCrypto
 	const char* GetCountryAsString(sint32 index); // returns NN if index is not valid or known
 	size_t GetCountryCount();
 	bool SEEPROM_IsPresent();
-	bool OTP_IsPresent();
-
-	bool HasDataForConsoleCert();
-
-	void unitTests();
 }

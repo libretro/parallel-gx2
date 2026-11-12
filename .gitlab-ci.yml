@@ -630,6 +630,20 @@ test-host-fs:
     - make -C test/host_fs clean
     - SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+# The C (C89) Miiverse's and the console services' payloads are base64
+# encoded and decoded in, decoding as Cemu always has.
+test-base64:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/base64/run_tests.sh
+    - make -C test/base64 clean
+    - SANITIZER=address,undefined ./test/base64/run_tests.sh
+
 # The C (C89) a DLC's title.tik is read in for the contents it grants, every
 # offset in it checked.
 test-eticket:

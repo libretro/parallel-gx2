@@ -7,26 +7,6 @@ void iosuCrypto_getDeviceSerialString(char* serialString);
 
 // certificate API
 
-struct ECCPrivKey
-{
-	uint8 keyData[30];
-};
-
-struct ECCPubKey
-{
-	uint8 keyData[60];
-};
-
-struct ECCSig
-{
-	uint8 keyData[60]; // check size?
-};
-
-struct CHash256
-{
-	uint8 b[32];
-};
-
 struct CertECC_t
 {
 	enum class SIGTYPE : uint32
@@ -49,10 +29,6 @@ struct CertECC_t
 
 static_assert(sizeof(CertECC_t) == 0x180);
 
-sint32 iosuCrypto_getDeviceCertificateBase64Encoded(char* output);
-bool iosuCrypto_verifyCert(CertECC_t& cert);
-
-std::string iosuCrypto_base64Encode(unsigned char const* bytes_to_encode, unsigned int inputLen);
 
 // certificate store, into a transfer's TLS settings (Common/http_xfer.h)
 struct http_xfer_tls;

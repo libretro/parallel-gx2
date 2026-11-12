@@ -72,79 +72,6 @@ void iosuCrypto_getDeviceSerialString(char* serialString)
 	sprintf(serialString, "%s%s", serialStringPart0, serialStringPart1);
 }
 
-static const char* base64_charset =
-"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-"abcdefghijklmnopqrstuvwxyz"
-"0123456789+/";
-
-int iosuCrypto_base64Encode(unsigned char const* bytes_to_encode, unsigned int inputLen, char* output)
-{
-	int i = 0;
-	int j = 0;
-	unsigned char charArray_3[3];
-	unsigned char charArray_4[4];
-	sint32 outputLength = 0;
-	while (inputLen--)
-	{
-		charArray_3[i++] = *(bytes_to_encode++);
-		if (i == 3)
-		{
-			charArray_4[0] = (charArray_3[0] & 0xfc) >> 2;
-			charArray_4[1] = ((charArray_3[0] & 0x03) << 4) + ((charArray_3[1] & 0xf0) >> 4);
-			charArray_4[2] = ((charArray_3[1] & 0x0f) << 2) + ((charArray_3[2] & 0xc0) >> 6);
-			charArray_4[3] = charArray_3[2] & 0x3f;
-			for (i = 0; (i < 4); i++)
-			{
-				output[outputLength] = base64_charset[charArray_4[i]];
-				outputLength++;
-			}
-			i = 0;
-		}
-	}
-	if (i)
-	{
-		for (j = i; j < 3; j++)
-			charArray_3[j] = '\0';
-
-		charArray_4[0] = (charArray_3[0] & 0xfc) >> 2;
-		charArray_4[1] = ((charArray_3[0] & 0x03) << 4) + ((charArray_3[1] & 0xf0) >> 4);
-		charArray_4[2] = ((charArray_3[1] & 0x0f) << 2) + ((charArray_3[2] & 0xc0) >> 6);
-		charArray_4[3] = charArray_3[2] & 0x3f;
-
-		for (j = 0; j < (i + 1); j++)
-		{
-			output[outputLength] = base64_charset[charArray_4[j]];
-			outputLength++;
-		}
-		while (i++ < 3)
-		{
-			output[outputLength] = '=';
-			outputLength++;
-		}
-	}
-	return outputLength;
-}
-
-std::string iosuCrypto_base64Encode(unsigned char const* bytes_to_encode, unsigned int inputLen)
-{
-	int encodedLen = inputLen / 3 * 4 + 16;
-	std::string strB64;
-	strB64.resize(encodedLen);
-	int outputLen = iosuCrypto_base64Encode(bytes_to_encode, inputLen, strB64.data());
-	cemu_assert_debug(outputLen < strB64.size());
-	strB64.resize(outputLen);
-	return strB64;
-}
-static_assert(sizeof(CertECC_t) == sizeof(CertECC_t));
-
-ECCPrivKey g_consoleCertPrivKey{};
-
-void iosuCrypto_getDeviceCertPrivateKey(void* privKeyOut, sint32 len)
-{
-	cemu_assert(len == 30);
-	memcpy(privKeyOut, g_consoleCertPrivKey.keyData, 30);
-}
-
 void iosuCrypto_getDeviceCertificate(void* certOut, sint32 len)
 {
 	cemu_assert(len == 0x180);
@@ -186,19 +113,10 @@ void iosuCrypto_generateDeviceCertificate()
 	uint8 privateKey[0x20];
 	memset(privateKey, 0, sizeof(privateKey));
 	iosuCrypto_readOtpData(privateKey, 0x88, 0x1E);
-	memcpy(g_consoleCertPrivKey.keyData, privateKey, 30);
 
 	uint8 point[B233_POINT_SIZE];
 	if (b233_keygen(privateKey, point) == 0)
 		memcpy(g_wiiuDeviceCert.publicKey, point + 1, 0x3C);
-}
-
-sint32 iosuCrypto_getDeviceCertificateBase64Encoded(char* output)
-{
-	iosuCrypto_base64Encode((uint8*)&g_wiiuDeviceCert, sizeof(g_wiiuDeviceCert), output);
-	sint32 len = sizeof(g_wiiuDeviceCert) / 3 * 4;
-	output[len] = '\0';
-	return len;
 }
 
 // The length of the DER element at @der, header included; 0 if it does

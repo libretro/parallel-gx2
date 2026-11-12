@@ -352,8 +352,6 @@ void HttpSOAPHelper::SOAP_generateEnvelope()
 
 }
 
-sint32 iosuCrypto_getDeviceCertificateBase64Encoded(char* output);
-
 static bool SOAPOnBody(void* ctx, const void* data, size_t len)
 {
 	std::vector<uint8>* buffer = (std::vector<uint8>*)ctx;
