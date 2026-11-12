@@ -554,6 +554,18 @@ test-hmac-md5:
     - make -C test/hmac_md5 clean
     - SANITIZER=address,undefined ./test/hmac_md5/run_tests.sh
 
+# The C (C89) the shader, pipeline and register caches are read and written with.
+test-mem-stream:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/mem_stream/run_tests.sh
+    - make -C test/mem_stream clean
+    - SANITIZER=address,undefined ./test/mem_stream/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

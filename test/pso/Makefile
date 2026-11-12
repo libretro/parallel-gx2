@@ -33,14 +33,14 @@ LRC_SRCS += $(FILE_IO_C)
 FLAGS += $(FILE_IO_FLAGS)
 CXX_SRCS := pso_gate.cpp stubs.cpp $(SRC)/Cemu/FileCache/FileCache.cpp $(FILE_IO_CXX) \
 	$(SRC)/util/helpers/Deflate.cpp $(SRC)/Cafe/HW/Latte/Common/RegisterSerializer.cpp \
-	$(SRC)/util/helpers/Serializer.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
+	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \
 	$(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp $(SRC)/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineRecord.cpp
 
 all: pso_gate$(EXE)
 
-pso_gate$(EXE): $(MAPPED_FILE_C) $(CXX_SRCS) ../shaders/shaders_test.cpp $(LRC_SRCS)
+pso_gate$(EXE): $(MAPPED_FILE_C) $(MEM_STREAM_C) $(CXX_SRCS) ../shaders/shaders_test.cpp $(LRC_SRCS)
 	for f in $(LRC_SRCS); do $(CC) $(FLAGS) -std=gnu99 -c $$f -o $$(basename $$f .c).o || exit 1; done
-	for f in $(MAPPED_FILE_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
+	for f in $(MAPPED_FILE_C) $(MEM_STREAM_C); do $(CC) $(FLAGS) $(C89_FLAGS) -c $$f -o $$(basename $$f .c).o || exit 1; done
 	$(CXX) $(FLAGS) $(CXXFLAGS_CORE) -std=gnu++20 $(CXX_SRCS) *.o $(LIBS) -o $@
 	rm -f *.o
 

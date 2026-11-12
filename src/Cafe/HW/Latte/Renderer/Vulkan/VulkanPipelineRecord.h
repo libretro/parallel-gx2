@@ -43,15 +43,14 @@ public:
 	// What is not yet written out, the header first: borrowed, valid until
 	// the next Draw or Taken
 	std::span<const uint8> Output() { return m_writer.getResult(); }
-	// The caller has written Output() out: the next state is serialized in
-	// the other buffer, both keeping their capacity
-	void Taken() { m_writer.getResultAndReset(m_spare); }
+	// The caller has written Output() out: the buffer is emptied, keeping
+	// its capacity
+	void Taken() { m_writer.reset(); }
 	size_t States() const { return m_seen.size(); }
 
 private:
 	std::unordered_set<uint64> m_seen;
 	MemStreamWriter m_writer{4096};
-	std::vector<uint8> m_spare;
 	std::unique_ptr<VulkanPipelineRecordEntry> m_entry;
 };
 
