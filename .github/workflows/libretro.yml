@@ -428,6 +428,14 @@ jobs:
           make -C test/file_cache clean
           SANITIZER=address,undefined ./test/file_cache/run_tests.sh
 
+      - name: "Host paths"
+        # the C (C89) paths are matched without regard to case with, and
+        # trees removed with; plain and under ASan + UBSan
+        run: |
+          ./test/host_path/run_tests.sh
+          make -C test/host_path clean
+          SANITIZER=address,undefined ./test/host_path/run_tests.sh
+
       - name: "FST volume reads"
         # the C (C89) a volume's files are read and checked in: raw clusters
         # against the TMD's content hashes, right, wrong and of a size not a

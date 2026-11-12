@@ -594,6 +594,18 @@ test-file-cache:
     - make -C test/file_cache clean
     - SANITIZER=address,undefined ./test/file_cache/run_tests.sh
 
+# The C (C89) paths are matched without regard to case with.
+test-host-path:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    CC: gcc-12
+  script:
+    - ./test/host_path/run_tests.sh
+    - make -C test/host_path clean
+    - SANITIZER=address,undefined ./test/host_path/run_tests.sh
+
 # The C (C89) a volume's files are read and checked in.
 test-fst-volume:
   stage: test

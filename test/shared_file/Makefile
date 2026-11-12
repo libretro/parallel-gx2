@@ -16,7 +16,7 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
-LRC_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
+LRC_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c %/host_path.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(LRC)/rthreads/rthreads.c \
 	$(LRC)/rthreads/retro_eventcount.c
 CORE_SRCS := shared_file_test.c $(SRC)/Common/shared_file.c

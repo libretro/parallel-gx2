@@ -6,46 +6,18 @@
 #include <retro_dirent.h>
 #include <libretro.h>
 
-#ifndef _WIN32
-// The path as the file system has it, matched without regard to case where it
-// does not exist as given: titles name their files in whatever case, on a
-// console whose file system does not care. Through the VFS, like the open.
-static fs::path findPathCI(const fs::path& path)
-{
-	if (path_is_valid(_pathToUtf8(path).c_str()))
-		return path;
-	const fs::path name = path.filename();
-	fs::path parent = path.parent_path();
-	if (parent.empty())
-		parent = ".";
-	else if (!path_is_valid(_pathToUtf8(parent).c_str()))
-		parent = findPathCI(parent);
-	const std::string wanted = _pathToUtf8(name);
-	if (struct RDIR* dir = retro_opendir_include_hidden(_pathToUtf8(parent).c_str(), true))
-	{
-		while (retro_readdir(dir))
-		{
-			const char* entry = retro_dirent_get_name(dir);
-			if (entry && boost::iequals(std::string_view(entry), wanted))
-			{
-				fs::path found = parent / _utf8ToPath(entry);
-				retro_closedir(dir);
-				return found;
-			}
-		}
-		retro_closedir(dir);
-	}
-	return parent / name;
-}
-#endif
+#include "Common/host_path.h"
 
 std::string FileStream::HostPath(const fs::path& path)
 {
-#ifdef _WIN32
-	return _pathToUtf8(path);
-#else
-	return _pathToUtf8(findPathCI(path));
-#endif
+	// matched without regard to case where it does not exist as given (C,
+	// host_path.c)
+	char* resolved = host_path_resolve(_pathToUtf8(path).c_str());
+	if (!resolved)
+		return _pathToUtf8(path);
+	std::string out(resolved);
+	free(resolved);
+	return out;
 }
 
 FileStream* FileStream::Open(const fs::path& path, unsigned mode, unsigned hints)
@@ -173,19 +145,7 @@ std::optional<uint64> FileStream::FileSize(const fs::path& path)
 
 bool FileStream::RemoveAll(const fs::path& path)
 {
-	const std::string p = _pathToUtf8(path);
-	// a file, an empty directory or a link goes at once - a link to a
-	// directory without what that holds; only a directory that is not
-	// empty has its entries removed first
-	if (filestream_delete(p.c_str()) == 0)
-		return true;
-	if (!(path_stat(p.c_str()) & RETRO_VFS_STAT_IS_VALID))
-		return true;
-	if (!path_is_directory(p.c_str()))
-		return false;
-	for (Dir d(path); d.Next();)
-		RemoveAll(d.Path());
-	return filestream_delete(p.c_str()) == 0;
+	return host_remove_all(_pathToUtf8(path).c_str());
 }
 
 FileStream::Dir::Dir(const fs::path& path) : m_path(path)

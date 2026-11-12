@@ -62,6 +62,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/Filesystem/WUHB/wuhb.c \
 	$(CORE_DIR)/src/Common/shared_file.c \
 	$(CORE_DIR)/src/Common/http_xfer.c \
+	$(CORE_DIR)/src/Common/host_path.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_host.c \
 	$(CORE_DIR)/src/Cafe/TitleList/title_xml.c \
 	$(CORE_DIR)/src/util/IniParser/ini_file.c \

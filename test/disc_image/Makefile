@@ -23,7 +23,7 @@ endif
 include ../file_io.mk
 FLAGS += $(FILE_IO_FLAGS)
 # filestream: the only FileStream call left is HostPath, which the test has
-C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c,$(FILE_IO_C)) \
+C_SRCS := $(filter-out %/retro_dirent.c %/compat_strcasestr.c %/host_path.c,$(FILE_IO_C)) \
 	$(LRC)/time/rtime.c $(LRC)/compat/compat_strl.c $(AES_LRC_C)
 CORE_C_SRCS := $(DISC_IMAGE_C) $(SRC)/Cafe/Filesystem/WUHB/wuhb.c $(AES_C)
 CXX_SRCS := disc_image_test.cpp
