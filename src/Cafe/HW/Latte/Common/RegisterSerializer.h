@@ -24,6 +24,9 @@ namespace Latte
 	// call.
 	LatteContextRegister& LoadGPURegisterStateScratch(const GPUCompactedRegisterState& registerState);
 
+	// the dictionary the entries are compressed with; before the first
+	// (de)serialize, once
+	void InitRegisterSerializer();
 	void SerializeRegisterState(GPUCompactedRegisterState& regState, MemStreamWriter& memWriter);
 	bool DeserializeRegisterState(GPUCompactedRegisterState& regState, MemStreamReader& memReader);
 }

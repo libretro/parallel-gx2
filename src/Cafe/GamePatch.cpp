@@ -522,10 +522,10 @@ void GamePatch_scan()
 	cemuLog_log(LogType::Force, "HLE scan time: {}ms", hleInstallEnd-hleInstallStart);
 }
 
-RunAtCemuBoot _loadGamePatchAPI([]()
-	{
-		osLib_addFunction("hle", "h000000001", hleExport_breathOfTheWild_busyLoop);
-		osLib_addFunction("hle", "h000000002", hleExport_breathOfTheWild_busyLoop2);
-		osLib_addFunction("hle", "h000000003", hleExport_ffl_swapEndianFloatArray);
-		osLib_addFunction("hle", "h000000004", hleExport_xcx_enterCriticalSection);
-	});
+void GamePatch_init()
+{
+	osLib_addFunction("hle", "h000000001", hleExport_breathOfTheWild_busyLoop);
+	osLib_addFunction("hle", "h000000002", hleExport_breathOfTheWild_busyLoop2);
+	osLib_addFunction("hle", "h000000003", hleExport_ffl_swapEndianFloatArray);
+	osLib_addFunction("hle", "h000000004", hleExport_xcx_enterCriticalSection);
+}

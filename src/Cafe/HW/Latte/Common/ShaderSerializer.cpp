@@ -2,8 +2,8 @@
 #include <boost/container/small_vector.hpp>
 #include <encodings/rzstd.h>
 
-// compression dictionary for Latte shader code, initialized on boot. The
-// entries are Zstandard frames made with it, as standalone Cemu makes them,
+// compression dictionary for Latte shader code, made by InitShaderSerializer.
+// The entries are Zstandard frames made with it, as standalone Cemu makes them,
 // so shader caches go between the two either way.
 rzstd_dict_t* s_shaderDict{};
 
@@ -67,15 +67,16 @@ namespace Latte
 
 extern const uint8 s_shaderDictCompressed[];
 
-RunAtCemuBoot _loadShaderCompressionDictionary([]()
+void Latte::InitShaderSerializer()
 {
-	// decompress and load dict
+	if (s_shaderDict)
+		return;
 	std::vector<uint8> dictData(0x1B800);
 	size_t dictSize = 0;
 	rzstd_decode(dictData.data(), dictData.size(), s_shaderDictCompressed, 0xA985, &dictSize);
 	s_shaderDict = rzstd_dict_new(dictData.data(), dictSize);
 	cemu_assert_debug(s_shaderDict);
-});
+}
 
 const uint8 s_shaderDictCompressed[0xA985] = // 0xA985 Uncompressed: 0x1B800
 {

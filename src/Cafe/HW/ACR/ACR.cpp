@@ -1,5 +1,6 @@
 #include "Cafe/HW/MMU/MMU.h"
 #include "Cafe/HW/Common/HwReg.h"
+#include "Cafe/HW/ACR/acr.h"
 
 namespace HW_ACR
 {
@@ -56,13 +57,11 @@ namespace HW_ACR
 		g_acr.viCtrl = newValue;
 	}
 
-	RunAtCemuBoot _initACR([]()
+	void Initialize()
 	{
 		MMU::RegisterMMIO_32<HWREG::ACR_VI_DATA, ACR_VIDATA_R32, ACR_VIDATA_W32>(MMU::MMIOInterface::INTERFACE_0D000000, 0x21C);
 		MMU::RegisterMMIO_32<HWREG::ACR_VI_ADDR, ACR_VIADDR_R32, ACR_VIADDR_W32>(MMU::MMIOInterface::INTERFACE_0D000000, 0x224);
 		MMU::RegisterMMIO_32<HWREG::ACR_VI_CTRL, ACR_VICONTROL_R32, ACR_VICONTROL_W32>(MMU::MMIOInterface::INTERFACE_0D000000, 0x228);
-
-		// init 
-	});
+	}
 
 }

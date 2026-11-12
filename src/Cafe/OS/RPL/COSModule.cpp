@@ -28,7 +28,7 @@
 #include "OS/libs/nn_fp/nn_fp.h"
 #include "OS/libs/nn_idbe/nn_idbe.h"
 #include "OS/libs/nn_olv/nn_olv.h"
-#include "OS/libs/nn_idbe/nn_idbe.h"
+#include "OS/libs/nn_sl/nn_sl.h"
 #include "OS/libs/nlibnss/nlibnss.h"
 #include "OS/libs/nlibcurl/nlibcurl.h"
 #include "OS/libs/sysapp/sysapp.h"
@@ -80,6 +80,7 @@ std::span<COSModule*> GetCOSModules()
 		nn::fp::GetModule(),
 		nn::olv::GetModule(),
 		nn::idbe::GetModule(),
+		nn::sl::GetModule(),
 		nlibnss::GetModule(),
 		nlibcurl::GetModule(),
 		sysapp::GetModule(),

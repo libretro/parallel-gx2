@@ -161,7 +161,6 @@ void CemuCommonInit()
 	CEMU_INIT_STAGE("done");
 }
 
-void mainEmulatorLLE();
 void ppcAsmTest();
 void gx2CopySurfaceTest();
 void ExpressionParser_test();

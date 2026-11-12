@@ -432,6 +432,11 @@ static void TestRegisterScratch()
 
 static void TestCacheEntries()
 {
+	// as CafeSystem::Initialize makes them, and again: once is enough
+	Latte::InitShaderSerializer();
+	Latte::InitRegisterSerializer();
+	Latte::InitShaderSerializer();
+	Latte::InitRegisterSerializer();
 	TestRegisterScratch();
 	// standalone Cemu's
 	{

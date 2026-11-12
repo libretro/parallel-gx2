@@ -5,8 +5,8 @@
 
 #include <encodings/rzstd.h>
 
-// compression dictionary for pipeline Latte register data, initialized on
-// boot. The entries are Zstandard frames made with it, as standalone Cemu
+// compression dictionary for pipeline Latte register data, made by
+// InitRegisterSerializer. The entries are Zstandard frames made with it, as standalone Cemu
 // makes them, so pipeline caches go between the two either way.
 rzstd_dict_t* s_regDict{};
 
@@ -291,42 +291,20 @@ namespace Latte
 			return false;
 		return true;
 	}
-
-	void UnitTestPipelineSerialization()
-	{
-		GPUCompactedRegisterState inputState{};
-		GPUCompactedRegisterState outputState{};
-		for (int i = 0; i < inputState.NUM_REGS; i++)
-		{
-			if ((0x1037778e >> ((i / 3) & 31)) & 1)
-				inputState.rawArray[i] = i + i * 17 + i * 23;
-			else
-				inputState.rawArray[i] = 0;
-		}
-		// serialize and deserialize
-		MemStreamWriter writer(1024 * 8);
-		SerializeRegisterState(inputState, writer);
-		auto writerRes = writer.getResult();
-		MemStreamReader reader(writerRes.data(), (sint32)writerRes.size());
-		bool r = DeserializeRegisterState(outputState, reader);
-		cemu_assert_debug(r);
-		cemu_assert_debug(memcmp(&inputState, &outputState, sizeof(GPUCompactedRegisterState)) == 0);
-	}
 }
 
 extern const uint8 s_regDataDict[];
 
-RunAtCemuBoot _loadPipelineCompressionDictionary([]()
+void Latte::InitRegisterSerializer()
 {
-	// decompress and load dict
+	if (s_regDict)
+		return;
 	std::vector<uint8> dictData(0x1B800);
 	size_t dictSize = 0;
 	rzstd_decode(dictData.data(), dictData.size(), s_regDataDict, 0x5AD2, &dictSize);
 	s_regDict = rzstd_dict_new(dictData.data(), dictSize);
 	cemu_assert_debug(s_regDict);
-
-	Latte::UnitTestPipelineSerialization();
-});
+}
 
 const uint8 s_regDataDict[] = // 0x5AD2 Uncompressed: 0x1B800
 {

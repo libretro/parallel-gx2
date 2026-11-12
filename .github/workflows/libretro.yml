@@ -59,6 +59,11 @@ jobs:
         # the context and every GL function are the frontend's
         run: ./tools/check_core_imports.sh parallel_gx2_libretro.so
 
+      - name: "Every source file used"
+        # each of the core's own objects reached from the retro_* entry
+        # points, none kept alive only by work at load time
+        run: ./tools/check_unused_units.sh obj/unix-*
+
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
         with:
@@ -93,6 +98,11 @@ jobs:
       - name: "A clone without submodules builds"
         # make fetches them, where the build used to stop at glm/glm.hpp
         run: ./tools/check_submodule_fetch.sh
+
+      - name: "Unused source files found"
+        # the check the Linux builds run on their objects, against a tree
+        # whose answer is known
+        run: ./test/unused_units/run_tests.sh
 
       - name: "Controllers updated once a frame"
         # from retro_run, after the frontend's input is polled: no input

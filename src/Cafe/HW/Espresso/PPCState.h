@@ -256,6 +256,3 @@ void PPCCore_switchToSchedulerWithLock();
 PPCInterpreter_t* PPCCore_executeCallbackInternal(uint32 functionMPTR);
 void PPCCore_init();
 
-// LLE scheduler
-
-void PPCCoreLLE_startSingleCoreScheduler(uint32 entrypoint);

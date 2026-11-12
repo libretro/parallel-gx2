@@ -113,7 +113,6 @@ public:
 		return m_aoc.front().GetAppTitleVersion();
 	}
 
-	fs::path GetSaveFolder();
 
 private:
   	bool IsPrioritizedVersionOrFormat(const TitleInfo& currentTitle, const TitleInfo& newTitle)

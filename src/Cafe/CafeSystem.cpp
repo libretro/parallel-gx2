@@ -69,6 +69,9 @@
 
 // HW interfaces
 #include "Cafe/HW/SI/si.h"
+#include "Cafe/HW/ACR/acr.h"
+#include "Cafe/HW/Latte/Common/ShaderSerializer.h"
+#include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 
 #include <time.h>
 
@@ -696,6 +699,12 @@ namespace CafeSystem
 		// init hardware register interfaces
 		cemuLog_log(LogType::Force, "Init: HW_SI");
 		HW_SI::Initialize();
+		HW_ACR::Initialize();
+		GamePatch_init();
+		// the shader and pipeline caches' dictionaries, before a title loads
+		// either
+		Latte::InitShaderSerializer();
+		Latte::InitRegisterSerializer();
 		// Everything allocated from the system area up to here belongs to the
 		// process - the SysAllocators above all, which hand out their addresses
 		// for as long as it lives. What a title allocates comes after this line

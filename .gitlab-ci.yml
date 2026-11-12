@@ -831,3 +831,17 @@ test-gpu-waits:
     GIT_SUBMODULE_STRATEGY: none
   script:
     - ./tools/check_gpu_waits.sh
+
+# The check the GitHub Linux builds run on their objects (every source file
+# of the core's own reached from the retro_* entry points), against a tree
+# whose answer is known.
+test-unused-units:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/unused_units/run_tests.sh

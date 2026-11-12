@@ -591,15 +591,6 @@ inline char _ansiToLower(char c)
 	return c;
 }
 
-class RunAtCemuBoot // -> replaces this with direct function calls. Linkers other than MSVC may optimize way object files entirely if they are not referenced from outside. So a source file self-registering using this would be causing issues
-{
-public:
-    RunAtCemuBoot(void(*f)())
-    {
-        f();
-    }
-};
-
 // temporary wrapper until Concurrency TS gives us std::future .is_ready()
 template<typename T>
 bool future_is_ready(std::future<T>& f)

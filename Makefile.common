@@ -95,7 +95,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/GraphicPack/GraphicPack2PatchesApply.cpp \
 	$(CORE_DIR)/src/Cafe/GraphicPack/GraphicPack2PatchesParser.cpp \
 	$(CORE_DIR)/src/Cafe/HW/ACR/ACR.cpp \
-	$(CORE_DIR)/src/Cafe/HW/AI/AI.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/DebugSymbolStorage.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/Debugger.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/GDBBreakpoints.cpp \
@@ -107,9 +106,7 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterOPC.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterPS.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/PPCScheduler.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/PPCSchedulerLLE.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/PPCTimer.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/Recompiler/IML/IMLAnalyzer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Recompiler/IML/IMLDebug.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Recompiler/IML/IMLOptimizer.cpp \
@@ -139,7 +136,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteRingBuffer.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteShader.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteShaderCache.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteSoftware.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteStreamoutGPU.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteSurfaceCopy.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Core/LatteTexture.cpp \
@@ -162,12 +158,10 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/RendererOuputShader.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/RendererShader.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/ShaderInfo/ShaderDescription.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Latte/ShaderInfo/ShaderInstanceInfo.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Transcompiler/LatteTC.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Transcompiler/LatteTCGenIR.cpp \
 	$(CORE_DIR)/src/Cafe/HW/MMU/MMU.cpp \
 	$(CORE_DIR)/src/Cafe/HW/SI/SI.cpp \
-	$(CORE_DIR)/src/Cafe/HW/VI/VI.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/ODM/iosu_odm.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/PDM/iosu_pdm.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/ccr_nfc/iosu_ccr_nfc.cpp \
@@ -180,13 +174,11 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/IOSU/legacy/iosu_ioctl.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/legacy/iosu_mcp.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/legacy/iosu_nim.cpp \
-	$(CORE_DIR)/src/Cafe/IOSU/nn/boss/boss_common.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/nn/boss/boss_service.cpp \
 	$(CORE_DIR)/src/Cafe/IOSU/nn/iosu_nn_service.cpp \
 	$(CORE_DIR)/src/Cafe/OS/RPL/COSModule.cpp \
 	$(CORE_DIR)/src/Cafe/OS/RPL/elf.cpp \
 	$(CORE_DIR)/src/Cafe/OS/RPL/rpl.cpp \
-	$(CORE_DIR)/src/Cafe/OS/RPL/rpl_debug_symbols.cpp \
 	$(CORE_DIR)/src/Cafe/OS/RPL/rpl_symbol_storage.cpp \
 	$(CORE_DIR)/src/Cafe/OS/common/OSCommon.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/TCL/TCL.cpp \
@@ -320,7 +312,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/OS/libs/vpad/vpad.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/zlib125/zlib125.cpp \
 	$(CORE_DIR)/src/Cafe/OS/libs/zlib125/zlib125_stream.cpp \
-	$(CORE_DIR)/src/Cafe/TitleList/GameInfo.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleConverter.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleInfo.cpp \
 	$(CORE_DIR)/src/Cafe/TitleList/TitleList.cpp \
@@ -329,7 +320,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cemu/PPCAssembler/ppcAssembler.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi_act.cpp \
-	$(CORE_DIR)/src/Cemu/napi/napi_ec.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi_helper.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi_idbe.cpp \
 	$(CORE_DIR)/src/Cemu/napi/napi_version.cpp \
@@ -343,7 +333,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/SysAllocator.cpp \
 	$(CORE_DIR)/src/Common/FileStream.cpp \
 	$(CORE_DIR)/src/Common/cpu_features.cpp \
-	$(CORE_DIR)/src/Common/precompiled.cpp \
 	$(CORE_DIR)/src/audio/IAudioAPI.cpp \
 	$(CORE_DIR)/src/audio/IAudioInputAPI.cpp \
 	$(CORE_DIR)/src/config/ActiveSettings.cpp \
@@ -352,7 +341,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/input/ControllerFactory.cpp \
 	$(CORE_DIR)/src/input/InputManager.cpp \
 	$(CORE_DIR)/src/input/api/Controller.cpp \
-	$(CORE_DIR)/src/input/api/ControllerState.cpp \
 	$(CORE_DIR)/src/input/api/Libretro/LibretroController.cpp \
 	$(CORE_DIR)/src/input/api/Libretro/LibretroControllerProvider.cpp \
 	$(CORE_DIR)/src/input/emulated/ClassicController.cpp \
@@ -366,15 +354,11 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/libretro/LibretroGraphicPacks.cpp \
 	$(CORE_DIR)/src/libretro/LibretroWindowSystem.cpp \
 	$(CORE_DIR)/src/main.cpp \
-	$(CORE_DIR)/src/mainLLE.cpp \
 	$(CORE_DIR)/src/resource/CafeDefaultFont.cpp \
-	$(CORE_DIR)/src/resource/embedded/resources.cpp \
-	$(CORE_DIR)/src/util/SystemInfo/SystemInfo.cpp \
 	$(CORE_DIR)/src/util/VirtualHeap/VirtualHeap.cpp \
 	$(CORE_DIR)/src/util/Zir/Core/IR.cpp \
 	$(CORE_DIR)/src/util/Zir/EmitterGLSL/ZpIREmitGLSL.cpp \
 	$(CORE_DIR)/src/util/Zir/Passes/RegisterAllocatorForGLSL.cpp \
-	$(CORE_DIR)/src/util/Zir/Passes/ZpIRRegisterAllocator.cpp \
 	$(CORE_DIR)/src/util/bootSound/BootSoundReader.cpp \
 	$(CORE_DIR)/src/util/helpers/helpers.cpp \
 	$(CORE_DIR)/src/util/highresolutiontimer/HighResolutionTimer.cpp
@@ -386,31 +370,26 @@ ifeq ($(OS_WIN),1)
 	$(SRC_DIR)/Common/windows/platform.cpp \
 	$(SRC_DIR)/Common/ExceptionHandler/ExceptionHandler_win32.cpp \
 	$(SRC_DIR)/util/Fiber/FiberWin.cpp \
-	$(SRC_DIR)/util/MemMapper/MemMapperWin.cpp \
-	$(SRC_DIR)/util/SystemInfo/SystemInfoWin.cpp
+	$(SRC_DIR)/util/MemMapper/MemMapperWin.cpp
 else
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/unix/platform.cpp \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ExceptionHandler_posix.cpp \
-	$(CORE_DIR)/src/util/MemMapper/MemMapperUnix.cpp \
-	$(CORE_DIR)/src/util/SystemInfo/SystemInfoUnix.cpp
+	$(CORE_DIR)/src/util/MemMapper/MemMapperUnix.cpp
 endif
 ifeq ($(OS_LINUX),1)
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ELFSymbolTable.cpp \
-	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp \
-	$(CORE_DIR)/src/util/SystemInfo/SystemInfoLinux.cpp
+	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp
 endif
 ifeq ($(OS_ANDROID),1)
    CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/ExceptionHandler/ELFSymbolTable.cpp \
-	$(SRC_DIR)/util/Fiber/FiberAndroid.cpp \
-	$(CORE_DIR)/src/util/SystemInfo/SystemInfoLinux.cpp
+	$(SRC_DIR)/util/Fiber/FiberAndroid.cpp
 endif
 ifeq ($(OS_APPLE),1)
    CORE_SOURCES_CXX += \
-	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp \
-	$(SRC_DIR)/util/SystemInfo/SystemInfoMac.cpp
+	$(CORE_DIR)/src/util/Fiber/FiberUnix.cpp
 endif
 ifeq ($(HAVE_OPENGL),1)
    CORE_SOURCES_CXX += \
@@ -473,8 +452,7 @@ ifeq ($(HAVE_METAL),1)
 endif
 ifeq ($(HAVE_LIBUSB),1)
    CORE_SOURCES_CXX += \
-	$(CORE_DIR)/src/Cafe/OS/libs/nsyshid/BackendLibusb.cpp \
-	$(CORE_DIR)/src/util/libusbWrapper/libusbWrapper.cpp
+	$(CORE_DIR)/src/Cafe/OS/libs/nsyshid/BackendLibusb.cpp
 endif
 # Each recompiler backend only for its own architecture: the core links all
 # its objects into one library, not a static one as standalone does, so the

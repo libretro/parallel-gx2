@@ -98,10 +98,4 @@ struct ControllerState
 	ControllerButtonState buttons{};
 
 	uint64 last_state = 0;
-
-	bool operator==(const ControllerState& other) const;
-	bool operator!=(const ControllerState& other) const
-	{
-		return !(*this == other);
-	}
 };

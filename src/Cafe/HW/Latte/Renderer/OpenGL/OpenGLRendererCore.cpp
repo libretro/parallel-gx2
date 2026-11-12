@@ -4,7 +4,6 @@
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
-#include "Cafe/HW/Latte/Core/LatteSoftware.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 
 #include "Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h"
