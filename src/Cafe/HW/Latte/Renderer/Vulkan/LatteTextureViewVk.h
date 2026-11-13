@@ -4,7 +4,8 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRBase.h"
 
-class LatteTextureViewVk : public LatteTextureView
+// from a pool (PoolNew.h): made as a game reaches new textures
+class LatteTextureViewVk : public LatteTextureView, public PoolNew<LatteTextureViewVk, 64>
 {
 public:
 	LatteTextureViewVk(VkDevice device, class LatteTextureVk* texture, Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount);

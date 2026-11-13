@@ -543,6 +543,16 @@ jobs:
           make -C test/obj_pool clean
           SANITIZER=address,undefined ./test/obj_pool/run_tests.sh
 
+      - name: "Vulkan object references"
+        # the references Vulkan objects hold on one another, in the object,
+        # a pooled block or the heap; plain, under TSan and under ASan + UBSan
+        run: |
+          ./test/vkr_refs/run_tests.sh
+          make -C test/vkr_refs clean
+          SANITIZER=thread ./test/vkr_refs/run_tests.sh
+          make -C test/vkr_refs clean
+          SANITIZER=address,undefined ./test/vkr_refs/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;

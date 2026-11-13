@@ -6,7 +6,8 @@
 
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRBase.h"
 
-class LatteTextureVk : public LatteTexture
+// from a pool (PoolNew.h): made as a game reaches new textures
+class LatteTextureVk : public LatteTexture, public PoolNew<LatteTextureVk, 64>
 {
 public:
 	// For the memory report: what this texture costs and whether it is a BC

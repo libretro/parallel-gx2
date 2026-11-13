@@ -11,6 +11,93 @@ public:
 	class VKRMoveableRefCounter* ref;
 };
 
+// The references an object holds: four in the object, up to 64 in a block
+// from a pool, more on the heap, so that most objects made while a game
+// plays allocate nothing for them
+class VKRRefList
+{
+	static constexpr uint32 kInline = 4, kBlock = 64;
+	struct Block : PoolNew<Block, 256>
+	{
+		VKRMoveableRefCounterRef* items[kBlock];
+	};
+
+public:
+	VKRRefList() = default;
+	VKRRefList(const VKRRefList&) = delete;
+	VKRRefList& operator=(const VKRRefList&) = delete;
+	~VKRRefList() { Release(); }
+
+	VKRRefList& operator=(VKRRefList&& rhs) noexcept
+	{
+		Release();
+		if (rhs.m_items == rhs.m_inline)
+		{
+			for (uint32 i = 0; i < rhs.m_count; i++)
+				m_inline[i] = rhs.m_inline[i];
+			m_items = m_inline;
+		}
+		else
+			m_items = rhs.m_items;
+		m_count = rhs.m_count;
+		m_cap = rhs.m_cap;
+		rhs.m_items = rhs.m_inline;
+		rhs.m_count = 0;
+		rhs.m_cap = kInline;
+		return *this;
+	}
+
+	void push_back(VKRMoveableRefCounterRef* ref)
+	{
+		if (m_count == m_cap)
+			Grow(m_count + 1);
+		m_items[m_count++] = ref;
+	}
+
+	void reserve(size_t n)
+	{
+		if (n > m_cap)
+			Grow((uint32)n);
+	}
+
+	size_t size() const { return m_count; }
+	void clear() { m_count = 0; }
+	VKRMoveableRefCounterRef** begin() { return m_items; }
+	VKRMoveableRefCounterRef** end() { return m_items + m_count; }
+
+private:
+	void Grow(uint32 n)
+	{
+		uint32 cap = n <= kBlock ? kBlock : std::max(n, m_cap * 2);
+		VKRMoveableRefCounterRef** items = cap == kBlock ? (new Block())->items : new VKRMoveableRefCounterRef*[cap];
+		for (uint32 i = 0; i < m_count; i++)
+			items[i] = m_items[i];
+		const uint32 count = m_count;
+		Release();
+		m_items = items;
+		m_cap = cap;
+		m_count = count;
+	}
+
+	void Release()
+	{
+		if (m_items == m_inline)
+			;
+		else if (m_cap == kBlock)
+			delete reinterpret_cast<Block*>(m_items); // items is the block's first member
+		else
+			delete[] m_items;
+		m_items = m_inline;
+		m_cap = kInline;
+		m_count = 0;
+	}
+
+	VKRMoveableRefCounterRef* m_inline[kInline];
+	VKRMoveableRefCounterRef** m_items{m_inline};
+	uint32 m_count{0};
+	uint32 m_cap{kInline};
+};
+
 class VKRMoveableRefCounter
 {
 public:
@@ -69,7 +156,7 @@ public:
 
 	void addRef(VKRMoveableRefCounter* refTarget)
 	{
-		this->refs.emplace_back(refTarget->selfRef);
+		this->refs.push_back(refTarget->selfRef);
 		refTarget->m_refCount++;
 
 #ifdef CEMU_DEBUG_ASSERT
@@ -100,7 +187,7 @@ protected:
 	std::atomic_int_least32_t m_refCount{};
 private:
 	VKRMoveableRefCounterRef* selfRef;
-	std::vector<VKRMoveableRefCounterRef*> refs;
+	VKRRefList refs;
 #ifdef CEMU_DEBUG_ASSERT
 	std::vector<VKRMoveableRefCounterRef*> reverseRefs;
 #endif
@@ -119,7 +206,9 @@ private:
 
 /* Vulkan objects */
 
-class VKRObjectTexture : public VKRDestructibleObject
+// The Vulkan objects made while a game plays come from pools of their own
+// (PoolNew.h)
+class VKRObjectTexture : public VKRDestructibleObject, public PoolNew<VKRObjectTexture, 128>
 {
 public:
 	VKRObjectTexture();
@@ -133,7 +222,7 @@ public:
 
 };
 
-class VKRObjectTextureView : public VKRDestructibleObject
+class VKRObjectTextureView : public VKRDestructibleObject, public PoolNew<VKRObjectTextureView>
 {
 public:
 	VKRObjectTextureView(VKRObjectTexture* tex, VkImageView view);
@@ -144,7 +233,7 @@ public:
 };
 
 
-class VKRObjectSampler : public VKRDestructibleObject
+class VKRObjectSampler : public VKRDestructibleObject, public PoolNew<VKRObjectSampler, 128>
 {
   public:
 	VKRObjectSampler(VkSamplerCreateInfo* samplerInfo);
@@ -162,7 +251,7 @@ class VKRObjectSampler : public VKRDestructibleObject
 	uint64 m_hash;
 };
 
-class VKRObjectRenderPass : public VKRDestructibleObject
+class VKRObjectRenderPass : public VKRDestructibleObject, public PoolNew<VKRObjectRenderPass, 64>
 {
 public:
 	struct AttachmentEntryColor_t
@@ -207,7 +296,7 @@ public:
 	uint64 m_hashForPipeline; // helper var. Holds hash of all the renderpass creation parameters (mainly the formats) that affect the pipeline state
 };
 
-class VKRObjectFramebuffer : public VKRDestructibleObject
+class VKRObjectFramebuffer : public VKRDestructibleObject, public PoolNew<VKRObjectFramebuffer>
 {
 public:
 	VKRObjectFramebuffer(VKRObjectRenderPass* renderPass, std::span<VKRObjectTextureView*> attachments, Vector2i size);
@@ -216,7 +305,7 @@ public:
 	VkFramebuffer m_frameBuffer{ VK_NULL_HANDLE };
 };
 
-class VKRObjectPipeline : public VKRDestructibleObject
+class VKRObjectPipeline : public VKRDestructibleObject, public PoolNew<VKRObjectPipeline>
 {
 public:
 	VKRObjectPipeline();

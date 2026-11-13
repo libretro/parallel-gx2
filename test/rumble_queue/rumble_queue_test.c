@@ -180,6 +180,7 @@ static void test_wrap(void)
 static rumble_queue_t *s_q;
 static retro_atomic_int_t s_stop;
 static retro_atomic_int_t s_pushed;
+static int64_t s_stepped_to; /* the stepper's time when it stopped */
 
 static void pusher(void *ud)
 {
@@ -207,6 +208,7 @@ static void stepper(void *unused)
       if (rumble_queue_count(s_q) > RUMBLE_QUEUE_MAX)
          failures++;
    }
+   s_stepped_to = t;
 }
 
 /* pushers racing for the last places: exactly five get in */
@@ -216,8 +218,10 @@ static retro_atomic_int_t s_go;
 static void racer(void *unused)
 {
    (void)unused;
+   /* yielding: eight of these on two cores, under TSan, would starve the
+    * thread making the rest */
    while (!retro_atomic_load_acquire_int(&s_go))
-      ;
+      sthread_yield();
    if (rumble_queue_push(s_q, (const uint8_t*)"\x03", 2))
       retro_atomic_fetch_add_int(&s_ok, 1);
    if (rumble_queue_push(s_q, (const uint8_t*)"\x03", 2))
@@ -262,7 +266,12 @@ static void test_threads(void)
    retro_atomic_store_release_int(&s_stop, 1);
    sthread_join(s);
    CHECK(retro_atomic_load_acquire_int(&s_pushed) > 0);
-   /* whatever was left plays out, and the queue comes back empty and usable */
+   /* whatever was left plays out, and the queue comes back empty and usable:
+    * on from the stepper's time, which only goes forward. A clear zeroes
+    * the count at once and leaves its slots for the next step to drop, so
+    * one step at least before the queue takes another */
+   t = s_stepped_to;
+   rumble_queue_step(s_q, t);
    for (i = 0; i < 2000 && rumble_queue_count(s_q); i++, t += STEP)
       rumble_queue_step(s_q, t);
    CHECK(rumble_queue_count(s_q) == 0);

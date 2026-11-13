@@ -4,7 +4,8 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRBase.h"
 #include "util/helpers/AtomicPtrBag.h"
 
-class CachedFBOVk : public LatteCachedFBO
+// from a pool (PoolNew.h): made as a game draws to new targets
+class CachedFBOVk : public LatteCachedFBO, public PoolNew<CachedFBOVk, 64>
 {
 public:
 	CachedFBOVk(uint64 key, VkDevice device)
