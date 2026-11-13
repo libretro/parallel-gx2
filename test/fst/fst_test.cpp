@@ -40,9 +40,6 @@ static int s_failures = 0;
 
 uint64 s_loggingFlagMask = 0;
 bool cemuLog_log(LogType type, std::string_view text) { return false; }
-bool NCrypto::TMDParser::parse(const uint8* data, size_t size) { return false; }
-bool NCrypto::ETicketParser::parse(const uint8* data, size_t size) { return false; }
-void NCrypto::ETicketParser::GetTitleKey(AesKey& key) {}
 void KeyCache_Prepare(bool reload) {}
 bool KeyCache_FindDiscKey(const fs::path& image, const uint8* header48, uint8* keyOut, KeyCacheSearch* search) { return false; }
 
