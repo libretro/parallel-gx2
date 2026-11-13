@@ -110,7 +110,8 @@ static_assert(static_cast<int>(LatteConst::ShaderType::Vertex) == 0);
 static_assert(static_cast<int>(LatteConst::ShaderType::Pixel) == 1);
 static_assert(static_cast<int>(LatteConst::ShaderType::Geometry) == 2);
 
-class PipelineInfo
+// from a pool (PoolNew.h): made as a game reaches new state
+class PipelineInfo : public PoolNew<PipelineInfo, 64>
 {
 public:
 	PipelineInfo(uint64 minimalStateHash, uint64 pipelineHash, struct LatteFetchShader* fetchShader, LatteDecompilerShader* vertexShader, LatteDecompilerShader* pixelShader, LatteDecompilerShader* geometryShader);

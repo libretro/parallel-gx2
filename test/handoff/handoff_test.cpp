@@ -1302,6 +1302,19 @@ static void TestSmallVec()
 	CHECK(v.size() == 88 && v.back() == 1000);
 	v.resize(0);
 	CHECK(v.empty());
+	// grown to a size, each new one the value asked for (a texture's
+	// layouts, one per layer per mip)
+	{
+		SmallVec<int, 16> layouts;
+		layouts.resize(78, 5);
+		bool all = layouts.size() == 78;
+		for (int l : layouts)
+			all = all && l == 5;
+		CHECK(all);
+		layouts[77] = 9;
+		layouts.resize(80);
+		CHECK(layouts[77] == 9 && layouts[78] == 0 && layouts[79] == 0);
+	}
 	v.push_back(7);
 	CHECK(v.size() == 1 && v[0] == 7);
 	// within the object: erase and append there too

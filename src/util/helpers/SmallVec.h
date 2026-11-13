@@ -58,13 +58,15 @@ public:
 	void pop_back() { m_count--; }
 	void clear() { m_count = 0; }
 
-	// only ever to shrink, in the texture cache
-	void resize(size_t n)
+	// new items value-made, or v
+	void resize(size_t n) { resize(n, T{}); }
+
+	void resize(size_t n, const T& v)
 	{
 		if (n > m_cap)
 			Grow(n);
 		for (size_t i = m_count; i < n; i++)
-			m_items[i] = T{};
+			m_items[i] = v;
 		m_count = n;
 	}
 
