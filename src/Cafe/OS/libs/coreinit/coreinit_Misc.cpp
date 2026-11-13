@@ -527,7 +527,10 @@ namespace coreinit
 		size_t lineLength{};
 	};
 
-	CafeLogBuffer g_logBuffer_OSReport;
+	// a line being put together, one per host thread: the threads running
+	// guest code write to it with no lock, and a line from one is not cut
+	// into by another's
+	thread_local CafeLogBuffer g_logBuffer_OSReport;
 
 	CafeLogBuffer& getLogBuffer(CafeLogType cafeLogType)
 	{
@@ -544,12 +547,10 @@ namespace coreinit
 		return "Unknown";
 	}
 
-	std::mutex sCafeConsoleMutex;
 	bool s_forwardConsoleLogs;
 	
 	void WriteCafeConsole(CafeLogType cafeLogType, const char* msg, sint32 len)
 	{
-		std::unique_lock _l(sCafeConsoleMutex);
 		CafeLogBuffer& logBuffer = getLogBuffer(cafeLogType);
 		// once a line is full or \n is written it will be posted to log
 		auto flushLine = [](CafeLogBuffer& cafeLogBuffer, std::string_view cafeLogName) -> void

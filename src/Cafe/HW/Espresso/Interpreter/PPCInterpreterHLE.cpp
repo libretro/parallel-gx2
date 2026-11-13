@@ -2,19 +2,45 @@
 #include "PPCInterpreterInternal.h"
 #include "PPCInterpreterHelper.h"
 
-std::unordered_set<std::string> s_unsupportedHLECalls;
+// the unsupported calls already logged, by a hash of their name: a fixed
+// set any thread adds to with a compare-and-swap. Full, a call is logged
+// again each time
+static constexpr size_t UNSUPPORTED_SEEN_SLOTS = 512;
+static std::atomic<uint64> s_unsupportedSeen[UNSUPPORTED_SEEN_SLOTS];
+
+// true the first time name is seen
+static bool FirstUnsupported(std::string_view name)
+{
+	uint64 h = 0xcbf29ce484222325ull;
+	for (char c : name)
+		h = (h ^ (uint8)c) * 0x100000001b3ull;
+	if (h == 0)
+		h = 1; // 0 is a free slot
+	for (size_t i = 0; i < UNSUPPORTED_SEEN_SLOTS; i++)
+	{
+		std::atomic<uint64>& slot = s_unsupportedSeen[(h + i) & (UNSUPPORTED_SEEN_SLOTS - 1)];
+		uint64 v = slot.load(std::memory_order_acquire);
+		if (v == h)
+			return false;
+		if (v == 0)
+		{
+			uint64 expected = 0;
+			if (slot.compare_exchange_strong(expected, h, std::memory_order_acq_rel))
+				return true;
+			if (expected == h)
+				return false;
+		}
+	}
+	return true;
+}
 
 void PPCInterpreter_handleUnsupportedHLECall(PPCInterpreter_t* hCPU)
 {
 	const char* libFuncName = "<unknown>";
 	if (memory_isAddressRangeAccessible(hCPU->instructionPointer + 8, 1))
 		libFuncName = (char*)memory_getPointerFromVirtualOffset(hCPU->instructionPointer + 8);
-	std::string tempString = fmt::format("Unsupported lib call: {}", libFuncName);
-	if (s_unsupportedHLECalls.find(tempString) == s_unsupportedHLECalls.end())
-	{
-		cemuLog_log(LogType::UnsupportedAPI, "{}", tempString);
-		s_unsupportedHLECalls.emplace(tempString);
-	}
+	if (FirstUnsupported(libFuncName))
+		cemuLog_log(LogType::UnsupportedAPI, "Unsupported lib call: {}", libFuncName);
 	// Return a failure result and immediately return to the caller.
 	// Advancing to the next instruction inside the trampoline (e.g. BLR) can lead to stalls if the interpreter/recompiler
 	// re-enters the unsupported stub. Returning via LR matches how other HLE calls return.
@@ -22,30 +48,30 @@ void PPCInterpreter_handleUnsupportedHLECall(PPCInterpreter_t* hCPU)
 	hCPU->instructionPointer = hCPU->spr.LR;
 }
 
+// Registered from any thread, read by every one running guest code: an
+// index taken with an atomic add, the call published into it after. Two
+// threads registering one call at once may each get an index; both work.
+// No lock - where the readers read it with none while it was written.
 static constexpr size_t HLE_TABLE_CAPACITY = 0x4000;
-HLECALL s_ppcHleTable[HLE_TABLE_CAPACITY]{};
-sint32 s_ppcHleTableWriteIndex = 0;
-std::mutex s_ppcHleTableMutex;
+static std::atomic<HLECALL> s_ppcHleTable[HLE_TABLE_CAPACITY]{};
+static std::atomic<sint32> s_ppcHleTableWriteIndex{0};
 
 HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName)
 {
-	std::unique_lock _l(s_ppcHleTableMutex);
-	if (s_ppcHleTableWriteIndex >= HLE_TABLE_CAPACITY)
+	const sint32 count = std::min<sint32>(s_ppcHleTableWriteIndex.load(std::memory_order_acquire), (sint32)HLE_TABLE_CAPACITY);
+	for (sint32 i = 0; i < count; i++)
+	{
+		if (s_ppcHleTable[i].load(std::memory_order_acquire) == hleCall)
+			return i;
+	}
+	const sint32 funcIndex = s_ppcHleTableWriteIndex.fetch_add(1, std::memory_order_acq_rel);
+	if (funcIndex >= (sint32)HLE_TABLE_CAPACITY)
 	{
 		cemuLog_log(LogType::Force, "HLE table is full");
 		cemu_assert(false);
+		return 0;
 	}
-	for (sint32 i = 0; i < s_ppcHleTableWriteIndex; i++)
-	{
-		if (s_ppcHleTable[i] == hleCall)
-		{
-			return i;
-		}
-	}
-	cemu_assert(s_ppcHleTableWriteIndex < HLE_TABLE_CAPACITY);
-	s_ppcHleTable[s_ppcHleTableWriteIndex] = hleCall;
-	HLEIDX funcIndex = s_ppcHleTableWriteIndex;
-	s_ppcHleTableWriteIndex++;
+	s_ppcHleTable[funcIndex].store(hleCall, std::memory_order_release);
 	return funcIndex;
 }
 
@@ -53,19 +79,15 @@ HLECALL PPCInterpreter_getHLECall(HLEIDX funcIndex)
 {
 	if (funcIndex < 0 || funcIndex >= HLE_TABLE_CAPACITY)
 		return nullptr;
-	return s_ppcHleTable[funcIndex];
+	return s_ppcHleTable[funcIndex].load(std::memory_order_acquire);
 }
-
-std::mutex s_hleLogMutex;
 
 void PPCInterpreter_virtualHLE(PPCInterpreter_t* hCPU, unsigned int opcode)
 {
 	uint32 hleFuncId = opcode & 0xFFFF;
 	if (hleFuncId == 0xFFD0) [[unlikely]]
 	{
-		s_hleLogMutex.lock();
 		PPCInterpreter_handleUnsupportedHLECall(hCPU);
-		s_hleLogMutex.unlock();
 	}
 	else
 	{

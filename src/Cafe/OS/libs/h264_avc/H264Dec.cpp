@@ -1,4 +1,5 @@
 #include "Cafe/OS/common/OSCommon.h"
+#include "util/helpers/pin_table.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/libs/h264_avc/parser/H264Parser.h"
 #include "Cafe/OS/libs/h264_avc/H264DecInternal.h"
@@ -356,75 +357,71 @@ namespace H264
 		return 0;
 	}
 
-	std::unordered_map<uint32, H264DecoderBackend*> sDecoderSessions;
-	std::mutex sDecoderSessionsMutex;
+	// The decoder sessions, by handle: held while a call uses one and freed
+	// by the last to let go, so a session closed while another thread
+	// decodes on it outlives that decode (pin_table.h). No lock.
+	static void _FreeDecoderSession(void* obj)
+	{
+		H264DecoderBackend* session = static_cast<H264DecoderBackend*>(obj);
+		session->Destroy();
+		delete session;
+	}
+
+	static constexpr int kMaxDecoderSessions = 16;
+	pin_slot_t sDecoderSessionSlots[kMaxDecoderSessions];
+	pin_table_t sDecoderSessions = {sDecoderSessionSlots, kMaxDecoderSessions, _FreeDecoderSession};
 	std::atomic_uint32_t sCurrentSessionHandle{ 1 };
 
 	H264DecoderBackend* CreateAVCDecoder();
 
 	static H264DecoderBackend* _CreateDecoderSession(uint32& handleOut)
 	{
-		std::unique_lock _lock(sDecoderSessionsMutex);
 		handleOut = sCurrentSessionHandle.fetch_add(1);
 		H264DecoderBackend* session = CreateAVCDecoder();
-		sDecoderSessions.try_emplace(handleOut, session);
-		return session;
-	}
-
-	static H264DecoderBackend* _AcquireDecoderSession(uint32 handle)
-	{
-		std::unique_lock _lock(sDecoderSessionsMutex);
-		auto it = sDecoderSessions.find(handle);
-		if (it == sDecoderSessions.end())
-			return nullptr;
-		H264DecoderBackend* session = it->second;
-		if (sDecoderSessions.size() >= 5)
+		if (!pin_table_add(&sDecoderSessions, handleOut, session))
 		{
-			cemuLog_log(LogType::Force, "H264: Warning - more than 5 active sessions");
-			cemu_assert_suspicious();
+			cemuLog_log(LogType::Force, "H264: more than {} sessions open: session not made", kMaxDecoderSessions);
+			delete session;
+			handleOut = 0;
+			return nullptr;
 		}
 		return session;
 	}
 
-	static void _ReleaseDecoderSession(H264DecoderBackend* session)
+	// held until _ReleaseDecoderSession(slot)
+	static H264DecoderBackend* _AcquireDecoderSession(uint32 handle, int& slot)
 	{
-		std::unique_lock _lock(sDecoderSessionsMutex);
-
+		slot = pin_table_get(&sDecoderSessions, handle);
+		if (slot < 0)
+			return nullptr;
+		return static_cast<H264DecoderBackend*>(pin_table_obj(&sDecoderSessions, slot));
 	}
 
-	// Host state that outlives the title it belongs to. The session map and the
-	// handle counter live for the whole process, and nothing closes a session
-	// when a title is stopped from outside - H264DECClose is the title's own
-	// call and an abrupt stop never reaches it. What is left is a decoder
-	// backend per session that no one will free, and a handle counter that has
-	// the next title's first session starting at whatever number the last one
-	// reached.
+	static void _ReleaseDecoderSession(int slot)
+	{
+		pin_table_put(&sDecoderSessions, slot);
+	}
+
+	// Host state that outlives the title it belongs to. The session table and
+	// the handle counter live for the whole process, and nothing closes a
+	// session when a title is stopped from outside - H264DECClose is the
+	// title's own call and an abrupt stop never reaches it. What is left is a
+	// decoder backend per session that no one will free, and a handle
+	// counter that has the next title's first session starting at whatever
+	// number the last one reached.
 	//
 	// Cleared at the end of the run that made them rather than at the start of
 	// the next: the objects belong to a title that has stopped, and the next
 	// one should find this module the way a freshly loaded RPL would.
 	void ResetToDefaultState()
 	{
-		std::unique_lock _lock(sDecoderSessionsMutex);
-		for (auto& it : sDecoderSessions)
-		{
-			it.second->Destroy();
-			delete it.second;
-		}
-		sDecoderSessions.clear();
+		pin_table_remove_all(&sDecoderSessions);
 		sCurrentSessionHandle.store(1);
 	}
 
 	static void _DestroyDecoderSession(uint32 handle)
 	{
-		std::unique_lock _lock(sDecoderSessionsMutex);
-		auto it = sDecoderSessions.find(handle);
-		if (it == sDecoderSessions.end())
-			return;
-		H264DecoderBackend* session = it->second;
-		session->Destroy();
-		delete session;
-		sDecoderSessions.erase(it);
+		pin_table_remove(&sDecoderSessions, handle);
 	}
 
 	uint32 H264DECOpen(void* workMemory)
@@ -449,7 +446,8 @@ namespace H264
 	uint32 H264DECBegin(void* workMemory)
 	{
 		H264Context* ctx = (H264Context*)workMemory;
-		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle);
+		int sessionSlot;
+		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle, sessionSlot);
 		if (!session)
 		{
 			cemuLog_log(LogType::Force, "H264DECBegin(): Invalid session");
@@ -463,7 +461,7 @@ namespace H264
 		else
 			ctx->decoderState.isTryingToRecover = true;
 		//ctx->decoderState.numFramesInFlight = 0;
-		_ReleaseDecoderSession(session);
+		_ReleaseDecoderSession(sessionSlot);
 		return 0;
 	}
 
@@ -472,7 +470,8 @@ namespace H264
 	H264DEC_STATUS H264DECEnd(void* workMemory)
 	{
 		H264Context* ctx = (H264Context*)workMemory;
-		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle);
+		int sessionSlot;
+		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle, sessionSlot);
 		if (!session)
 		{
 			cemuLog_log(LogType::Force, "H264DECEnd(): Invalid session");
@@ -492,7 +491,7 @@ namespace H264
 			ctx->decoderState.numFramesInFlight--;
 		}
 		cemu_assert_debug(ctx->decoderState.numFramesInFlight == 0); // no frames should be in flight anymore. Exact behavior is not well understood but we may have to output dummy frames if necessary
-		_ReleaseDecoderSession(session);
+		_ReleaseDecoderSession(sessionSlot);
 		// does not destroy decoder session, keeps it mostly intact so playback can resume after the next H264DECBegin call (potentially at a different location in the stream)
 		return H264DEC_STATUS::SUCCESS;
 	}
@@ -662,7 +661,8 @@ namespace H264
 		BenchmarkTimer bt;
 		bt.Start();
 		H264Context* ctx = (H264Context*)workMemory;
-		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle);
+		int sessionSlot;
+		H264DecoderBackend* session = _AcquireDecoderSession(ctx->sessionHandle, sessionSlot);
 		if (!session)
 		{
 			cemuLog_log(LogType::Force, "H264DECExecute(): Invalid session");
@@ -678,6 +678,7 @@ namespace H264
 			}
 			else
 			{
+				_ReleaseDecoderSession(sessionSlot);
 				return 0x400; // error (figure out exact error code. Bit 0x80 indicates presence of frame?)
 			}
 		}
@@ -701,7 +702,7 @@ namespace H264
 				break;
 			}
 		}
-		_ReleaseDecoderSession(session);
+		_ReleaseDecoderSession(sessionSlot);
 		bt.Stop();
 		double callTime = bt.GetElapsedMilliseconds();
 		cemuLog_log(LogType::H264, "H264Bench | H264DECExecute took {}ms", callTime);

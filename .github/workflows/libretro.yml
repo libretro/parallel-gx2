@@ -560,6 +560,15 @@ jobs:
           ./test/u64_map/run_tests.sh
           make -C test/u64_map clean
           SANITIZER=address,undefined ./test/u64_map/run_tests.sh
+      - name: "Pinned objects"
+        # the H.264 decoder sessions' table: held, put back, released once;
+        # plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/pin_table/run_tests.sh
+          make -C test/pin_table clean
+          SANITIZER=address,undefined ./test/pin_table/run_tests.sh
+          make -C test/pin_table clean
+          SANITIZER=thread ./test/pin_table/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
