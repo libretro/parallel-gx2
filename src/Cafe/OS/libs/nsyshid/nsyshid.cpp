@@ -1,180 +1,119 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
-#include <bitset>
-#include <mutex>
 #include "nsyshid.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Backend.h"
 #include "Whitelist.h"
+#include "hid_core.h"
 
 namespace nsyshid
 {
-
-	std::list<std::shared_ptr<Backend>> backendList;
-
-	std::list<std::shared_ptr<Device>> deviceList;
+	// touched only as the module loads and unloads
+	std::shared_ptr<Backend> s_backends[2];
 
 	typedef struct _HIDClient_t
 	{
 		uint32be callbackFunc; // attach/detach callback
 	} HIDClient_t;
 
-	std::list<HIDClient_t*> HIDClientList;
-
-	std::recursive_mutex hidMutex;
-
-	void AttachClientToList(HIDClient_t* hidClient)
-	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		// todo - append at the beginning or end of the list? List order matters because it also controls the order in which attach callbacks are called
-		HIDClientList.push_front(hidClient);
-	}
-
-	void DetachClientFromList(HIDClient_t* hidClient)
-	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		HIDClientList.remove(hidClient);
-	}
-
-	std::shared_ptr<Device> GetDeviceByHandle(uint32 handle, bool openIfClosed = false)
+	// what a device slot holds (hid_core.h)
+	struct DeviceHolder
 	{
 		std::shared_ptr<Device> device;
-		{
-			std::lock_guard<std::recursive_mutex> lock(hidMutex);
-			for (const auto& d : deviceList)
-			{
-				if (d->m_hid->handle == handle)
-				{
-					device = d;
-					break;
-				}
-			}
-		}
-		if (device != nullptr)
-		{
-			if (openIfClosed && !device->IsOpened())
-			{
-				if (!device->Open())
-				{
-					return nullptr;
-				}
-			}
-			return device;
-		}
-		return nullptr;
-	}
+	};
 
-	uint32 _lastGeneratedHidHandle = 1;
-
-	uint32 GenerateHIDHandle()
+	static void ReleaseDeviceHolder(void* obj)
 	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		_lastGeneratedHidHandle++;
-		return _lastGeneratedHidHandle;
+		delete static_cast<DeviceHolder*>(obj);
 	}
 
-	const int HID_MAX_NUM_DEVICES = 128;
+	static Device* SlotDevice(int slot)
+	{
+		return static_cast<DeviceHolder*>(hid_core_obj(slot))->device.get();
+	}
+
+	// a held device slot, put back when it goes
+	struct HeldDevice
+	{
+		int slot;
+		explicit HeldDevice(int s) : slot(s) {}
+		~HeldDevice() { hid_core_put(slot); }
+		HeldDevice(const HeldDevice&) = delete;
+		HeldDevice& operator=(const HeldDevice&) = delete;
+		Device* operator->() const { return SlotDevice(slot); }
+	};
+
+	const int HID_MAX_NUM_DEVICES = HID_CORE_DEVICES;
 
 	SysAllocator<HID_t, HID_MAX_NUM_DEVICES> HIDPool;
-	std::queue<size_t> HIDPoolIndexQueue;
 
-	void InitHIDPoolIndexQueue()
+	static int GetDeviceSlotByHandle(uint32 handle, bool openIfClosed)
 	{
-		static bool HIDPoolIndexQueueInitialized = false;
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		if (HIDPoolIndexQueueInitialized)
+		const int slot = hid_core_get_handle(handle);
+		if (slot < 0)
+			return -1;
+		Device* device = SlotDevice(slot);
+		if (openIfClosed && !device->IsOpened() && !device->Open())
 		{
-			return;
+			hid_core_put(slot);
+			return -1;
 		}
-		HIDPoolIndexQueueInitialized = true;
-		for (size_t i = 0; i < HID_MAX_NUM_DEVICES; i++)
-		{
-			HIDPoolIndexQueue.push(i);
-		}
-	}
-
-	HID_t* GetFreeHID()
-	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		InitHIDPoolIndexQueue();
-		if (HIDPoolIndexQueue.empty())
-		{
-			return nullptr;
-		}
-		size_t index = HIDPoolIndexQueue.front();
-		HIDPoolIndexQueue.pop();
-		return HIDPool.GetPtr() + index;
-	}
-
-	void ReleaseHID(HID_t* device)
-	{
-		// this should never happen, but having a safeguard can't hurt
-		if (device == nullptr)
-		{
-			cemu_assert_error();
-		}
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		InitHIDPoolIndexQueue();
-		size_t index = device - HIDPool.GetPtr();
-		HIDPoolIndexQueue.push(index);
+		return slot;
 	}
 
 	const int HID_CALLBACK_DETACH = 0;
 	const int HID_CALLBACK_ATTACH = 1;
 
-	uint32 DoAttachCallback(HIDClient_t* hidClient, const std::shared_ptr<Device>& device)
+	static HIDClient_t* ClientPtr(uint32 client)
 	{
-		return PPCCoreCallback(hidClient->callbackFunc, memory_getVirtualOffsetFromPointer(hidClient),
-							   memory_getVirtualOffsetFromPointer(device->m_hid), HID_CALLBACK_ATTACH);
+		return (HIDClient_t*)memory_getPointerFromVirtualOffset(client);
 	}
 
-	void DoAttachCallbackAsync(HIDClient_t* hidClient, const std::shared_ptr<Device>& device)
+	static MPTR SlotHID(int slot)
 	{
-		coreinitAsyncCallback_add(hidClient->callbackFunc, 3, memory_getVirtualOffsetFromPointer(hidClient),
-								  memory_getVirtualOffsetFromPointer(device->m_hid), HID_CALLBACK_ATTACH);
+		return memory_getVirtualOffsetFromPointer(HIDPool.GetPtr() + slot);
 	}
 
-	void DoDetachCallback(HIDClient_t* hidClient, const std::shared_ptr<Device>& device)
+	static void DoClientCallback(uint32 client, int slot, int what, bool async)
 	{
-		PPCCoreCallback(hidClient->callbackFunc, memory_getVirtualOffsetFromPointer(hidClient),
-						memory_getVirtualOffsetFromPointer(device->m_hid), HID_CALLBACK_DETACH);
-	}
-
-	void DoDetachCallbackAsync(HIDClient_t* hidClient, const std::shared_ptr<Device>& device)
-	{
-		coreinitAsyncCallback_add(hidClient->callbackFunc, 3, memory_getVirtualOffsetFromPointer(hidClient),
-								  memory_getVirtualOffsetFromPointer(device->m_hid), HID_CALLBACK_DETACH);
+		HIDClient_t* hidClient = ClientPtr(client);
+		if (async)
+			coreinitAsyncCallback_add(hidClient->callbackFunc, 3, client, SlotHID(slot), what);
+		else
+			PPCCoreCallback(hidClient->callbackFunc, client, SlotHID(slot), what);
 	}
 
 	void AttachBackend(const std::shared_ptr<Backend>& backend)
 	{
+		for (auto& b : s_backends)
 		{
-			std::lock_guard<std::recursive_mutex> lock(hidMutex);
-			backendList.push_back(backend);
+			if (!b)
+			{
+				b = backend;
+				break;
+			}
 		}
 		backend->OnAttach();
 	}
 
 	void DetachBackend(const std::shared_ptr<Backend>& backend)
 	{
+		for (auto& b : s_backends)
 		{
-			std::lock_guard<std::recursive_mutex> lock(hidMutex);
-			backendList.remove(backend);
+			if (b == backend)
+				b.reset();
 		}
 		backend->OnDetach();
 	}
 
 	void DetachAllBackends()
 	{
-		std::list<std::shared_ptr<Backend>> backendListCopy;
+		for (auto& b : s_backends)
 		{
-			std::lock_guard<std::recursive_mutex> lock(hidMutex);
-			backendListCopy = backendList;
-			backendList.clear();
-		}
-		for (const auto& backend : backendListCopy)
-		{
-			backend->OnDetach();
+			std::shared_ptr<Backend> backend = std::move(b);
+			b.reset();
+			if (backend)
+				backend->OnDetach();
 		}
 	}
 
@@ -183,41 +122,30 @@ namespace nsyshid
 		backend::AttachDefaultBackends();
 	}
 
-	bool AttachDevice(const std::shared_ptr<Device>& device)
+	bool AttachDevice(const std::shared_ptr<Device>& device, const Backend* owner)
 	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-
-		// is the device already attached?
+		DeviceHolder* holder = new DeviceHolder{device};
+		uint32 handle = 0;
+		const int slot = hid_core_attach(device.get(), holder, owner,
+			HID_CORE_ID(device->m_vendorId, device->m_productId), &handle);
+		if (slot < 0)
 		{
-			auto it = std::find(deviceList.begin(), deviceList.end(), device);
-			if (it != deviceList.end())
-			{
-				cemuLog_logDebug(LogType::Force,
-								 "nsyshid.AttachDevice(): failed to attach device: {:04x}:{:04x}: already attached",
-								 device->m_vendorId,
-								 device->m_productId);
-				return false;
-			}
-		}
-
-		HID_t* hidDevice = GetFreeHID();
-		if (hidDevice == nullptr)
-		{
+			delete holder;
 			cemuLog_logDebug(LogType::Force,
-							 "nsyshid.AttachDevice(): failed to attach device: {:04x}:{:04x}: no free device slots left",
+							 "nsyshid.AttachDevice(): failed to attach device: {:04x}:{:04x}: {}",
 							 device->m_vendorId,
-							 device->m_productId);
+							 device->m_productId,
+							 slot == -1 ? "already attached" : "no free device slots left");
 			return false;
 		}
-		hidDevice->handle = GenerateHIDHandle();
+		HID_t* hidDevice = HIDPool.GetPtr() + slot;
+		hidDevice->handle = handle;
 		device->AssignHID(hidDevice);
-		deviceList.push_back(device);
 
-		// do attach callbacks
-		for (auto client : HIDClientList)
-		{
-			DoAttachCallbackAsync(client, device);
-		}
+		int cursor = 0;
+		while (uint32 client = hid_core_client_next(&cursor))
+			DoClientCallback(client, slot, HID_CALLBACK_ATTACH, true);
+		hid_core_put(slot);
 
 		cemuLog_logDebug(LogType::Force, "nsyshid.AttachDevice(): device attached: {:04x}:{:04x}",
 						 device->m_vendorId,
@@ -227,27 +155,21 @@ namespace nsyshid
 
 	void DetachDevice(const std::shared_ptr<Device>& device)
 	{
+		// held across the callbacks, so its HID_t is not handed out again
+		const int slot = hid_core_get_key(device.get());
+		if (slot < 0 || !hid_core_detach(device.get()))
 		{
-			std::lock_guard<std::recursive_mutex> lock(hidMutex);
-
-			// remove from list
-			auto it = std::find(deviceList.begin(), deviceList.end(), device);
-			if (it == deviceList.end())
-			{
-				cemuLog_logDebug(LogType::Force, "nsyshid.DetachDevice(): device not found: {:04x}:{:04x}",
-								 device->m_vendorId,
-								 device->m_productId);
-				return;
-			}
-			deviceList.erase(it);
-
-			// do detach callbacks
-			for (auto client : HIDClientList)
-			{
-				DoDetachCallbackAsync(client, device);
-			}
-			ReleaseHID(device->m_hid);
+			if (slot >= 0)
+				hid_core_put(slot);
+			cemuLog_logDebug(LogType::Force, "nsyshid.DetachDevice(): device not found: {:04x}:{:04x}",
+							 device->m_vendorId,
+							 device->m_productId);
+			return;
 		}
+		int cursor = 0;
+		while (uint32 client = hid_core_client_next(&cursor))
+			DoClientCallback(client, slot, HID_CALLBACK_DETACH, true);
+		hid_core_put(slot);
 
 		device->Close();
 
@@ -258,15 +180,12 @@ namespace nsyshid
 
 	std::shared_ptr<Device> FindDeviceById(uint16 vendorId, uint16 productId)
 	{
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		for (const auto& device : deviceList)
-		{
-			if (device->m_vendorId == vendorId && device->m_productId == productId)
-			{
-				return device;
-			}
-		}
-		return nullptr;
+		const int slot = hid_core_get_id(HID_CORE_ID(vendorId, productId));
+		if (slot < 0)
+			return nullptr;
+		std::shared_ptr<Device> device = static_cast<DeviceHolder*>(hid_core_obj(slot))->device;
+		hid_core_put(slot);
+		return device;
 	}
 
 	void export_HIDAddClient(PPCInterpreter_t* hCPU)
@@ -276,13 +195,16 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDAddClient(0x{:08x},0x{:08x})", hCPU->gpr[3], hCPU->gpr[4]);
 		hidClient->callbackFunc = callbackFuncMPTR;
 
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		AttachClientToList(hidClient);
+		const uint32 client = memory_getVirtualOffsetFromPointer(hidClient);
+		if (!hid_core_client_add(client))
+			cemuLog_log(LogType::Force, "nsyshid.HIDAddClient(): no room for another client");
 
 		// do attach callbacks
-		for (const auto& device : deviceList)
+		int cursor = 0;
+		for (int slot; (slot = hid_core_next(&cursor, nullptr)) >= 0;)
 		{
-			DoAttachCallback(hidClient, device);
+			DoClientCallback(client, slot, HID_CALLBACK_ATTACH, false);
+			hid_core_put(slot);
 		}
 
 		osLib_returnFromFunction(hCPU, 0);
@@ -293,49 +215,18 @@ namespace nsyshid
 		ppcDefineParamTypePtr(hidClient, HIDClient_t, 0);
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDDelClient(0x{:08x})", hCPU->gpr[3]);
 
-		std::lock_guard<std::recursive_mutex> lock(hidMutex);
-		DetachClientFromList(hidClient);
+		const uint32 client = memory_getVirtualOffsetFromPointer(hidClient);
+		hid_core_client_del(client);
 
 		// do detach callbacks
-		for (const auto& device : deviceList)
+		int cursor = 0;
+		for (int slot; (slot = hid_core_next(&cursor, nullptr)) >= 0;)
 		{
-			DoDetachCallback(hidClient, device);
+			DoClientCallback(client, slot, HID_CALLBACK_DETACH, false);
+			hid_core_put(slot);
 		}
 
 		osLib_returnFromFunction(hCPU, 0);
-	}
-
-	void _debugPrintHex(const std::string prefix, const uint8* data, size_t size)
-	{
-		constexpr size_t BYTES_PER_LINE = 16;
-
-		std::string out;
-		for (size_t row_start = 0; row_start < size; row_start += BYTES_PER_LINE)
-		{
-			out += fmt::format("{:06x}: ", row_start);
-			for (size_t i = 0; i < BYTES_PER_LINE; ++i)
-			{
-				if (row_start + i < size)
-				{
-					out += fmt::format("{:02x} ", data[row_start + i]);
-				}
-				else
-				{
-					out += "   ";
-				}
-			}
-			out += " ";
-			for (size_t i = 0; i < BYTES_PER_LINE; ++i)
-			{
-				if (row_start + i < size)
-				{
-					char c = static_cast<char>(data[row_start + i]);
-					out += std::isprint(c, std::locale::classic()) ? c : '.';
-				}
-			}
-			out += "\n";
-		}
-		cemuLog_logDebug(LogType::Force, "[{}] Data: \n{}", prefix, out);
 	}
 
 	void DoHIDTransferCallback(MPTR callbackFuncMPTR, MPTR callbackParamMPTR, uint32 hidHandle, uint32 errorCode,
@@ -344,26 +235,110 @@ namespace nsyshid
 		coreinitAsyncCallback_add(callbackFuncMPTR, 5, hidHandle, errorCode, buffer, length, callbackParamMPTR);
 	}
 
-	void _hidGetDescriptorAsync(std::shared_ptr<Device> device, uint8 descType, uint8 descIndex, uint16 lang, uint8* output, uint32 outputMaxLength, MPTR callbackFuncMPTR, MPTR callbackParamMPTR)
+	// the transfers the workers carry out (hid_core.h)
+	enum
 	{
-		if (device->GetDescriptor(descType, descIndex, lang, output, outputMaxLength))
+		REQ_GET_DESCRIPTOR,
+		REQ_SET_IDLE,
+		REQ_SET_PROTOCOL,
+		REQ_SET_REPORT,
+		REQ_READ,
+		REQ_WRITE,
+	};
+
+	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength);
+	sint32 _hidWriteInternalSync(Device* device, uint8* data, sint32 maxLength);
+
+	// a request's arguments: arg[0] the callback (0: synchronous, with
+	// ptr[1] the event to signal and ptr[2] where the result goes), arg[1]
+	// its parameter, ptr[0] the guest buffer
+	static void RunRequest(const hid_core_req_t* req)
+	{
+		Device* device = SlotDevice(req->slot);
+		uint8* data = (uint8*)req->ptr[0];
+		const MPTR cb = req->arg[0];
+		const MPTR param = req->arg[1];
+		const uint32 a2 = req->arg[2], a3 = req->arg[3], a4 = req->arg[4], a5 = req->arg[5];
+		sint32 result = 0;
+		sint32 errorCode = 0;
+		MPTR buffer = 0;
+		sint32 length = 0;
+		switch (req->kind)
 		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  0,
-								  0,
-								  0);
+		case REQ_GET_DESCRIPTOR:
+			errorCode = device->GetDescriptor((uint8)a2, (uint8)a3, (uint16)a4, data, a5) ? 0 : -1;
+			break;
+		case REQ_SET_IDLE:
+			errorCode = device->SetIdle((uint8)a2, (uint8)a3, (uint8)a4) ? 0 : -1;
+			break;
+		case REQ_SET_PROTOCOL:
+			errorCode = device->SetProtocol((uint8)a2, (uint8)a3) ? 0 : -1;
+			break;
+		case REQ_SET_REPORT:
+		{
+			ReportMessage message((uint8)a2, (uint8)a3, data, a4);
+			const bool ok = device->SetReport(&message);
+			result = ok ? (sint32)a4 : 0;
+			errorCode = ok ? 0 : -1;
+			buffer = memory_getVirtualOffsetFromPointer(data);
+			length = (sint32)a4;
+			break;
+		}
+		case REQ_READ:
+		case REQ_WRITE:
+			result = req->kind == REQ_READ ? _hidReadInternalSync(device, data, (sint32)a2)
+										   : _hidWriteInternalSync(device, data, (sint32)a2);
+			errorCode = result < 0 ? result : 0; // don't return number of bytes in error code
+			buffer = memory_getVirtualOffsetFromPointer(data);
+			length = result > 0 ? result : 0;
+			break;
+		}
+		if (cb != MPTR_NULL)
+		{
+			DoHIDTransferCallback(cb, param, req->handle, errorCode, buffer, length);
 		}
 		else
 		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  -1,
-								  0,
-								  0);
+			*(sint32*)req->ptr[2] = result;
+			coreinit::OSSignalEvent((coreinit::OSEvent*)req->ptr[1]);
 		}
+	}
+
+	// hand a request to the workers, or run it here when they cannot take
+	// it; the slot goes with it. For a synchronous one, the result.
+	static sint32 IssueRequest(int slot, int kind, MPTR cb, MPTR param, uint8* data,
+							   uint32 a2, uint32 a3 = 0, uint32 a4 = 0, uint32 a5 = 0)
+	{
+		hid_core_req_t req = {};
+		req.slot = slot;
+		req.kind = kind;
+		req.handle = hid_core_handle(slot);
+		req.arg[0] = cb;
+		req.arg[1] = param;
+		req.arg[2] = a2;
+		req.arg[3] = a3;
+		req.arg[4] = a4;
+		req.arg[5] = a5;
+		req.ptr[0] = data;
+		sint32 result = 0;
+		StackAllocator<coreinit::OSEvent> event;
+		if (cb == MPTR_NULL)
+		{
+			coreinit::OSInitEvent(&event, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_AUTO);
+			req.ptr[1] = event.GetPointer();
+			req.ptr[2] = &result;
+		}
+		if (hid_core_submit(&req))
+		{
+			if (cb == MPTR_NULL)
+				coreinit::OSWaitEvent(&event);
+			return result;
+		}
+		RunRequest(&req);
+		if (cb == MPTR_NULL)
+			coreinit::OSWaitEvent(&event);
+		hid_core_put(slot);
+		return result;
 	}
 
 	void export_HIDGetDescriptor(PPCInterpreter_t* hCPU)
@@ -379,8 +354,8 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDGetDescriptor(0x{:08x}, 0x{:02x}, 0x{:02x}, 0x{:04x}, 0x{:x}, 0x{:08x}, 0x{:08x}, 0x{:08x})",
 					hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8], hCPU->gpr[9], hCPU->gpr[10]);
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDGetDescriptor(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
@@ -391,43 +366,14 @@ namespace nsyshid
 		sint32 returnCode = 0;
 		if (cbFuncMPTR == MPTR_NULL)
 		{
-			// synchronous
-			returnCode = -1;
-			if (device->GetDescriptor(descType, descIndex, lang, output, outputMaxLength))
-			{
-				returnCode = outputMaxLength;
-			}
+			HeldDevice device(slot);
+			returnCode = device->GetDescriptor(descType, descIndex, lang, output, outputMaxLength) ? (sint32)outputMaxLength : -1;
 		}
 		else
 		{
-			// asynchronous
-			std::thread(&_hidGetDescriptorAsync, device, descType, descIndex, lang, output, outputMaxLength, cbFuncMPTR, cbParamMPTR)
-				.detach();
-			returnCode = 0;
+			IssueRequest(slot, REQ_GET_DESCRIPTOR, cbFuncMPTR, cbParamMPTR, output, descType, descIndex, lang, outputMaxLength);
 		}
 		osLib_returnFromFunction(hCPU, returnCode);
-	}
-
-	void _hidSetIdleAsync(std::shared_ptr<Device> device, uint8 ifIndex, uint8 reportId, uint8 duration, MPTR callbackFuncMPTR, MPTR callbackParamMPTR)
-	{
-		if (device->SetIdle(ifIndex, reportId, duration))
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  0,
-								  0,
-								  0);
-		}
-		else
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  -1,
-								  0,
-								  0);
-		}
 	}
 
 	void export_HIDSetIdle(PPCInterpreter_t* hCPU)
@@ -441,8 +387,8 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDSetIdle(0x{:08x}, 0x{:02x}, 0x{:02x}, 0x{:02x}, 0x{:08x}, 0x{:08x})", hCPU->gpr[3],
 					hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8]);
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDSetIdle(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
@@ -453,43 +399,14 @@ namespace nsyshid
 		sint32 returnCode = 0;
 		if (callbackFuncMPTR == MPTR_NULL)
 		{
-			// synchronous
-			returnCode = -1;
-			if (device->SetIdle(ifIndex, reportId, duration))
-			{
-				returnCode = 0;
-			}
+			HeldDevice device(slot);
+			returnCode = device->SetIdle(ifIndex, reportId, duration) ? 0 : -1;
 		}
 		else
 		{
-			// asynchronous
-			std::thread(&_hidSetIdleAsync, device, ifIndex, reportId, duration, callbackFuncMPTR, callbackParamMPTR)
-				.detach();
-			returnCode = 0;
+			IssueRequest(slot, REQ_SET_IDLE, callbackFuncMPTR, callbackParamMPTR, nullptr, ifIndex, reportId, duration);
 		}
 		osLib_returnFromFunction(hCPU, returnCode);
-	}
-
-	void _hidSetProtocolAsync(std::shared_ptr<Device> device, uint8 ifIndex, uint8 protocol, MPTR callbackFuncMPTR, MPTR callbackParamMPTR)
-	{
-		if (device->SetProtocol(ifIndex, protocol))
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  0,
-								  0,
-								  0);
-		}
-		else
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  -1,
-								  0,
-								  0);
-		}
 	}
 
 	void export_HIDSetProtocol(PPCInterpreter_t* hCPU)
@@ -502,8 +419,8 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDSetProtocol(0x{:08x}, 0x{:02x}, 0x{:02x}, 0x{:08x}, 0x{:08x})", hCPU->gpr[3],
 					hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDSetProtocol(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
@@ -513,63 +430,14 @@ namespace nsyshid
 		sint32 returnCode = 0;
 		if (callbackFuncMPTR == MPTR_NULL)
 		{
-			// synchronous
-			returnCode = -1;
-			if (device->SetProtocol(ifIndex, protocol))
-			{
-				returnCode = 0;
-			}
+			HeldDevice device(slot);
+			returnCode = device->SetProtocol(ifIndex, protocol) ? 0 : -1;
 		}
 		else
 		{
-			// asynchronous
-			std::thread(&_hidSetProtocolAsync, device, ifIndex, protocol, callbackFuncMPTR, callbackParamMPTR)
-				.detach();
-			returnCode = 0;
+			IssueRequest(slot, REQ_SET_PROTOCOL, callbackFuncMPTR, callbackParamMPTR, nullptr, ifIndex, protocol);
 		}
 		osLib_returnFromFunction(hCPU, returnCode);
-	}
-
-	// handler for async HIDSetReport transfers
-	void _hidSetReportAsync(std::shared_ptr<Device> device, uint8 reportType, uint8 reportId, uint8* data, uint32 length,
-							MPTR callbackFuncMPTR, MPTR callbackParamMPTR)
-	{
-		cemuLog_logDebug(LogType::Force, "_hidSetReportAsync begin");
-		ReportMessage message(reportType, reportId, data, length);
-		if (device->SetReport(&message))
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  0,
-								  memory_getVirtualOffsetFromPointer(data),
-								  length);
-		}
-		else
-		{
-			DoHIDTransferCallback(callbackFuncMPTR,
-								  callbackParamMPTR,
-								  device->m_hid->handle,
-								  -1,
-								  memory_getVirtualOffsetFromPointer(data),
-								  length);
-		}
-	}
-
-	// handler for synchronous HIDSetReport transfers
-	sint32 _hidSetReportSync(std::shared_ptr<Device> device, uint8 reportType, uint8 reportId,
-							 uint8* data, uint32 length, coreinit::OSEvent* event)
-	{
-		_debugPrintHex("_hidSetReportSync Begin", data, length);
-		sint32 returnCode = 0;
-		ReportMessage message(reportType, reportId, data, length);
-		if (device->SetReport(&message))
-		{
-			returnCode = length;
-		}
-		cemuLog_logDebug(LogType::Force, "_hidSetReportSync end. returnCode: {}", returnCode);
-		coreinit::OSSignalEvent(event);
-		return returnCode;
 	}
 
 	void export_HIDSetReport(PPCInterpreter_t* hCPU)
@@ -584,44 +452,26 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDSetReport(0x{:08x}, 0x{:02x}, 0x{:02x}, 0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x})", hCPU->gpr[3],
 					hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8], hCPU->gpr[9]);
 
-		_debugPrintHex("HIDSetReport", data, dataLength);
-
 #ifdef CEMU_DEBUG_ASSERT
 		if (reportType != 2 || reportId != 0)
 			assert_dbg();
 #endif
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDSetReport(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
 			return;
 		}
 
-		// issue request (synchronous or asynchronous)
-		sint32 returnCode = 0;
-		if (callbackFuncMPTR == MPTR_NULL)
-		{
-			// synchronous
-			StackAllocator<coreinit::OSEvent> event;
-			coreinit::OSInitEvent(&event, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_AUTO);
-			std::future<sint32> res = std::async(std::launch::async, &_hidSetReportSync, device, reportType, reportId, data, dataLength, &event);
-			coreinit::OSWaitEvent(&event);
-			returnCode = res.get();
-		}
-		else
-		{
-			// asynchronous
-			std::thread(&_hidSetReportAsync, device, reportType, reportId, data, dataLength,
-						callbackFuncMPTR, callbackParamMPTR)
-				.detach();
-			returnCode = 0;
-		}
+		// synchronous: the length set, or 0; asynchronous: 0
+		const sint32 returnCode = IssueRequest(slot, REQ_SET_REPORT, callbackFuncMPTR, callbackParamMPTR, data,
+											   reportType, reportId, dataLength);
 		osLib_returnFromFunction(hCPU, returnCode);
 	}
 
-	sint32 _hidReadInternalSync(std::shared_ptr<Device> device, uint8* data, sint32 maxLength)
+	sint32 _hidReadInternalSync(Device* device, uint8* data, sint32 maxLength)
 	{
 		cemuLog_logDebug(LogType::Force, "HidRead Begin (Length 0x{:08x})", maxLength);
 		if (!device->IsOpened())
@@ -659,29 +509,6 @@ namespace nsyshid
 		return -1;
 	}
 
-	void _hidReadAsync(std::shared_ptr<Device> device,
-					   uint8* data, sint32 maxLength,
-					   MPTR callbackFuncMPTR,
-					   MPTR callbackParamMPTR)
-	{
-		sint32 returnCode = _hidReadInternalSync(device, data, maxLength);
-		sint32 errorCode = 0;
-		if (returnCode < 0)
-			errorCode = returnCode; // don't return number of bytes in error code
-		DoHIDTransferCallback(callbackFuncMPTR, callbackParamMPTR, device->m_hid->handle, errorCode,
-							  memory_getVirtualOffsetFromPointer(data), (returnCode > 0) ? returnCode : 0);
-	}
-
-	sint32 _hidReadSync(std::shared_ptr<Device> device,
-						uint8* data,
-						sint32 maxLength,
-						coreinit::OSEvent* event)
-	{
-		sint32 returnCode = _hidReadInternalSync(device, data, maxLength);
-		coreinit::OSSignalEvent(event);
-		return returnCode;
-	}
-
 	void export_HIDRead(PPCInterpreter_t* hCPU)
 	{
 		ppcDefineParamU32(hidHandle, 0);		  // r3
@@ -692,34 +519,19 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDRead(0x{:x},0x{:08x},0x{:08x},0x{:08x},0x{:08x})", hCPU->gpr[3],
 					hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDRead(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
 			return;
 		}
-		sint32 returnCode = 0;
-		if (callbackFuncMPTR != MPTR_NULL)
-		{
-			// asynchronous transfer
-			std::thread(&_hidReadAsync, device, data, maxLength, callbackFuncMPTR, callbackParamMPTR).detach();
-			returnCode = 0;
-		}
-		else
-		{
-			// synchronous transfer
-			StackAllocator<coreinit::OSEvent> event;
-			coreinit::OSInitEvent(&event, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_AUTO);
-			std::future<sint32> res = std::async(std::launch::async, &_hidReadSync, device, data, maxLength, &event);
-			coreinit::OSWaitEvent(&event);
-			returnCode = res.get();
-		}
-
+		// synchronous: what was read, or the error; asynchronous: 0
+		const sint32 returnCode = IssueRequest(slot, REQ_READ, callbackFuncMPTR, callbackParamMPTR, data, maxLength);
 		osLib_returnFromFunction(hCPU, returnCode);
 	}
 
-	sint32 _hidWriteInternalSync(std::shared_ptr<Device> device, uint8* data, sint32 maxLength)
+	sint32 _hidWriteInternalSync(Device* device, uint8* data, sint32 maxLength)
 	{
 		cemuLog_logDebug(LogType::Force, "HidWrite Begin (Length 0x{:08x})", maxLength);
 		if (!device->IsOpened())
@@ -755,30 +567,6 @@ namespace nsyshid
 		return -1;
 	}
 
-	void _hidWriteAsync(std::shared_ptr<Device> device,
-						uint8* data,
-						sint32 maxLength,
-						MPTR callbackFuncMPTR,
-						MPTR callbackParamMPTR)
-	{
-		sint32 returnCode = _hidWriteInternalSync(device, data, maxLength);
-		sint32 errorCode = 0;
-		if (returnCode < 0)
-			errorCode = returnCode; // don't return number of bytes in error code
-		DoHIDTransferCallback(callbackFuncMPTR, callbackParamMPTR, device->m_hid->handle, errorCode,
-							  memory_getVirtualOffsetFromPointer(data), (returnCode > 0) ? returnCode : 0);
-	}
-
-	sint32 _hidWriteSync(std::shared_ptr<Device> device,
-						 uint8* data,
-						 sint32 maxLength,
-						 coreinit::OSEvent* event)
-	{
-		sint32 returnCode = _hidWriteInternalSync(device, data, maxLength);
-		coreinit::OSSignalEvent(event);
-		return returnCode;
-	}
-
 	void export_HIDWrite(PPCInterpreter_t* hCPU)
 	{
 		ppcDefineParamU32(hidHandle, 0);		  // r3
@@ -789,30 +577,15 @@ namespace nsyshid
 		cemuLog_logDebug(LogType::Force, "nsyshid.HIDWrite(0x{:x},0x{:08x},0x{:08x},0x{:08x},0x{:08x})", hCPU->gpr[3],
 					hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 
-		std::shared_ptr<Device> device = GetDeviceByHandle(hidHandle, true);
-		if (device == nullptr)
+		const int slot = GetDeviceSlotByHandle(hidHandle, true);
+		if (slot < 0)
 		{
 			cemuLog_log(LogType::Force, "nsyshid.HIDWrite(): Unable to find device with hid handle {}", hidHandle);
 			osLib_returnFromFunction(hCPU, -1);
 			return;
 		}
-		sint32 returnCode = 0;
-		if (callbackFuncMPTR != MPTR_NULL)
-		{
-			// asynchronous transfer
-			std::thread(&_hidWriteAsync, device, data, maxLength, callbackFuncMPTR, callbackParamMPTR).detach();
-			returnCode = 0;
-		}
-		else
-		{
-			// synchronous transfer
-			StackAllocator<coreinit::OSEvent> event;
-			coreinit::OSInitEvent(&event, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_AUTO);
-			std::future<sint32> res = std::async(std::launch::async, &_hidWriteSync, device, data, maxLength, &event);
-			coreinit::OSWaitEvent(&event);
-			returnCode = res.get();
-		}
-
+		// synchronous: what was written, or the error; asynchronous: 0
+		const sint32 returnCode = IssueRequest(slot, REQ_WRITE, callbackFuncMPTR, callbackParamMPTR, data, maxLength);
 		osLib_returnFromFunction(hCPU, returnCode);
 	}
 
@@ -833,45 +606,42 @@ namespace nsyshid
 
 	void Backend::DetachAllDevices()
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		if (m_isAttached)
+		int cursor = 0;
+		for (int slot; (slot = hid_core_next(&cursor, this)) >= 0;)
 		{
-			for (const auto& device : this->m_devices)
-			{
-				nsyshid::DetachDevice(device);
-			}
-			this->m_devices.clear();
+			std::shared_ptr<Device> device = static_cast<DeviceHolder*>(hid_core_obj(slot))->device;
+			hid_core_put(slot);
+			nsyshid::DetachDevice(device);
 		}
 	}
 
 	bool Backend::AttachDevice(const std::shared_ptr<Device>& device)
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		if (m_isAttached && nsyshid::AttachDevice(device))
+		if (!IsBackendAttached() || !nsyshid::AttachDevice(device, this))
+			return false;
+		// detached meanwhile: its devices went with it, this one too
+		if (!IsBackendAttached())
 		{
-			this->m_devices.push_back(device);
-			return true;
+			nsyshid::DetachDevice(device);
+			return false;
 		}
-		return false;
+		return true;
 	}
 
 	void Backend::DetachDevice(const std::shared_ptr<Device>& device)
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		if (m_isAttached)
-		{
-			nsyshid::DetachDevice(device);
-			this->m_devices.remove(device);
-		}
+		nsyshid::DetachDevice(device);
 	}
 
 	std::shared_ptr<Device> Backend::FindDevice(std::function<bool(const std::shared_ptr<Device>&)> isWantedDevice)
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		auto it = std::find_if(this->m_devices.begin(), this->m_devices.end(), std::move(isWantedDevice));
-		if (it != this->m_devices.end())
+		int cursor = 0;
+		for (int slot; (slot = hid_core_next(&cursor, this)) >= 0;)
 		{
-			return *it;
+			std::shared_ptr<Device> device = static_cast<DeviceHolder*>(hid_core_obj(slot))->device;
+			hid_core_put(slot);
+			if (isWantedDevice(device))
+				return device;
 		}
 		return nullptr;
 	}
@@ -887,28 +657,25 @@ namespace nsyshid
 	}
 
 	Backend::Backend()
-		: m_isAttached(false)
 	{
+		retro_atomic_int_init(&m_isAttached, 0);
 	}
 
 	void Backend::OnAttach()
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		m_isAttached = true;
+		retro_atomic_store_release_int(&m_isAttached, 1);
 		AttachVisibleDevices();
 	}
 
 	void Backend::OnDetach()
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
+		retro_atomic_store_release_int(&m_isAttached, 0);
 		DetachAllDevices();
-		m_isAttached = false;
 	}
 
 	bool Backend::IsBackendAttached()
 	{
-		std::lock_guard<std::recursive_mutex> lock(this->m_devicesMutex);
-		return m_isAttached;
+		return retro_atomic_load_acquire_int(&m_isAttached) != 0;
 	}
 
 	Device::Device(uint16 vendorId,
@@ -973,10 +740,17 @@ namespace nsyshid
 			{
 				// initialise whitelist
 				Whitelist::GetInstance();
+				hid_core_set_release(ReleaseDeviceHolder);
+				hid_core_clients_reset();
+				hid_core_start(RunRequest);
 				AttachDefaultBackends();
 			}
 			else if (reason == coreinit::RplEntryReason::Unloaded)
 			{
+				// the next title starts with no devices and no transfers
+				hid_core_stop();
+				DetachAllBackends();
+				hid_core_clients_reset();
 			}
 		}
 	}s_COSnsyshidModule;

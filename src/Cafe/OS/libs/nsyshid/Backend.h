@@ -1,10 +1,10 @@
 #pragma once
 
-#include <list>
+#include <functional>
 #include <memory>
-#include <mutex>
 
 #include "Common/precompiled.h"
+#include <retro_atomic.h>
 
 namespace nsyshid
 {
@@ -180,9 +180,7 @@ namespace nsyshid
 		virtual void AttachVisibleDevices() = 0;
 
 	  private:
-		std::list<std::shared_ptr<Device>> m_devices;
-		std::recursive_mutex m_devicesMutex;
-		bool m_isAttached;
+		retro_atomic_int_t m_isAttached; // its devices are nsyshid's, tagged with it
 	};
 
 	namespace backend

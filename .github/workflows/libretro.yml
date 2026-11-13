@@ -491,6 +491,17 @@ jobs:
           make -C test/cam_state clean
           SANITIZER=address,undefined ./test/cam_state/run_tests.sh
 
+      - name: "USB device state"
+        # nsyshid's devices, clients and transfer workers, with no lock: a
+        # device released once, never while held; plain, under TSan and
+        # under ASan + UBSan
+        run: |
+          ./test/hid_core/run_tests.sh
+          make -C test/hid_core clean
+          SANITIZER=thread ./test/hid_core/run_tests.sh
+          make -C test/hid_core clean
+          SANITIZER=address,undefined ./test/hid_core/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;
