@@ -5,6 +5,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
+#include "Cafe/OS/libs/camera/cam_state.h"
 
 namespace camera
 {
@@ -54,91 +55,11 @@ namespace camera
 	#define CAM_ERROR_SUCCESS			0
 	#define CAM_ERROR_INVALID_HANDLE		-8
 
-	std::vector<struct CameraInstance*> g_table_cameraHandles;
-	std::vector<struct CameraInstance*> g_activeCameraInstances;
-	std::recursive_mutex g_mutex_camera;
-	std::atomic_int g_cameraCounter{ 0 };
+	// The handles and each one's queue of surfaces are C (cam_state.c): no
+	// lock, nothing allocated, and nothing a title left behind handed to the
+	// next one.
 	SysAllocator<coreinit::OSAlarm_t, 1> g_alarm_camera;
 	SysAllocator<CAMCallbackParam, 1> g_cameraHandlerParam;
-
-	CameraInstance* GetCameraInstanceByHandle(sint32 camHandle)
-	{
-		std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-		if (camHandle <= 0)
-			return nullptr;
-		camHandle -= 1;
-		if (camHandle >= g_table_cameraHandles.size())
-			return nullptr;
-		return g_table_cameraHandles[camHandle];
-	}
-
-	struct CameraInstance 
-	{
-		CameraInstance(uint32 frameWidth, uint32 frameHeight, MPTR handlerFunc) : width(frameWidth), height(frameHeight), handlerFunc(handlerFunc) { AcquireHandle(); };
-		~CameraInstance() { if (isOpen) { CloseCam(); } ReleaseHandle(); };
-
-		sint32 handle{ 0 };
-		uint32 width;
-		uint32 height;
-		bool isOpen{false};
-		std::queue<CAMTargetSurface> queue_targetSurfaces;
-		MPTR handlerFunc;
-
-		bool OpenCam()
-		{
-			if (isOpen)
-				return false;
-			isOpen = true;
-			g_activeCameraInstances.push_back(this);
-			return true;
-		}
-
-		bool CloseCam()
-		{
-			if (!isOpen)
-				return false;
-			isOpen = false;
-			vectorRemoveByValue(g_activeCameraInstances, this);
-			return true;
-		}
-
-		void QueueTargetSurface(CAMTargetSurface* targetSurface)
-		{
-			std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-			cemu_assert_debug(queue_targetSurfaces.size() < 100); // check for sane queue length
-			queue_targetSurfaces.push(*targetSurface);
-		}
-
-	private:
-		void AcquireHandle()
-		{
-			std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-			for (uint32 i = 0; i < g_table_cameraHandles.size(); i++)
-			{
-				if (g_table_cameraHandles[i] == nullptr)
-				{
-					g_table_cameraHandles[i] = this;
-					this->handle = i + 1;
-					return;
-				}
-			}
-			this->handle = (sint32)(g_table_cameraHandles.size() + 1);
-			g_table_cameraHandles.push_back(this);
-		}
-
-		void ReleaseHandle()
-		{
-			for (uint32 i = 0; i < g_table_cameraHandles.size(); i++)
-			{
-				if (g_table_cameraHandles[i] == this)
-				{
-					g_table_cameraHandles[i] = nullptr;
-					return;
-				}
-			}
-			cemu_assert_debug(false);
-		}
-	};
 
 	sint32 CAMGetMemReq(void* ukn)
 	{
@@ -150,96 +71,72 @@ namespace camera
 		return CAM_ERROR_SUCCESS; // always return success
 	}
 
+	// 60 times a second, on the alarm's thread: a surface back to each open
+	// camera that has one queued
 	void ppcCAMUpdate60(PPCInterpreter_t* hCPU)
 	{
-		// update all open camera instances
-		size_t numCamInstances = g_activeCameraInstances.size();
-		//for (auto& itr : g_activeCameraInstances)
-		for(size_t i=0; i<numCamInstances; i++)
+		// todo - handle 30 / 60 FPS
+		int cursor = 0;
+		uint32 handler, surface, size;
+		while (cam_state_next(&cursor, &handler, &surface, &size))
 		{
-			std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-			if (i >= g_activeCameraInstances.size())
-				break;
-			CameraInstance* camInstance = g_activeCameraInstances[i];
-			// todo - handle 30 / 60 FPS
-			if (camInstance->queue_targetSurfaces.empty())
-				continue;
-			auto& targetSurface = camInstance->queue_targetSurfaces.front();
 			g_cameraHandlerParam->type = 0;
-			g_cameraHandlerParam->field1 = targetSurface.surfacePtr.GetMPTR();
-			g_cameraHandlerParam->field2 = targetSurface.surfaceSize;
+			g_cameraHandlerParam->field1 = surface;
+			g_cameraHandlerParam->field2 = size;
 			g_cameraHandlerParam->field3 = 0;
-			cemu_assert_debug(camInstance->handlerFunc != MPTR_NULL);
-			camInstance->queue_targetSurfaces.pop();
-			_lock.unlock();
-			PPCCoreCallback(camInstance->handlerFunc, g_cameraHandlerParam.GetPtr());
+			cemu_assert_debug(handler != MPTR_NULL);
+			PPCCoreCallback(handler, g_cameraHandlerParam.GetPtr());
 		}
 		osLib_returnFromFunction(hCPU, 0);
 	}
 
-
 	sint32 CAMInit(uint32 cameraId, CAMInitInfo_t* camInitInfo, uint32be* error)
 	{
-		CameraInstance* camInstance = new CameraInstance(camInitInfo->width, camInitInfo->height, camInitInfo->handlerFuncPtr);
 		*error = 0; // Hunter's Trophy 2 will fail to boot if we don't set this
-		std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-		if (g_cameraCounter == 0)
+		bool first = false;
+		const sint32 handle = cam_state_init(camInitInfo->width, camInitInfo->height, camInitInfo->handlerFuncPtr, &first);
+		if (!handle)
+		{
+			cemuLog_log(LogType::Force, "CAMInit: all {} camera handles taken", CAM_STATE_HANDLES);
+			return CAM_ERROR_INVALID_HANDLE;
+		}
+		// one alarm for every camera, from the first, until the title stops
+		if (first)
 		{
 			coreinit::OSCreateAlarm(g_alarm_camera.GetPtr());
 			coreinit::OSSetPeriodicAlarm(g_alarm_camera.GetPtr(), coreinit::OSGetTime(), (uint64)ESPRESSO_TIMER_CLOCK / 60ull, RPLLoader_MakePPCCallable(ppcCAMUpdate60));
 		}
-		g_cameraCounter++;
-
-		return camInstance->handle;
+		return handle;
 	}
 
 	sint32 CAMExit(sint32 camHandle)
 	{
-		CameraInstance* camInstance = GetCameraInstanceByHandle(camHandle);
-		if (!camInstance)
-			return CAM_ERROR_INVALID_HANDLE;
-		CAMClose(camHandle);
-		delete camInstance;
-
-		std::unique_lock<std::recursive_mutex> _lock(g_mutex_camera);
-		g_cameraCounter--;
-		if (g_cameraCounter == 0)
-			coreinit::OSCancelAlarm(g_alarm_camera.GetPtr());
-		return CAM_ERROR_SUCCESS;
+		return cam_state_exit(camHandle) ? CAM_ERROR_SUCCESS : CAM_ERROR_INVALID_HANDLE;
 	}
 
 	sint32 CAMOpen(sint32 camHandle)
 	{
-		CameraInstance* camInstance = GetCameraInstanceByHandle(camHandle);
-		if (!camInstance)
-			return CAM_ERROR_INVALID_HANDLE;
-		camInstance->OpenCam();
-		return CAM_ERROR_SUCCESS;
+		return cam_state_open(camHandle) ? CAM_ERROR_SUCCESS : CAM_ERROR_INVALID_HANDLE;
 	}
 
 	sint32 CAMClose(sint32 camHandle)
 	{
-		CameraInstance* camInstance = GetCameraInstanceByHandle(camHandle);
-		if (!camInstance)
-			return CAM_ERROR_INVALID_HANDLE;
-		camInstance->CloseCam();
-		return CAM_ERROR_SUCCESS;
+		return cam_state_close(camHandle) ? CAM_ERROR_SUCCESS : CAM_ERROR_INVALID_HANDLE;
 	}
 
 	sint32 CAMSubmitTargetSurface(sint32 camHandle, CAMTargetSurface* targetSurface)
 	{
-		CameraInstance* camInstance = GetCameraInstanceByHandle(camHandle);
-		if (!camInstance)
+		switch (cam_state_submit(camHandle, targetSurface->surfacePtr.GetMPTR(), targetSurface->surfaceSize))
+		{
+		case CAM_SUBMIT_BAD_HANDLE:
 			return CAM_ERROR_INVALID_HANDLE;
-		
-		camInstance->QueueTargetSurface(targetSurface);
-
+		case CAM_SUBMIT_FULL:
+			cemuLog_logDebugOnce(LogType::Force, "CAMSubmitTargetSurface: {} surfaces queued already, this one dropped", CAM_STATE_QUEUE);
+			break;
+		default:
+			break;
+		}
 		return CAM_ERROR_SUCCESS;
-	}
-
-	void reset()
-	{
-		g_cameraCounter = 0;
 	}
 
 	class : public COSModule
@@ -265,7 +162,9 @@ namespace camera
 		{
 			if (reason == coreinit::RplEntryReason::Loaded)
 			{
-				reset();
+				// what a title before left is gone: no handle of its taken,
+				// no surface of its handed to this one's handler
+				cam_state_reset();
 			}
 			else if (reason == coreinit::RplEntryReason::Unloaded)
 			{

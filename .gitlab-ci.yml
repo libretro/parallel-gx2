@@ -646,6 +646,20 @@ test-rumble-queue:
     - make -C test/rumble_queue clean
     - SANITIZER=address,undefined ./test/rumble_queue/run_tests.sh
 
+test-cam-state:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/cam_state/run_tests.sh
+    - make -C test/cam_state clean
+    - SANITIZER=thread ./test/cam_state/run_tests.sh
+    - make -C test/cam_state clean
+    - SANITIZER=address,undefined ./test/cam_state/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.
