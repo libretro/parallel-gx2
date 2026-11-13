@@ -49,6 +49,8 @@
 //  - FixedList (the renderer's destruction requests, the pipeline cache's
 //    loaded hashes and libraries, the overlay's notifications): every item
 //    taken once, past its ring too;
+//  - SmallVec (the texture cache's per-texture and per-view lists): items
+//    kept whole and in order in the object and past it;
 //  - PoolNew (the renderer's descriptor sets, and the reference every
 //    Vulkan object carries): its objects from the class's pool and back;
 //  - FixedQueue and MpmcQueue (the GX2 event, thread deallocator, IOSU and
@@ -94,6 +96,7 @@
 #include "util/helpers/AtomicPtrBag.h"
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/PoolNew.h"
+#include "util/helpers/SmallVec.h"
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/ClaimTicket.h"
 #include "Cemu/nex/nexWait.h"
@@ -1268,6 +1271,58 @@ static void TestPoolNew()
 	CHECK(bad.load() == 0);
 }
 
+// SmallVec (the texture cache's per-texture and per-view lists): items kept
+// whole and in order through the move from the object to the heap, erased
+// one, a range or by value, appended once, cut back
+static void TestSmallVec()
+{
+	SmallVec<int, 4> v;
+	CHECK(v.empty() && v.size() == 0);
+	for (int i = 0; i < 100; i++)
+		v.push_back(i);
+	bool whole = v.size() == 100;
+	for (int i = 0; i < 100; i++)
+		whole = whole && v[i] == i;
+	CHECK(whole && v.front() == 0 && v.back() == 99);
+	// one, then a range, then by value: the rest close up in order
+	CHECK(*v.erase(v.begin() + 10) == 11 && v.size() == 99);
+	CHECK(*v.erase(v.begin() + 20, v.begin() + 30) == 31 && v.size() == 89);
+	vectorRemoveByValue(v, 50);
+	vectorRemoveByIndex(v, 0);
+	bool ordered = true;
+	int last = -1;
+	for (int x : v)
+	{
+		ordered = ordered && x > last && x != 10 && x != 50 && !(x >= 21 && x <= 30);
+		last = x;
+	}
+	CHECK(ordered && v.size() == 87);
+	vectorAppendUnique(v, 99);
+	vectorAppendUnique(v, 1000);
+	CHECK(v.size() == 88 && v.back() == 1000);
+	v.resize(0);
+	CHECK(v.empty());
+	v.push_back(7);
+	CHECK(v.size() == 1 && v[0] == 7);
+	// within the object: erase and append there too
+	struct Pair
+	{
+		void* a;
+		void* b;
+	};
+	SmallVec<Pair, 2> p;
+	int x, y, z;
+	p.emplace_back(Pair{&x, &y});
+	p.push_back(Pair{&y, &z});
+	CHECK(p.erase(p.begin()) == p.begin() && p.size() == 1 && p[0].a == &y);
+	p.push_back(Pair{&z, &x});
+	p.push_back(Pair{&x, &x}); // past the object
+	CHECK(p.size() == 3 && p[0].a == &y && p[1].a == &z && p[2].b == &x);
+	p.pop_back();
+	p.clear();
+	CHECK(p.empty());
+}
+
 static void TestMpmcQueue()
 {
 	// Several consumers, items pushed both while they keep up and in bursts
@@ -1948,6 +2003,7 @@ int main()
 	TestMpscList();
 	TestFixedList();
 	TestPoolNew();
+	TestSmallVec();
 	TestVkQueueLock();
 	TestAudioDevicesGate();
 	TestAtomicPageSet();

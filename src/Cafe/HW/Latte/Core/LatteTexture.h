@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/helpers/SmallVec.h"
+
 // Whether an active graphic pack resizes textures, i.e. a resolution pack.
 bool LatteTexture_graphicPackSetsResolution();
 #include "Cafe/HW/Latte/Core/LatteConst.h"
@@ -198,9 +200,9 @@ public:
 	uint32 lastUnflushedRTDrawcallIndex{};
 	// views
 	LatteTextureView* baseView{};
-	std::vector<LatteTextureView*> views; // list of all views created for this texture, including baseView
+	SmallVec<LatteTextureView*, 4> views; // list of all views created for this texture, including baseView
 	// texture relations (overlapping memory)
-	std::vector<struct LatteTextureRelation*> list_compatibleRelations; // list of other data-compatible textures that share the same memory ranges
+	SmallVec<struct LatteTextureRelation*, 4> list_compatibleRelations; // list of other data-compatible textures that share the same memory ranges
 	// index in global texture list
 	size_t globalListIndex;
 };
@@ -263,7 +265,7 @@ struct LatteTextureSliceMipInfo
 	// data overlap tracking
 	uint32 estDataAddrStart;
 	uint32 estDataAddrEnd;
-	std::vector<LatteTextureSliceMipDataOverlap_t> list_dataOverlap;
+	SmallVec<LatteTextureSliceMipDataOverlap_t, 2> list_dataOverlap;
 };
 
 struct LatteTextureRelation

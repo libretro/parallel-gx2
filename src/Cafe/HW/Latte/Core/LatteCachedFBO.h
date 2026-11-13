@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/helpers/SmallVec.h"
+
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "util/math/vector2.h"
 
@@ -22,7 +24,7 @@ public:
 		return depthBuffer.texture;
 	}
 
-	std::vector<LatteTexture*>& GetTextures()
+	SmallVec<LatteTexture*, 9>& GetTextures()
 	{
 		return m_referencedTextures;
 	}
@@ -108,7 +110,7 @@ public:
 	}depthBuffer{};
 	uint32 drawBuffersMask{};
 
-	std::vector<LatteTexture*> m_referencedTextures; // color and depth views combined
+	SmallVec<LatteTexture*, 9> m_referencedTextures; // color and depth views combined: in the object
 };
 
 class LatteMRT

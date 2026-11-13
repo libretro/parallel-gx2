@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/helpers/SmallVec.h"
+
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VKRBase.h"
@@ -39,7 +41,7 @@ private:
 	
 	VkDevice m_device;
 	VkFormat m_format;
-	std::vector<struct VkDescriptorSetInfo*> list_descriptorSets; // list of descriptors sets referencing this view
+	SmallVec<struct VkDescriptorSetInfo*, 8> list_descriptorSets; // list of descriptors sets referencing this view
 
 	uint64 m_uniqueId;
 };

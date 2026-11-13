@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/helpers/SmallVec.h"
+
 class LatteTextureView
 {
 public:
@@ -27,11 +29,12 @@ public:
 	// state
 	uint32 lastTextureBindIndex = 0;
 	// FBO association
-	std::vector<class LatteCachedFBO*> list_fboLookup; // only set for the first color texture of each FBO, or the depth texture if no color textures are present
-	std::vector<class LatteCachedFBO*> list_associatedFbo; // list of cached fbos that reference this texture view
+	// a few each, kept in the view (SmallVec.h)
+	SmallVec<class LatteCachedFBO*, 4> list_fboLookup; // only set for the first color texture of each FBO, or the depth texture if no color textures are present
+	SmallVec<class LatteCachedFBO*, 4> list_associatedFbo; // list of cached fbos that reference this texture view
 	// view lookup cache
-	std::vector<uint32> viewLookUpCacheKeys;
-	std::vector<uint32> viewLookUpCacheKeysNoRes;
+	SmallVec<uint32, 4> viewLookUpCacheKeys;
+	SmallVec<uint32, 4> viewLookUpCacheKeysNoRes;
 };
 
 class LatteTextureViewLookupCache
