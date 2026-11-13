@@ -150,35 +150,15 @@ void VPADController::update()
 	if (!CafeSystem::IsTitleRunning())
 		return;
 
-	std::unique_lock lock(m_rumble_mutex);
-	if (m_rumble_queue.empty())
-	{
-		m_parser = 0;
-		lock.unlock();
-
-		stop_rumble();
-
+	const bool on = m_rumble && rumble_queue_step(m_rumble,
+		std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (on == m_rumble_on)
 		return;
-	}
-
-	const auto tick = now_cached();
-	if (std::chrono::duration_cast<std::chrono::milliseconds>(tick - m_last_rumble_check).count() < 1000 / 60)
-		return;
-
-	m_last_rumble_check = tick;
-
-	const auto& it = m_rumble_queue.front();
-	if (it[m_parser])
+	m_rumble_on = on;
+	if (on)
 		start_rumble();
 	else
 		stop_rumble();
-
-	++m_parser;
-	if (m_parser >= it.size())
-	{
-		m_rumble_queue.pop();
-		m_parser = 0;
-	}
 }
 
 void VPADController::update_touch(VPADStatus_t& status)
@@ -190,8 +170,6 @@ void VPADController::update_touch(VPADStatus_t& status)
 	status.tpData.x = (uint16)m_last_touch_position.x;
 	status.tpData.y = (uint16)m_last_touch_position.y;
 
-	auto& instance = InputManager::instance();
-	bool pad_view;
 	if (has_position())
 	{
 		const auto mouse = get_position();
@@ -202,31 +180,6 @@ void VPADController::update_touch(VPADStatus_t& status)
 		status.tpData.y = (uint16)(4095.0f - mouse.y * 3694.0f - 254.0f);
 
 		m_last_touch_position = glm::ivec2{status.tpData.x, status.tpData.y};
-	}
-	else if (const auto left_mouse = instance.get_left_down_mouse_info(&pad_view))
-	{
-		glm::ivec2 image_pos, image_size;
-		LatteRenderTarget_getScreenImageArea(&image_pos.x, &image_pos.y, &image_size.x, &image_size.y, nullptr, nullptr, pad_view);
-
-		glm::vec2 relative_mouse_pos = left_mouse.value() - image_pos;
-		relative_mouse_pos = { std::min(relative_mouse_pos.x, (float)image_size.x), std::min(relative_mouse_pos.y, (float)image_size.y) };
-		relative_mouse_pos = { std::max(relative_mouse_pos.x, 0.0f), std::max(relative_mouse_pos.y, 0.0f) };
-		relative_mouse_pos /= image_size;
-
-		status.tpData.touch = kTpTouchOn;
-		status.tpData.validity = kTpValid;
-		status.tpData.x = (uint16)((relative_mouse_pos.x * 3883.0f) + 92.0f);
-		status.tpData.y = (uint16)(4095.0f - (relative_mouse_pos.y * 3694.0f) - 254.0f);
-
-		m_last_touch_position = glm::ivec2{ status.tpData.x, status.tpData.y };
-
-		/*cemuLog_log(LogType::Force, "TDATA: {},{} -> {},{} -> {},{} -> {},{} -> {},{} -> {},{}",
-			left_mouse->x, left_mouse->y,
-			(left_mouse.value() - image_pos).x, (left_mouse.value() - image_pos).y,
-			relative_mouse_pos.x, relative_mouse_pos.y,
-			(uint16)(relative_mouse_pos.x * 3883.0 + 92.0), (uint16)(4095.0 - relative_mouse_pos.y * 3694.0 - 254.0),
-			status.tpData.x.value(), status.tpData.y.value(), status.tpData.x.bevalue(), status.tpData.y.bevalue()
-		);*/
 	}
 
 	status.tpProcessed1 = status.tpData;
@@ -275,79 +228,6 @@ void VPADController::update_motion(VPADStatus_t& status)
 		status.dir.z.x = attitude[6];
 		status.dir.z.y = attitude[7];
 		status.dir.z.z = attitude[8];
-		return;
-	}
-
-	bool pad_view;
-	auto& input_manager = InputManager::instance();
-	if (const auto right_mouse = input_manager.get_right_down_mouse_info(&pad_view))
-	{
-		const Vector2<float> mousePos(right_mouse->x, right_mouse->y);
-
-		int w, h;
-		if (pad_view)
-			WindowSystem::GetPadWindowPhysSize(w, h);
-		else
-			WindowSystem::GetWindowPhysSize(w, h);
-
-		float wx = mousePos.x / w;
-		float wy = mousePos.y / h;
-
-		static glm::vec3 m_lastGyroRotation{}, m_startGyroRotation{};
-		static bool m_startGyroRotationSet{};
-
-		float rotX = (wy * 2 - 1.0f) * 135.0f; // up/down best
-		float rotY = (wx * 2 - 1.0f) * -180.0f; // left/right
-		float rotZ = input_manager.m_mouse_wheel * 14.0f + m_lastGyroRotation.z;
-		input_manager.m_mouse_wheel = 0.0f;
-
-		if (!m_startGyroRotationSet)
-		{
-			m_startGyroRotation = {rotX, rotY, rotZ};
-			m_startGyroRotationSet = true;
-		}
-
-		/*	debug_printf("\n\ngyro:\n<%.02f, %.02f, %.02f>\n\n",
-				rotX, rotY, rotZ);*/
-
-		Quaternion<float> q(rotX, rotY, rotZ);
-		auto rot = q.GetTransposedRotationMatrix();
-
-		/*m_forward = std::get<0>(rot);
-		m_right = std::get<1>(rot);
-		m_up = std::get<2>(rot);*/
-
-		status.dir.x = std::get<0>(rot);
-		status.dir.y = std::get<1>(rot);
-		status.dir.z = std::get<2>(rot);
-
-		/*debug_printf("rot:\n<%.02f, %.02f, %.02f>\n<%.02f, %.02f, %.02f>\n<%.02f, %.02f, %.02f>\n\n",
-			(float)status.dir.x.x, (float)status.dir.x.y, (float)status.dir.x.z,
-			(float)status.dir.y.x, (float)status.dir.y.y, (float)status.dir.y.z,
-			(float)status.dir.z.x, (float)status.dir.z.y, (float)status.dir.z.z);*/
-
-		glm::vec3 rotation(rotX - m_lastGyroRotation.x, (rotY - m_lastGyroRotation.y) * 15.0f,
-		                   rotZ - m_lastGyroRotation.z);
-
-		rotation.x = std::min(1.0f, std::max(-1.0f, rotation.x / 360.0f));
-		rotation.y = std::min(1.0f, std::max(-1.0f, rotation.y / 360.0f));
-		rotation.z = std::min(1.0f, std::max(-1.0f, rotation.z / 360.0f));
-
-		/*debug_printf("\n\ngyro:\n<%.02f, %.02f, %.02f>\n\n",
-			rotation.x, rotation.y, rotation.z);*/
-
-		constexpr float pi2 = (float)(M_PI * 2);
-		status.gyroChange = {rotation.x, rotation.y, rotation.z};
-		status.gyroOrientation = {rotation.x, rotation.y, rotation.z};
-		//status.angle = { rotation.x / pi2, rotation.y / pi2, rotation.z / pi2 };
-
-		status.acc = {rotation.x, rotation.y, rotation.z};
-		status.accAcceleration = 1.0f;
-		status.accMagnitude = 1.0f;
-
-		status.accXY = {1.0f, 0.0f};
-
-		m_lastGyroRotation = {rotX, rotY, rotZ};
 	}
 }
 
@@ -389,50 +269,19 @@ std::string_view VPADController::get_button_name(ButtonId id)
 
 void VPADController::clear_rumble()
 {
-	std::scoped_lock lock(m_rumble_mutex);
-	while (!m_rumble_queue.empty())
-		m_rumble_queue.pop();
-
-	m_parser = 0;
+	if (m_rumble)
+		rumble_queue_clear(m_rumble);
 }
 
 bool VPADController::push_rumble(uint8* pattern, uint8 length)
 {
-	if (pattern == nullptr || length == 0)
-	{
-		clear_rumble();
-		return true;
-	}
-
-	std::scoped_lock lock(m_rumble_mutex);
-	if (m_rumble_queue.size() >= 5)
+	if (!m_rumble)
+		return false;
+	if (!rumble_queue_push(m_rumble, pattern, length))
 	{
 		cemuLog_logDebugOnce(LogType::Force, "VPADControlMotor(): Pattern too long");
 		return false;
 	}
-
-	// len = max 15 bytes of data = 120 bits = 1 seconds
-	// we will use 60 hz for 1 second
-	std::vector<bool> bitset;
-	int byte = 0;
-	int len = (int)length;
-	while (len > 0)
-	{
-		const uint8 p = pattern[byte];
-		for (int j = 0; j < 8 && j < len; j += 2)
-		{
-			const bool set = (p & (3 << j)) != 0;
-			bitset.push_back(set);
-		}
-
-		++byte;
-		len -= 8;
-	}
-
-
-	m_rumble_queue.emplace(std::move(bitset));
-	m_last_rumble_check = {};
-
 	return true;
 }
 

@@ -31,14 +31,10 @@ InputManager::InputManager()
 	create_provider<LibretroControllerProvider>();
 #endif
 
-	m_update_thread_shutdown.store(false);
-#ifndef ENABLE_LIBRETRO
-	m_update_thread = std::thread(&InputManager::update_thread, this);
-#endif
-	// Under libretro there is no thread: the frontend's input is read once a
-	// frame in retro_run, which calls update_controllers() right after - and a
-	// thread waking a thousand times a second to update controllers whose
-	// state only changes then was a thousand wakeups a second for nothing.
+	// No thread: the frontend's input is read once a frame in retro_run,
+	// which calls update_controllers() right after - and a thread waking a
+	// thousand times a second to update controllers whose state only changes
+	// then was a thousand wakeups a second for nothing.
 }
 
 InputManager::~InputManager()
@@ -812,114 +808,6 @@ bool InputManager::is_valid_profilename(const std::string& name)
 	return true;
 }
 
-glm::ivec2 InputManager::get_mouse_position(bool pad_window) const
-{
-	if (pad_window)
-	{
-		std::shared_lock lock(m_pad_mouse.m_mutex);
-		return m_pad_mouse.position;
-	}
-	else
-	{
-		std::shared_lock lock(m_main_mouse.m_mutex);
-		return m_main_mouse.position;
-	}
-}
-
-std::optional<glm::ivec2> InputManager::get_left_down_mouse_info(bool* is_pad)
-{
-	if (is_pad)
-		*is_pad = false;
-
-	{
-		std::unique_lock lock(m_main_mouse.m_mutex);
-		if (std::exchange(m_main_mouse.left_down_toggle, false))
-			return m_main_mouse.position;
-
-		if (m_main_mouse.left_down)
-			return m_main_mouse.position;
-	}
-
-	{
-		std::unique_lock lock(m_main_touch.m_mutex);
-		if (std::exchange(m_main_touch.left_down_toggle, false))
-			return m_main_touch.position;
-
-		if (m_main_touch.left_down)
-			return m_main_touch.position;
-	}
-
-	if (is_pad)
-		*is_pad = true;
-
-	{
-		std::unique_lock lock(m_pad_mouse.m_mutex);
-		if (std::exchange(m_pad_mouse.left_down_toggle, false))
-			return m_pad_mouse.position;
-
-		if (m_pad_mouse.left_down)
-			return m_pad_mouse.position;
-	}
-
-	{
-		std::unique_lock lock(m_pad_touch.m_mutex);
-		if (std::exchange(m_pad_touch.left_down_toggle, false))
-			return m_pad_touch.position;
-
-		if (m_pad_touch.left_down)
-			return m_pad_touch.position;
-	}
-
-	return {};
-}
-
-std::optional<glm::ivec2> InputManager::get_right_down_mouse_info(bool* is_pad)
-{
-	if (is_pad)
-		*is_pad = false;
-
-	{
-		std::unique_lock lock(m_main_mouse.m_mutex);
-		if (std::exchange(m_main_mouse.right_down_toggle, false))
-			return m_main_mouse.position;
-
-		if (m_main_mouse.right_down)
-			return m_main_mouse.position;
-	}
-
-	{
-		std::unique_lock lock(m_main_touch.m_mutex);
-		if (std::exchange(m_main_touch.right_down_toggle, false))
-			return m_main_touch.position;
-
-		if (m_main_touch.right_down)
-			return m_main_touch.position;
-	}
-
-	if (is_pad)
-		*is_pad = true;
-
-	{
-		std::unique_lock lock(m_pad_mouse.m_mutex);
-		if (std::exchange(m_pad_mouse.right_down_toggle, false))
-			return m_pad_mouse.position;
-
-		if (m_pad_mouse.right_down)
-			return m_pad_mouse.position;
-	}
-
-	{
-		std::unique_lock lock(m_pad_touch.m_mutex);
-		if (std::exchange(m_pad_touch.right_down_toggle, false))
-			return m_pad_touch.position;
-
-		if (m_pad_touch.right_down)
-			return m_pad_touch.position;
-	}
-
-	return {};
-}
-
 void InputManager::update_controllers()
 {
 	const auto pads = m_pads.Read();
@@ -936,27 +824,8 @@ void InputManager::update_controllers()
 	}
 }
 
-void InputManager::update_thread()
-{
-	SetThreadName("Input_update");
-	while (!m_update_thread_shutdown.load(std::memory_order::relaxed))
-	{
-		update_controllers();
-
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		std::this_thread::yield();
-	}
-}
-
 void InputManager::Shutdown()
 {
-    m_update_thread_shutdown = true;
-
-    if (m_update_thread.joinable())
-    {
-        m_update_thread.join();
-    }
-
 	ChangePads([&] {
 		for (auto& pad : m_vpad) pad.reset();
 		for (auto& pad : m_wpad) pad.reset();

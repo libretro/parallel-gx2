@@ -469,6 +469,17 @@ jobs:
           make -C test/host_fs clean
           SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+      - name: "GamePad rumble"
+        # the C (C89) VPADControlMotor's patterns are queued and played in,
+        # with no lock and nothing allocated; plain, under TSan and under
+        # ASan + UBSan
+        run: |
+          ./test/rumble_queue/run_tests.sh
+          make -C test/rumble_queue clean
+          SANITIZER=thread ./test/rumble_queue/run_tests.sh
+          make -C test/rumble_queue clean
+          SANITIZER=address,undefined ./test/rumble_queue/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;

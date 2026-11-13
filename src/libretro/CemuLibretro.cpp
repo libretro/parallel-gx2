@@ -81,7 +81,6 @@
 #include "util/crypto/aes128.h"
 #include "util/helpers/helpers.h"
 #include "util/helpers/SeqlockValue.h"
-#include "util/helpers/MpscList.h"
 
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Cafe/Filesystem/FST/KeyCache.h"
@@ -1511,62 +1510,20 @@ static std::atomic<uint16_t> s_rumble_strength{0xFFFF};
 static std::atomic<bool> s_port_rumble[kLibretroMaxPorts]{};
 static uint16_t s_rumble_sent[kLibretroMaxPorts]{};
 
-// The guest's threads ask (push a pattern, clear), retro_run's thread plays:
-// the requests go through an MpscList, drained once a frame into the queue
-// below, which is retro_run's alone - no lock on either side. The count is how
-// many patterns are queued or on their way, for the guest's limit of five.
-struct VpadRumbleRequest
-{
-	bool clear;
-	std::vector<bool> steps;
-};
-static MpscList<VpadRumbleRequest> s_vpad_rumble_requests;
-static std::atomic<int> s_vpad_rumble_count{0};
-static std::deque<std::vector<bool>> s_vpad_rumble_queue;
-static size_t s_vpad_rumble_bit = 0;
-static bool s_vpad_rumble_on = false;
-static std::chrono::steady_clock::time_point s_vpad_rumble_next{};
-
-void libretro_vpad_rumble_clear();
+// The guest's threads push patterns and clear, retro_run's thread plays them:
+// a queue of fixed slots, made once at retro_init, with no lock on either side
+// and nothing allocated while a game plays (input/rumble_queue.c).
+static rumble_queue_t* s_vpad_rumble = nullptr;
 
 bool libretro_vpad_rumble_push(const uint8* pattern, uint8 length)
 {
-	if (!pattern || length == 0)
-	{
-		libretro_vpad_rumble_clear();
-		return true;
-	}
-	// As VPADController::push_rumble: two bits of the pattern per step, so the
-	// 120 bits a pattern can have are 60 steps, one second.
-	std::vector<bool> steps;
-	for (int byte = 0, len = length; len > 0; ++byte, len -= 8)
-	{
-		const uint8 p = pattern[byte];
-		for (int j = 0; j < 8 && j < len; j += 2)
-			steps.push_back((p & (3 << j)) != 0);
-	}
-	int count = s_vpad_rumble_count.load(std::memory_order_relaxed);
-	do
-	{
-		if (count >= 5)
-			return false;
-	} while (!s_vpad_rumble_count.compare_exchange_weak(count, count + 1, std::memory_order_relaxed));
-	s_vpad_rumble_requests.Push({false, std::move(steps)});
-	return true;
+	return s_vpad_rumble && rumble_queue_push(s_vpad_rumble, pattern, length);
 }
 
 void libretro_vpad_rumble_clear()
 {
-	s_vpad_rumble_count.store(0, std::memory_order_relaxed);
-	s_vpad_rumble_requests.Push({true, {}});
-}
-
-// One pattern done or dropped by a clear's count already: never below zero
-static void libretro_vpad_rumble_pattern_done()
-{
-	int count = s_vpad_rumble_count.load(std::memory_order_relaxed);
-	while (count > 0 && !s_vpad_rumble_count.compare_exchange_weak(count, count - 1, std::memory_order_relaxed))
-		;
+	if (s_vpad_rumble)
+		rumble_queue_clear(s_vpad_rumble);
 }
 
 void libretro_set_port_rumble(uint32_t port, bool on)
@@ -1578,36 +1535,8 @@ void libretro_set_port_rumble(uint32_t port, bool on)
 // The GamePad motor's state for this frame.
 static bool libretro_vpad_rumble_step()
 {
-	s_vpad_rumble_requests.TakeAll([](VpadRumbleRequest&& request) {
-		if (request.clear)
-		{
-			s_vpad_rumble_queue.clear();
-			s_vpad_rumble_bit = 0;
-			return;
-		}
-		if (s_vpad_rumble_queue.empty())
-			s_vpad_rumble_next = {};
-		s_vpad_rumble_queue.push_back(std::move(request.steps));
-	});
-	if (s_vpad_rumble_queue.empty())
-	{
-		s_vpad_rumble_bit = 0;
-		s_vpad_rumble_on = false;
-		return false;
-	}
-	const auto now = std::chrono::steady_clock::now();
-	if (now < s_vpad_rumble_next)
-		return s_vpad_rumble_on;
-	s_vpad_rumble_next = now + std::chrono::microseconds(1000000 / 60);
-	const auto& steps = s_vpad_rumble_queue.front();
-	s_vpad_rumble_on = steps[s_vpad_rumble_bit];
-	if (++s_vpad_rumble_bit >= steps.size())
-	{
-		s_vpad_rumble_queue.pop_front();
-		s_vpad_rumble_bit = 0;
-		libretro_vpad_rumble_pattern_done();
-	}
-	return s_vpad_rumble_on;
+	return s_vpad_rumble && rumble_queue_step(s_vpad_rumble,
+		std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 static void libretro_send_rumble(uint32_t port, uint16_t value)
@@ -3899,6 +3828,10 @@ RETRO_API void retro_init()
 
 	// Set system implementation
 	CafeSystem::SetImplementation(&s_systemImpl);
+
+	// the GamePad's rumble patterns, before any game can push one
+	if (!s_vpad_rumble)
+		s_vpad_rumble = rumble_queue_new();
 
 	s_initialized = true;
 	libretro_log(RETRO_LOG_INFO, "retro_init: done\n");
@@ -6238,6 +6171,9 @@ RETRO_API void retro_deinit()
 	// thread is joined, and the crash handlers go back to the frontend's.
 	http_xfer_deinit();
 	ExceptionHandler_Shutdown();
+
+	rumble_queue_free(s_vpad_rumble);
+	s_vpad_rumble = nullptr;
 
 	s_initialized = false;
 }

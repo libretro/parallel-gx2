@@ -2,6 +2,7 @@
 
 #include "input/emulated/EmulatedController.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
+#include "input/rumble_queue.h"
 
 
 class VPADController : public EmulatedController
@@ -50,7 +51,11 @@ public:
 		kButtonId_Max,
 	};
 
-	using EmulatedController::EmulatedController;
+	explicit VPADController(size_t player_index)
+		: EmulatedController(player_index), m_rumble(rumble_queue_new()) {}
+	~VPADController() override { rumble_queue_free(m_rumble); }
+	VPADController(const VPADController&) = delete;
+	VPADController& operator=(const VPADController&) = delete;
 
 	Type type() const override { return VPAD; }
 
@@ -99,10 +104,10 @@ private:
 
 	std::chrono::high_resolution_clock::time_point m_last_hold_change{}, m_last_pulse{};
 
-	std::mutex m_rumble_mutex;
-	std::chrono::high_resolution_clock::time_point m_last_rumble_check{};
-	std::queue<std::vector<bool>> m_rumble_queue;
-	uint8 m_parser = 0;
+	// VPADControlMotor's patterns, pushed by the game's threads and played
+	// by update(): no lock, nothing allocated (rumble_queue.c)
+	rumble_queue_t* m_rumble;
+	bool m_rumble_on = false;
 
 	void update_touch(VPADStatus_t& status);
 	void update_motion(VPADStatus_t& status);

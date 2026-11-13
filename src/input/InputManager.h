@@ -65,31 +65,12 @@ public:
 	static std::vector<std::string> get_profiles();
 	static bool is_valid_profilename(const std::string& name);
 
-	struct MouseInfo
-	{
-		mutable std::shared_mutex m_mutex;
-		glm::ivec2 position{};
-		bool left_down = false;
-		bool right_down = false;
-
-		bool left_down_toggle = false;
-		bool right_down_toggle = false;
-	} m_main_mouse{}, m_pad_mouse{}, m_main_touch{}, m_pad_touch{};
-	glm::ivec2 get_mouse_position(bool pad_window) const;
-	std::optional<glm::ivec2> get_left_down_mouse_info(bool* is_pad);
-	std::optional<glm::ivec2> get_right_down_mouse_info(bool* is_pad);
-
-	std::atomic<float> m_mouse_wheel;
-
-	// One pass over every emulated controller: what the update thread does
-	// every millisecond upstream, and what retro_run does once a frame here
+	// One pass over every emulated controller: what retro_run does once a
+	// frame, right after the frontend's input is polled (upstream's update
+	// thread did it every millisecond)
 	void update_controllers();
 
 private:
-	void update_thread();
-
-	std::thread m_update_thread;
-	std::atomic<bool> m_update_thread_shutdown{false};
 
 	std::array<std::vector<ControllerProviderPtr>, InputAPI::MAX> m_api_available{ };
 
