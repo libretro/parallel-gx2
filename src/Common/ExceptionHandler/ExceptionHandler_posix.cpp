@@ -29,8 +29,6 @@
 #include "ExceptionHandler.h"
 #include "Breadcrumb.h"
 
-#include "Cafe/HW/Espresso/Debugger/GDBStub.h"
-#include "Cafe/HW/Espresso/Debugger/GDBBreakpoints.h"
 
 #if BOOST_OS_LINUX
 #include "ELFSymbolTable.h"
@@ -185,16 +183,6 @@ static void HandToPrevious(int sig, siginfo_t* info);
 
 void handlerDumpingSignal(int sig, siginfo_t *info, void *context)
 {
-#if defined(ARCH_X86_64) && BOOST_OS_LINUX
-	// Check for hardware breakpoints
-	if (info->si_signo == SIGTRAP && info->si_code == TRAP_HWBKPT)
-	{
-		uint64 dr6 = _ReadDR6();
-		g_gdbstub->HandleAccessException(dr6);
-		return;
-	}
-#endif
-
     if(!CrashLog_Create())
         return; // give up if crashlog was already created
 

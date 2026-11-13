@@ -100,10 +100,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Cafe/GraphicPack/GraphicPack2PatchesApply.cpp \
 	$(CORE_DIR)/src/Cafe/GraphicPack/GraphicPack2PatchesParser.cpp \
 	$(CORE_DIR)/src/Cafe/HW/ACR/ACR.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/DebugSymbolStorage.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/Debugger.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/GDBBreakpoints.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Espresso/Debugger/GDBStub.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterFPU.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterHLE.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterImpl.cpp \

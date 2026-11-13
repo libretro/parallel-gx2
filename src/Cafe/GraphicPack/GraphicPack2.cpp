@@ -13,7 +13,6 @@
 #include "Cafe/HW/Latte/Core/LatteGpuCothread.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
-#include "HW/Espresso/Debugger/Debugger.h"
 #include "Cafe/HW/Latte/Core/LatteTiming.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/RendererOuputShader.h"
@@ -148,7 +147,6 @@ bool GraphicPack2::ActivateGraphicPack(const std::shared_ptr<GraphicPack2>& grap
 	if (graphic_pack->Activate())
 	{
 		s_active_graphic_packs.push_back(graphic_pack);
-		g_debuggerDispatcher.NotifyGraphicPacksModified();
 		return true;
 	}
 
@@ -172,7 +170,6 @@ bool GraphicPack2::DeactivateGraphicPack(const std::shared_ptr<GraphicPack2>& gr
 
 	graphic_pack->Deactivate();
 	s_active_graphic_packs.erase(it);
-	g_debuggerDispatcher.NotifyGraphicPacksModified();
 	return true;
 }
 

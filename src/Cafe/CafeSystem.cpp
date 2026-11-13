@@ -6,7 +6,6 @@
 #include "Cafe/GameProfile/GameProfile.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
-#include "Cafe/HW/Espresso/Debugger/Debugger.h"
 #include "Cafe/OS/RPL/rpl_symbols.h"
 #include "audio/IAudioAPI.h"
 #include "audio/IAudioInputAPI.h"
@@ -30,7 +29,6 @@
 #include "Cafe/Filesystem/FST/FST.h"
 #include "Common/FileStream.h"
 #include "GamePatch.h"
-#include "HW/Espresso/Debugger/GDBStub.h"
 
 #include "Cafe/IOSU/legacy/iosu_ioctl.h"
 #include "Cafe/IOSU/legacy/iosu_act.h"
@@ -421,13 +419,6 @@ void cemu_initForGame()
 	LatteGPUState.isDRCPrimary = ActiveSettings::DisplayDRCEnabled();
 	InfoLog_PrintActiveSettings();
 	Latte_Start();
-	// check for debugger entrypoint bp
-    if (g_gdbstub)
-    {
-        g_gdbstub->HandleEntryStop(_entryPoint);
-        g_gdbstub->Initialize();
-    }
-	debugger_handleEntryBreakpoint(_entryPoint);
 	// load graphic packs
 	cemuLog_log(LogType::Force, "------- Activate graphic packs -------");
 	// In the core there is no graphic pack window to see what was found: a

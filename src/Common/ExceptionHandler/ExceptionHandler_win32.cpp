@@ -10,12 +10,6 @@
 #include "config/CemuConfig.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/HW/Espresso/PPCState.h"
-#include "Cafe/HW/Espresso/Debugger/GDBStub.h"
-
-LONG handleException_SINGLE_STEP(PEXCEPTION_POINTERS pExceptionInfo)
-{
-	return EXCEPTION_CONTINUE_SEARCH;
-}
 
 #include <boost/algorithm/string.hpp>
 BOOL CALLBACK MyMiniDumpCallback(PVOID pParam, const PMINIDUMP_CALLBACK_INPUT pInput, PMINIDUMP_CALLBACK_OUTPUT pOutput)
@@ -256,26 +250,6 @@ int crashlogThread(void* exceptionInfoRawPtr)
 	return 0;
 }
 
-void debugger_handleSingleStepException(uint64 dr6);
-
-
-LONG WINAPI VectoredExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
-{
-	if (pExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP)
-	{
-		LONG r = handleException_SINGLE_STEP(pExceptionInfo);
-		if (r != EXCEPTION_CONTINUE_SEARCH)
-			return r;
-
-		if (GetBits(pExceptionInfo->ContextRecord->Dr6, 0, 1) || GetBits(pExceptionInfo->ContextRecord->Dr6, 1, 1))
-			debugger_handleSingleStepException(pExceptionInfo->ContextRecord->Dr6);
-		else if (GetBits(pExceptionInfo->ContextRecord->Dr6, 2, 1) || GetBits(pExceptionInfo->ContextRecord->Dr6, 3, 1))
-			g_gdbstub->HandleAccessException(pExceptionInfo->ContextRecord->Dr6);
-		return EXCEPTION_CONTINUE_EXECUTION;
-	}
-	return EXCEPTION_CONTINUE_SEARCH;
-}
-
 LONG WINAPI cemu_unhandledExceptionFilter(EXCEPTION_POINTERS* pExceptionInfo)
 {
 	createCrashlog(pExceptionInfo, pExceptionInfo->ContextRecord);
@@ -283,8 +257,6 @@ LONG WINAPI cemu_unhandledExceptionFilter(EXCEPTION_POINTERS* pExceptionInfo)
 		return s_previousExceptionFilter ? s_previousExceptionFilter(pExceptionInfo) : EXCEPTION_CONTINUE_SEARCH;
 	return EXCEPTION_NONCONTINUABLE_EXCEPTION;
 }
-
-static PVOID s_vectoredHandler = nullptr;
 
 void ExceptionHandler_HandCrashesToPrevious()
 {
@@ -294,17 +266,11 @@ void ExceptionHandler_HandCrashesToPrevious()
 void ExceptionHandler_Init()
 {
 	s_previousExceptionFilter = SetUnhandledExceptionFilter(cemu_unhandledExceptionFilter);
-	s_vectoredHandler = AddVectoredExceptionHandler(1, VectoredExceptionHandler);
 	SetErrorMode(SEM_FAILCRITICALERRORS);
 }
 
 void ExceptionHandler_Shutdown()
 {
-	if (s_vectoredHandler)
-	{
-		RemoveVectoredExceptionHandler(s_vectoredHandler);
-		s_vectoredHandler = nullptr;
-	}
 	SetUnhandledExceptionFilter(s_previousExceptionFilter);
 	s_previousExceptionFilter = nullptr;
 }

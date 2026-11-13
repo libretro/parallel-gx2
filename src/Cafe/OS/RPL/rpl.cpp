@@ -6,7 +6,6 @@
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/RPL/rpl_symbols.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
-#include "Cafe/HW/Espresso/Debugger/Debugger.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "util/ChunkedHeap/ChunkedHeap.h"
 
@@ -780,7 +779,7 @@ uint32 rpl_mapHLEImport(RPLModule* rplLoaderContext, const char* rplName, const 
 		newImport.hash2 = mappedImportHash2;
 		newImport.address = codeAddr;
 		list_mappedFunctionImports.push_back(newImport);
-		// remember in symbol storage for debugger
+		// remember in symbol storage, for logs and crash reports
 		rpl_symbols_store(libName, funcName, codeAddr, 0);
 		return codeAddr;
 	}
@@ -815,7 +814,7 @@ uint32 rpl_mapHLEImport(RPLModule* rplLoaderContext, const char* rplName, const 
 	newImport.hash2 = mappedImportHash2;
 	newImport.address = codeStart;
 	list_mappedFunctionImports.push_back(newImport);
-	// remember in symbol storage for debugger
+	// remember in symbol storage, for logs and crash reports
 	rpl_symbols_store(libName, funcName, codeStart, 0);
 	// return address of code start
 	return codeStart;
@@ -1771,9 +1770,7 @@ void RPLLoader_UnloadModule(RPLDependency* rplDependency, bool skipPPCCalls)
 	RPLModule* rpl = rplDependency->rplLoaderContext;
 	// decrease reference counters of all dependencies
 	RPLLoader_decrementModuleDependencyRefs(rpl);
-	// save module config for this module in the debugger
-	g_debuggerDispatcher.NotifyModuleUnloaded(rpl);
-	// and take it off the graphic packs' list of loaded modules. Standalone
+	// take it off the graphic packs' list of loaded modules. Standalone
 	// never did: it runs one title per process, so the list died with it. The
 	// libretro core runs title after title, and the next one to activate a
 	// pack with patches walked the previous titles' freed modules
@@ -1857,7 +1854,6 @@ void RPLLoader_Link()
 		RPLLoader_LoadDebugSymbols(module);
 		module->isLinked = true; // mark as linked
 		GraphicPack2::NotifyModuleLoaded(module);
-		g_debuggerDispatcher.NotifyModuleLoaded(module);
 	}
 }
 

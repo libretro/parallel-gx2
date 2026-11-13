@@ -1,7 +1,6 @@
 #include "PPCInterpreterInternal.h"
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/GameProfile/GameProfile.h"
-#include "Cafe/HW/Espresso/Debugger/Debugger.h"
 
 thread_local PPCInterpreter_t* ppcInterpreterCurrentInstance;
 

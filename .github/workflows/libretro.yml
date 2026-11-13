@@ -469,6 +469,15 @@ jobs:
           make -C test/host_fs clean
           SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+      - name: "Trap instructions"
+        # tw run through the interpreter goes on to the next instruction:
+        # it once called a GDB stub the core never makes, or ran forever;
+        # plain and under ASan + UBSan
+        run: |
+          ./test/ppc_trap/run_tests.sh
+          make -C test/ppc_trap clean
+          SANITIZER=address,undefined ./test/ppc_trap/run_tests.sh
+
       - name: "Symbol names"
         # the C (C89) the console's addresses are named in, with no lock:
         # RPL exports and imports, trampolines and graphic pack patches;

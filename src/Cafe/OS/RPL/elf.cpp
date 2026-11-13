@@ -2,7 +2,6 @@
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "util/VirtualHeap/VirtualHeap.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
-#include "Cafe/HW/Espresso/Debugger/Debugger.h"
 
 typedef struct  
 {

@@ -6,7 +6,6 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/OS/libs/snd_core/ax.h"
-#include "Cafe/HW/Espresso/Debugger/GDBStub.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 
@@ -1546,7 +1545,6 @@ namespace coreinit
 
 #if BOOST_OS_LINUX
 	#include <unistd.h>
-	#include <sys/prctl.h>
 
 	std::vector<pid_t> g_schedulerThreadIds;
 	std::mutex g_schedulerThreadIdsLock;
@@ -1571,13 +1569,6 @@ namespace coreinit
 		ConfigureHostFloatingPointEnvironment();
 
 #if BOOST_OS_LINUX
-		if (g_gdbstub)
-		{
-			// need to allow the GDBStub to attach to our thread
-			prctl(PR_SET_DUMPABLE, (unsigned long)1);
-			prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY);
-		}
-
 		pid_t tid = cemu_gettid();
 		{
 			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);

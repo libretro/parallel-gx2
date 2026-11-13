@@ -4,7 +4,6 @@
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/RPL/rpl_symbols.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
-#include "Cafe/HW/Espresso/Debugger/DebugSymbolStorage.h"
 
 bool _relocateAddress(PatchGroup* group, PatchContext_t* ctx, uint32 addr, uint32& relocatedAddress)
 {
@@ -217,7 +216,6 @@ PATCH_RESOLVE_RESULT PatchEntryInstruction::resolveReloc(PatchContext_t& ctx, PP
 		{
 			cemu_assert((reloc->m_byteOffset + sizeof(betype<float>)) <= m_length);
 			*(betype<float>*)(m_dataWithRelocs + reloc->m_byteOffset) = result;
-			DebugSymbolStorage::StoreDataType(finalRelocAddr, DEBUG_SYMBOL_TYPE::FLOAT);
 			return PATCH_RESOLVE_RESULT::RESOLVED;
 		}
 		else
@@ -232,7 +230,6 @@ PATCH_RESOLVE_RESULT PatchEntryInstruction::resolveReloc(PatchContext_t& ctx, PP
 		{
 			cemu_assert((reloc->m_byteOffset + sizeof(betype<double>)) <= m_length);
 			*(betype<double>*)(m_dataWithRelocs + reloc->m_byteOffset) = result;
-			DebugSymbolStorage::StoreDataType(finalRelocAddr, DEBUG_SYMBOL_TYPE::DOUBLE);
 			return PATCH_RESOLVE_RESULT::RESOLVED;
 		}
 		else
@@ -249,21 +246,18 @@ PATCH_RESOLVE_RESULT PatchEntryInstruction::resolveReloc(PatchContext_t& ctx, PP
 		{
 			cemu_assert((reloc->m_byteOffset + sizeof(betype<uint32>)) <= m_length);
 			*(betype<uint32>*)(m_dataWithRelocs + reloc->m_byteOffset) = result;
-			DebugSymbolStorage::StoreDataType(finalRelocAddr, DEBUG_SYMBOL_TYPE::U32);
 			return PATCH_RESOLVE_RESULT::RESOLVED;
 		}
 		else if (reloc->m_relocType == PPCASM_RELOC::U16)
 		{
 			cemu_assert((reloc->m_byteOffset + sizeof(betype<uint16>)) <= m_length);
 			*(betype<uint16>*)(m_dataWithRelocs + reloc->m_byteOffset) = (uint16)result;
-			DebugSymbolStorage::StoreDataType(finalRelocAddr, DEBUG_SYMBOL_TYPE::U16);
 			return PATCH_RESOLVE_RESULT::RESOLVED;
 		}
 		else if (reloc->m_relocType == PPCASM_RELOC::U8)
 		{
 			cemu_assert((reloc->m_byteOffset + sizeof(betype<uint8>)) <= m_length);
 			*(betype<uint8>*)(m_dataWithRelocs + reloc->m_byteOffset) = (uint8)result;
-			DebugSymbolStorage::StoreDataType(finalRelocAddr, DEBUG_SYMBOL_TYPE::U8);
 			return PATCH_RESOLVE_RESULT::RESOLVED;
 		}
 		else if (reloc->m_relocType == PPCASM_RELOC::U32_MASKED_IMM)
@@ -421,7 +415,6 @@ void PatchEntryInstruction::undoPatch()
 	memcpy(patchAddr, m_dataBackup, m_length);
 	PPCRecompiler_invalidateRange(addr, addr + m_length);
 	rpl_symbols_remove_range(addr, m_length, RPL_SYMBOL_PATCH);
-	DebugSymbolStorage::ClearRange(addr, m_length);
 }
 
 // returns true on success, false if variable with same name already exists
@@ -433,7 +426,7 @@ bool registerU32Variable(PatchContext_t& ctx, std::string& name, uint32 value, P
 		return false;
 	}
 	ctx.map_values[name] = value;
-	// keep track of address symbols for the debugger
+	// keep track of address symbols, for logs and crash reports
 	rpl_symbols_store(std::string(ctx.graphicPack->GetName()).c_str(), name.c_str(), value, RPL_SYMBOL_PATCH);
 
 	return true;

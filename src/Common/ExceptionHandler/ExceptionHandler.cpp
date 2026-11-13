@@ -4,7 +4,6 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
-#include "Cafe/HW/Espresso/Debugger/GDBStub.h"
 #include "ExceptionHandler.h"
 
 bool crashLogCreated = false;
