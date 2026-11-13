@@ -144,7 +144,7 @@ void VulkanPipelineStableCache::EndLoading()
 
 // Defined below, with the writer thread that reads it.
 struct CachedPipeline;
-extern MpscQueue<CachedPipeline*> g_pipelineCachingQueue;
+extern FixedQueue<CachedPipeline*, 4096> g_pipelineCachingQueue;
 
 void VulkanPipelineStableCache::Close()
 {
@@ -173,7 +173,9 @@ void VulkanPipelineStableCache::Close()
 	if (m_pipelineCacheStoreThread)
 	{
 		m_stopCacheStoreThread = true;
-		g_pipelineCachingQueue.push(nullptr);
+		// the writer empties the queue: room comes
+		while (!g_pipelineCachingQueue.push(nullptr))
+			std::this_thread::yield();
 		m_pipelineCacheStoreThread->join();
 		delete m_pipelineCacheStoreThread;
 		m_pipelineCacheStoreThread = nullptr;
@@ -394,7 +396,7 @@ bool VulkanPipelineStableCache::HasPipelineCached(uint64 baseHash, uint64 pipeli
 }
 
 // pushed by the GPU thread and Close, taken by the one writer thread: no lock
-MpscQueue<CachedPipeline*> g_pipelineCachingQueue;
+FixedQueue<CachedPipeline*, 4096> g_pipelineCachingQueue;
 
 void VulkanPipelineStableCache::AddCurrentStateToCache(uint64 baseHash, uint64 pipelineStateHash)
 {
@@ -420,8 +422,10 @@ void VulkanPipelineStableCache::AddCurrentStateToCache(uint64 baseHash, uint64 p
 	if (ps)
 		job->psHash.set(ps->baseHash, ps->auxHash);
 	Latte::StoreGPURegisterState(LatteGPUState.contextNew, job->gpuState);
-	// queue job
-	g_pipelineCachingQueue.push(job);
+	// queue job; with the writer that far behind, this one is compiled
+	// again next start
+	if (!g_pipelineCachingQueue.push(job))
+		delete job;
 }
 
 bool VulkanPipelineStableCache::SerializePipeline(MemStreamWriter& memWriter, CachedPipeline& cachedPipeline)

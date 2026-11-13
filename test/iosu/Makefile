@@ -23,9 +23,9 @@ ifneq (,$(findstring mingw,$(CC)))
    EXE := .exe
 endif
 LRC_SRCS := $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
-# RcuCell.h's C, built as the C89 lane builds it
+# RcuCell.h's and FixedQueue.h's C, built as the C89 lane builds it
 C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement -Wno-long-long -Wno-variadic-macros -Wall -Werror
-CORE_C_SRCS := $(SRC)/util/helpers/rcu_cell.c
+CORE_C_SRCS := $(SRC)/util/helpers/rcu_cell.c $(SRC)/util/helpers/lf_ring.c
 CXX_SRCS := iosu_kernel_test.cpp stubs.cpp $(SRC)/Cafe/IOSU/kernel/iosu_kernel.cpp \
 	$(SRC)/Common/SysAllocator.cpp $(SRC)/util/highresolutiontimer/HighResolutionTimer.cpp
 

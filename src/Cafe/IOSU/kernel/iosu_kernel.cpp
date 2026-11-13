@@ -2,7 +2,7 @@
 #include "util/helpers/helpers.h"
 #include "util/helpers/EventWake.h"
 #include "util/helpers/IndexFreeList.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/helpers/RcuCell.h"
 #include "Cafe/OS/libs/coreinit/coreinit_IPC.h"
 #include "util/highresolutiontimer/HighResolutionTimer.h"
@@ -268,7 +268,7 @@ namespace iosu
 
 		// 0 free, 1 live, 2 being destroyed
 		std::atomic<uint32> sTimerSlots[IOS_TIMER_COUNT];
-		MpscQueue<IOSTimerOp> sTimerOps;
+		FixedQueue<IOSTimerOp> sTimerOps;
 
 		void IOSTimerThread()
 		{
@@ -355,7 +355,12 @@ namespace iosu
 				op.message = message;
 				op.nextFire = HighResolutionTimer::now().getTick() + HighResolutionTimer::microsecondsToTicks(startMicroseconds);
 				op.repeat = HighResolutionTimer::microsecondsToTicks(repeatMicroseconds);
-				sTimerOps.push(op);
+				if (!sTimerOps.push(op))
+				{
+					sTimerSlots[i].store(0, std::memory_order_release);
+					cemuLog_log(LogType::Force, "IOS timer queue full: timer not created");
+					return IOS_ERROR_MAXIMUM_REACHED;
+				}
 				return (IOS_ERROR)i;
 			}
 			cemu_assert_suspicious();
@@ -369,7 +374,11 @@ namespace iosu
 			IOSTimerOp op{};
 			op.type = IOSTimerOpType::Stop;
 			op.timerId = timerId;
-			sTimerOps.push(op);
+			if (!sTimerOps.push(op))
+			{
+				cemuLog_log(LogType::Force, "IOS timer queue full: timer {} not stopped", (uint32)timerId);
+				return IOS_ERROR_MAXIMUM_REACHED;
+			}
 			return IOS_ERROR_OK;
 		}
 
@@ -381,7 +390,12 @@ namespace iosu
 			IOSTimerOp op{};
 			op.type = IOSTimerOpType::Destroy;
 			op.timerId = timerId;
-			sTimerOps.push(op);
+			if (!sTimerOps.push(op))
+			{
+				sTimerSlots[timerId].store(1, std::memory_order_release);
+				cemuLog_log(LogType::Force, "IOS timer queue full: timer {} not destroyed", (uint32)timerId);
+				return IOS_ERROR_MAXIMUM_REACHED;
+			}
 			return IOS_ERROR_OK;
 		}
 
@@ -852,7 +866,9 @@ namespace iosu
 				// stop timer thread
 				IOSTimerOp quit{};
 				quit.type = IOSTimerOpType::Quit;
-				sTimerOps.push(quit);
+				// the thread empties the queue: room comes
+				while (!sTimerOps.push(quit))
+					std::this_thread::yield();
 				m_timerThread.join();
 				// reset resources
 				// todo

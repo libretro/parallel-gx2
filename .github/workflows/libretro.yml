@@ -522,6 +522,17 @@ jobs:
           make -C test/curl_jobs clean
           SANITIZER=address,undefined ./test/curl_jobs/run_tests.sh
 
+      - name: "Fixed lock-free queue"
+        # the ring under GX2's events, IOS timers and requests, thread
+        # deallocators and the pipeline cache writer; plain, under TSan and
+        # under ASan + UBSan
+        run: |
+          ./test/lf_ring/run_tests.sh
+          make -C test/lf_ring clean
+          SANITIZER=thread ./test/lf_ring/run_tests.sh
+          make -C test/lf_ring clean
+          SANITIZER=address,undefined ./test/lf_ring/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;

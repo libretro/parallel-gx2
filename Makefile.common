@@ -77,6 +77,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/OS/libs/nsyshid/hid_core.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/async_cb.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_jobs.c \
+	$(CORE_DIR)/src/util/helpers/lf_ring.c \
 	$(CORE_DIR)/src/util/IniParser/ini_file.c \
 	$(CORE_DIR)/src/util/xml/xml_tree.c \
 	$(CORE_DIR)/src/util/crypto/hmac_md5.c \

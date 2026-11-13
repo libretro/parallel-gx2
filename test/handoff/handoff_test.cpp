@@ -46,11 +46,11 @@
 //    lose none and keep none they dropped, and an owner's destruction hands
 //    each remaining one over once, even as their destructors remove them
 //    from it and from the other bags;
-//  - MpscQueue and MpmcQueue (the GX2 event, thread deallocator, curl and
+//  - FixedQueue and MpmcQueue (the GX2 event, thread deallocator, IOSU and
 //    pipeline cache writer queues; the two pipeline compile pools): every
 //    item taken exactly once, each producer's in order where promised, a pop
-//    asleep until there is something, and the MPMC overflow past its ring
-//    handed back to sleeping consumers;
+//    asleep until there is something, a full FixedQueue refusing, and the
+//    MPMC overflow past its ring handed back to sleeping consumers;
 //  - ClaimTicket (the shader compile pool): a queued shader is compiled once,
 //    by a pool thread or by the thread that needs it now, never after it was
 //    destroyed, and a destroyed one's ticket left in the queue is harmless;
@@ -87,7 +87,7 @@
 #include "audio/AudioDevicesGate.h"
 #include "util/helpers/AtomicPageSet.h"
 #include "util/helpers/AtomicPtrBag.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/ClaimTicket.h"
 #include "Cemu/nex/nexWait.h"
@@ -1059,16 +1059,31 @@ static void TestAtomicPtrBag()
 
 // --- worker queues ----------------------------------------------------------
 
-static void TestMpscQueue()
+static void TestFixedQueue()
 {
-	MpscQueue<std::pair<int, int>> queue;
+	// full: refused, nothing lost, room again once one is taken
+	{
+		FixedQueue<int, 8> small;
+		for (int i = 0; i < 8; i++)
+			CHECK(small.push(i));
+		CHECK(!small.push(8) && small.size() == 8);
+		int v = -1;
+		CHECK(small.peek2(v) && v == 0);
+		CHECK(small.push(8));
+		for (int i = 1; i <= 8; i++)
+			CHECK(small.peek2(v) && v == i);
+		CHECK(!small.peek2(v) && small.empty());
+	}
+	struct Item { int first, second; };
+	FixedQueue<Item> queue;
 	constexpr int kProducers = 4, kItems = 20000;
 	std::vector<std::thread> producers;
 	for (int p = 0; p < kProducers; p++)
 		producers.emplace_back([&, p] {
 			for (int i = 0; i < kItems; i++)
 			{
-				queue.push({p, i});
+				while (!queue.push(Item{p, i}))
+					std::this_thread::yield(); // past the ring: the consumer makes room
 				if (i % 1000 == 0)
 					std::this_thread::sleep_for(std::chrono::microseconds(100)); // let the consumer catch up and sleep
 			}
@@ -1083,7 +1098,7 @@ static void TestMpscQueue()
 	}
 	for (auto& t : producers)
 		t.join();
-	std::pair<int, int> extra;
+	Item extra;
 	CHECK(ordered);
 	CHECK(!queue.peek2(extra));
 	CHECK(queue.empty());
@@ -1096,7 +1111,7 @@ static void TestMpscQueue()
 		CHECK(clock::now() - start >= std::chrono::milliseconds(25));
 		std::thread t([&] {
 			std::this_thread::sleep_for(std::chrono::milliseconds(3));
-			queue.push({7, 7});
+			queue.push(Item{7, 7});
 		});
 		start = clock::now();
 		CHECK(queue.pop_until(extra, start + std::chrono::seconds(30)));
@@ -1789,7 +1804,7 @@ int main()
 	TestPPCTimerClock();
 	TestPPCTimerClockCap();
 	TestAtomicPtrBag();
-	TestMpscQueue();
+	TestFixedQueue();
 	TestMpmcQueue();
 	TestClaimTicket();
 	TestNexWait();

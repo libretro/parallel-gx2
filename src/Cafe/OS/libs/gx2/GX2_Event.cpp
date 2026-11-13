@@ -8,7 +8,7 @@
 #include "GX2.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "config/ActiveSettings.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 
 namespace GX2
 {
@@ -156,7 +156,7 @@ namespace GX2
 
 	SysAllocator<coreinit::OSSemaphore> s_eventCbQueueSemaphore;
 	// pushed from the GPU thread, taken by the one callback thread: no lock
-	MpscQueue<GX2EventQueueEntry> s_eventCbQueue;
+	FixedQueue<GX2EventQueueEntry> s_eventCbQueue;
 
 	void __GX2NotifyEvent(GX2CallbackEventType eventType)
 	{
@@ -167,8 +167,10 @@ namespace GX2
 		}
 		if (s_eventCallback[(size_t)eventType].callbackFuncPtr)
 		{
-			s_eventCbQueue.push(eventType);
-			coreinit::OSSignalSemaphore(s_eventCbQueueSemaphore);
+			if (s_eventCbQueue.push(eventType))
+				coreinit::OSSignalSemaphore(s_eventCbQueueSemaphore);
+			else
+				cemuLog_log(LogType::Force, "GX2 event queue full: event {} dropped", (uint32)eventType);
 		}
 		// wake up threads that are waiting for VSYNC or FLIP event
 		if (eventType == GX2CallbackEventType::VSYNC)

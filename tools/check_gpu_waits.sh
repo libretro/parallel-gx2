@@ -32,7 +32,7 @@
 # and the pipelines each shader and framebuffer is used by, which the pipeline
 # cache's compile threads all register at once while a title loads
 # (AtomicPtrBag.h); and the worker queues - GX2's event callbacks, the
-# thread deallocators, curl's workers, the pipeline cache writer (MpscQueue.h)
+# thread deallocators, curl's workers, the pipeline cache writer (FixedQueue.h)
 # and the two pipeline compile pools (MpmcQueue.h) - instead of
 # ConcurrentQueue's mutex and condition variable; and the shader compile pool,
 # whose queue a shader is claimed from rather than taken out of
@@ -42,7 +42,7 @@
 # secure access, spinning. And the emulated controllers the game reads every
 # frame - which controllers, their mappings (RcuCell.h), their state and
 # settings (SeqlockValue.h) - instead of a shared_mutex, a mutex and a
-# spinlock per read. The IOSU ioctl queues (MpscQueue.h, a mutex, a ring and a
+# spinlock per read. The IOSU ioctl queues (FixedQueue.h, a mutex, a ring and a
 # counting semaphore before) and the shader cache's async writer likewise.
 # The IOSU kernel every IPC passes through - message queues, timers, device
 # handles, the command pool, the replies - and each core's IPC buffers.
@@ -140,7 +140,7 @@ for f in src/Cemu/Logging/CemuLogging.cpp src/Cemu/Logging/LogFileSink.h \
 	src/Cafe/HW/Latte/Renderer/Vulkan/CachedFBOVk.h src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h \
 	src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp \
 	src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h src/util/helpers/AtomicPtrBag.h \
-	src/util/helpers/MpscQueue.h src/util/helpers/MpmcQueue.h \
+	src/util/helpers/FixedQueue.h src/util/helpers/lf_ring.c src/util/helpers/MpmcQueue.h \
 	src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp src/util/helpers/ClaimTicket.h \
 	src/Cemu/nex/nex.cpp src/Cemu/nex/nex.h src/Cemu/nex/nexThread.cpp src/Cemu/nex/nexWait.h \
 	src/input/emulated/EmulatedController.cpp src/input/emulated/EmulatedController.h \
@@ -164,8 +164,8 @@ for f in src/Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.cpp src/Cafe/HW/Latt
 		echo "$f: the shader compile pool waits on a mutex again"; fail=1
 	fi
 done
-if pp src/Cemu/FileCache/FileCache.cpp | grep -q 'condition_variable'; then
-	echo "src/Cemu/FileCache/FileCache.cpp: the async writer waits on a condition variable again"; fail=1
+if pp src/Cemu/FileCache/file_cache.c | grep -qE 'condition_variable|scond_|slock_'; then
+	echo "src/Cemu/FileCache/file_cache.c: the async writer waits on a condition variable or a lock again"; fail=1
 fi
 # InputManager keeps upstream's mouse and touch locks, which the libretro
 # build never takes; the controller lists are lock-free

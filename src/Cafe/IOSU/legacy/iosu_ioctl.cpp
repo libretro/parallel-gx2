@@ -1,7 +1,7 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "iosu_ioctl.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 
 #include "util/helpers/EventWake.h"
 
@@ -15,7 +15,9 @@
 // takes - no lock (a mutex, a ring and a counting semaphore before). Never
 // destroyed: the workers are detached, and one still waiting as the process
 // exits finds its queue where it was. A null entry is a shutdown's wake.
-static MpscQueue<ioQueueEntry_t*>* const sIoctlQueues = new MpscQueue<ioQueueEntry_t*>[IOS_DEVICE_COUNT];
+// Each holds at most one request per emulated thread, as each waits on its
+// own.
+static FixedQueue<ioQueueEntry_t*>* const sIoctlQueues = new FixedQueue<ioQueueEntry_t*>[IOS_DEVICE_COUNT];
 
 sint32 iosuIoctl_pushAndWait(uint32 ioctlHandle, ioQueueEntry_t* ioQueueEntry)
 {
@@ -27,7 +29,12 @@ sint32 iosuIoctl_pushAndWait(uint32 ioctlHandle, ioQueueEntry_t* ioQueueEntry)
 	}
 	__OSLockScheduler();
 	ioQueueEntry->ppcThread = coreinit::OSGetCurrentThread();
-	sIoctlQueues[ioctlHandle].push(ioQueueEntry);
+	if (!sIoctlQueues[ioctlHandle].push(ioQueueEntry))
+	{
+		__OSUnlockScheduler();
+		cemuLog_log(LogType::Force, "IOSU device {} queue full: request refused", ioctlHandle);
+		return -1;
+	}
 	coreinit::__OSSuspendThreadInternal(coreinit::OSGetCurrentThread());
 	if (ioQueueEntry->isCompleted == false)
 		assert_dbg();
@@ -47,7 +54,11 @@ void iosuIoctl_requestShutdown()
 	sIoctlShuttingDown.store(true, std::memory_order_release);
 	// One wake per device is enough: each has a single worker.
 	for (uint32 i = 0; i < IOS_DEVICE_COUNT; i++)
-		sIoctlQueues[i].push(nullptr);
+	{
+		// the worker empties its queue: room comes
+		while (!sIoctlQueues[i].push(nullptr))
+			std::this_thread::yield();
+	}
 }
 
 bool iosuIoctl_hasWaiters()

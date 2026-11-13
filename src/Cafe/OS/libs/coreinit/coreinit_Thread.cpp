@@ -11,7 +11,7 @@
 
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/EventWake.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/Fiber/Fiber.h"
 
 #include "util/helpers/helpers.h"
@@ -1995,7 +1995,7 @@ namespace coreinit
 		SysAllocator<uint8, 16 * 1024> threadStack;
 		SysAllocator<char, 64> threadName;
 		SysAllocator<OSSemaphore> semaphoreQueuedDeallocators;
-		MpscQueue<DeallocatorQueueEntry> queueDeallocators; // one terminator thread takes them: no lock
+		FixedQueue<DeallocatorQueueEntry> queueDeallocators; // one terminator thread takes them: no lock
 	};
 
 	TerminatorThread s_terminatorThreads[PPC_CORE_COUNT];
@@ -2018,7 +2018,11 @@ namespace coreinit
 	{
 		uint32 coreIndex = OSGetCoreId();
 		TerminatorThread::DeallocatorQueueEntry queueEntry(thread, thread->stackEnd, thread->deallocatorFunc);
-		s_terminatorThreads[coreIndex].queueDeallocators.push(queueEntry);
+		if (!s_terminatorThreads[coreIndex].queueDeallocators.push(queueEntry))
+		{
+			cemuLog_log(LogType::Force, "Thread deallocator queue full: thread 0x{:08x} not deallocated", MEMPTR<OSThread_t>(thread).GetMPTR());
+			return;
+		}
 		OSSignalSemaphoreInternal(s_terminatorThreads[coreIndex].semaphoreQueuedDeallocators.GetPtr(), false); // do not reschedule here! Current thread must not be interrupted otherwise deallocator will run too early
 	}
 

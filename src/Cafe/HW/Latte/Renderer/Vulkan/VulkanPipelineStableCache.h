@@ -1,6 +1,6 @@
 #pragma once
 #include "util/helpers/MpscList.h"
-#include "util/helpers/MpscQueue.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/helpers/MpmcQueue.h"
 
 struct VulkanPipelineHash
