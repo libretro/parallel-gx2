@@ -17,7 +17,7 @@ ifneq (,$(findstring mingw,$(CC)))
 endif
 # RcuCell.h's and FixedQueue.h's C, built as the C89 lane builds it
 C89_FLAGS := -std=c89 -ansi -pedantic -Werror=pedantic -Werror=declaration-after-statement -Wno-long-long -Wno-variadic-macros -Wall -Werror
-C_SRCS := $(SRC)/util/helpers/rcu_cell.c $(SRC)/util/helpers/lf_ring.c $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+C_SRCS := $(SRC)/util/helpers/rcu_cell.c $(SRC)/util/helpers/lf_ring.c $(SRC)/util/helpers/obj_pool.c $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 CXX_SRCS := handoff_test.cpp \
 	$(SRC)/Cafe/HW/Espresso/Recompiler/PPCRecompilerWorkQueue.cpp \
 	$(SRC)/Cafe/HW/Latte/Core/LatteGpuWake.cpp \
@@ -27,7 +27,7 @@ HDRS := $(SRC)/libretro/LibretroAudioRing.h $(SRC)/Cafe/HW/Latte/Core/LatteGpuWa
 	$(SRC)/util/helpers/SeqlockValue.h $(SRC)/util/helpers/MpscList.h $(SRC)/libretro/LibretroVkQueue.h \
 	$(SRC)/audio/AudioDevicesGate.h $(SRC)/util/helpers/AtomicPageSet.h \
 	$(SRC)/Cafe/HW/Espresso/PPCTimerClock.h $(SRC)/util/helpers/AtomicPtrBag.h \
-	$(SRC)/util/helpers/FixedQueue.h $(SRC)/util/helpers/lf_ring.h $(SRC)/util/helpers/MpmcQueue.h \
+	$(SRC)/util/helpers/FixedQueue.h $(SRC)/util/helpers/lf_ring.h $(SRC)/util/helpers/PoolNew.h $(SRC)/util/helpers/obj_pool.h $(SRC)/util/helpers/MpmcQueue.h \
 	$(SRC)/util/helpers/ClaimTicket.h $(SRC)/Cemu/nex/nexWait.h \
 	$(SRC)/util/helpers/RcuCell.h $(SRC)/util/helpers/rcu_cell.h $(SRC)/util/helpers/Semaphore.h $(SRC)/util/helpers/IdleWait.h
 
@@ -37,7 +37,8 @@ handoff_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(HDRS)
 	$(CC) $(FLAGS) -std=gnu99 -c $(LRC)/rthreads/rthreads.c -o rthreads.o
 	$(CC) $(FLAGS) $(C89_FLAGS) -c $(SRC)/util/helpers/rcu_cell.c -o rcu_cell.o
 	$(CC) $(FLAGS) $(C89_FLAGS) -c $(SRC)/util/helpers/lf_ring.c -o lf_ring.o
-	$(CXX) $(FLAGS) -std=gnu++20 $(CXX_SRCS) retro_spsc.o retro_eventcount.o rthreads.o rcu_cell.o lf_ring.o $(LIBS) -o $@
+	$(CC) $(FLAGS) $(C89_FLAGS) -c $(SRC)/util/helpers/obj_pool.c -o obj_pool.o
+	$(CXX) $(FLAGS) -std=gnu++20 $(CXX_SRCS) retro_spsc.o retro_eventcount.o rthreads.o rcu_cell.o lf_ring.o obj_pool.o $(LIBS) -o $@
 	rm -f *.o
 
 clean:

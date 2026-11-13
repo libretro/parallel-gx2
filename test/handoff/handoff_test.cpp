@@ -49,6 +49,8 @@
 //  - FixedList (the renderer's destruction requests, the pipeline cache's
 //    loaded hashes and libraries, the overlay's notifications): every item
 //    taken once, past its ring too;
+//  - PoolNew (the renderer's descriptor sets, and the reference every
+//    Vulkan object carries): its objects from the class's pool and back;
 //  - FixedQueue and MpmcQueue (the GX2 event, thread deallocator, IOSU and
 //    pipeline cache writer queues; the two pipeline compile pools): every
 //    item taken exactly once, each producer's in order where promised, a pop
@@ -91,6 +93,7 @@
 #include "util/helpers/AtomicPageSet.h"
 #include "util/helpers/AtomicPtrBag.h"
 #include "util/helpers/FixedQueue.h"
+#include "util/helpers/PoolNew.h"
 #include "util/helpers/MpmcQueue.h"
 #include "util/helpers/ClaimTicket.h"
 #include "Cemu/nex/nexWait.h"
@@ -98,6 +101,7 @@
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/IdleWait.h"
 #include "Cafe/HW/Espresso/PPCTimerClock.h"
+#include <random>
 #include <set>
 #include "libretro.h"
 #include "libretro_vulkan.h"
@@ -503,7 +507,8 @@ static bool LogTestLineWhole(const std::string& line)
 
 static void TestLogFileSink()
 {
-	const auto path = std::filesystem::temp_directory_path() / "handoff_log_test.txt";
+	// a name of its own: two runs at once do not write the same file
+	const auto path = std::filesystem::temp_directory_path() / ("handoff_log_test_" + std::to_string(std::random_device{}()) + ".txt");
 	constexpr int kThreads = 8, kLines = 2000;
 	// All on: every line there, each whole
 	{
@@ -911,9 +916,32 @@ static void TestPPCTimerClock()
 	CHECK(!bad.load());
 }
 
+// A read made while another read is making the new epoch, after the cap
+// was set: it goes no further than the cap, though the epoch it has was made
+// with none
+struct PPCTimerClockTest
+{
+	static void Run()
+	{
+		const uint64_t F = PPCTimerClock::kConsoleClock;
+		PPCTimerClock c;
+		c.Restart(0);
+		CHECK(c.Read(0, F, 3) == 0); // an epoch with no cap
+		c.SetCap(300);
+		c.m_rebasing.store(true); // another read is rebasing
+		CHECK(c.Read(1000000, F, 3) == 300);
+		c.m_rebasing.store(false);
+		CHECK(c.Read(1000000, F, 3) == 300); // and nothing past it held
+		c.SetCap(600);
+		CHECK(c.Read(1000000, F, 3) == 300); // on from there, no jump
+		CHECK(c.Read(1000100, F, 3) == 400);
+	}
+};
+
 // The frontend's clock: the cap and the skip
 static void TestPPCTimerClockCap()
 {
+	PPCTimerClockTest::Run();
 	const uint64_t F = PPCTimerClock::kConsoleClock; // a TSC tick is a guest tick
 	PPCTimerClock c;
 	c.Restart(1000);
@@ -1174,6 +1202,70 @@ static void TestFixedList()
 	bool ordered = true;
 	list.TakeAll([&](Item&& item) { ordered = ordered && item.i == next++; });
 	CHECK(ordered && next == 64);
+}
+
+// PoolNew (the renderer's descriptor sets and the reference each Vulkan
+// object carries): new and delete from the class's pool, the same blocks
+// again once given back, a derived class of another size on the heap, and
+// threads making and dropping them at once
+struct PooledThing : PoolNew<PooledThing, 64>
+{
+	virtual ~PooledThing() = default;
+	uint64_t a[3]{};
+};
+struct BiggerThing : PooledThing
+{
+	uint64_t b[9]{};
+};
+
+static void TestPoolNew()
+{
+	std::vector<PooledThing*> made;
+	for (int i = 0; i < 200; i++)
+		made.push_back(new PooledThing());
+	std::set<PooledThing*> first(made.begin(), made.end());
+	CHECK(first.size() == made.size());
+	for (auto* t : made)
+		delete t;
+	made.clear();
+	for (int i = 0; i < 200; i++)
+		made.push_back(new PooledThing());
+	// given back, handed out again: no more blocks than the four chunks the
+	// first 200 took
+	std::set<PooledThing*> both(first);
+	both.insert(made.begin(), made.end());
+	CHECK(both.size() <= 4 * 64);
+	for (auto* t : made)
+		delete t;
+	// another size: the heap, deleted through the base as the heap's
+	PooledThing* big = new BiggerThing();
+	CHECK(first.count(big) == 0);
+	delete big;
+	// threads at once
+	std::atomic<int> bad{0};
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 4; t++)
+		threads.emplace_back([&, t] {
+			PooledThing* held[16];
+			for (int r = 0; r < 5000; r++)
+			{
+				const int n = 1 + r % 16;
+				for (int i = 0; i < n; i++)
+				{
+					held[i] = (r & 7) == 7 ? new BiggerThing() : new PooledThing();
+					held[i]->a[0] = held[i]->a[2] = (uint64_t)t;
+				}
+				for (int i = 0; i < n; i++)
+				{
+					if (held[i]->a[0] != (uint64_t)t || held[i]->a[2] != (uint64_t)t)
+						bad.fetch_add(1);
+					delete held[i];
+				}
+			}
+		});
+	for (auto& th : threads)
+		th.join();
+	CHECK(bad.load() == 0);
 }
 
 static void TestMpmcQueue()
@@ -1855,6 +1947,7 @@ int main()
 	TestSeqlockValue();
 	TestMpscList();
 	TestFixedList();
+	TestPoolNew();
 	TestVkQueueLock();
 	TestAudioDevicesGate();
 	TestAtomicPageSet();

@@ -15,6 +15,7 @@
 #include "util/helpers/IdleWait.h"
 #include "libretro/LibretroViews.h"
 #include "util/helpers/FixedQueue.h"
+#include "util/helpers/PoolNew.h"
 #include "util/containers/flat_hash_map.hpp"
 #include "util/containers/robin_hood.h"
 
@@ -41,14 +42,38 @@ struct VkSupportedFormatInfo_t
 	bool fmt_r5g5b5a1_unorm_pack{};
 };
 
-struct VkDescriptorSetInfo
+// At most one entry per texture unit of the stage, kept in the object: a
+// descriptor set made while a game plays allocates no list.
+template<typename T>
+struct TexUnitList
+{
+	T items[LATTE_NUM_MAX_TEX_UNITS];
+	uint32 count{0};
+
+	T* begin() { return items; }
+	T* end() { return items + count; }
+	const T* begin() const { return items; }
+	const T* end() const { return items + count; }
+	void AppendUnique(T v)
+	{
+		for (uint32 i = 0; i < count; i++)
+			if (items[i] == v)
+				return;
+		cemu_assert(count < LATTE_NUM_MAX_TEX_UNITS);
+		items[count++] = v;
+	}
+};
+
+// From a pool (PoolNew.h): made on a descriptor set cache miss, while a game
+// plays
+struct VkDescriptorSetInfo : PoolNew<VkDescriptorSetInfo>
 {
 	VKRObjectDescriptorSet* m_vkObjDescriptorSet{};
 
 	~VkDescriptorSetInfo();
 
-	std::vector<LatteTextureViewVk*> list_referencedViews;
-	std::vector<LatteTextureVk*> list_fboCandidates; // prefiltered list of textures which may need a barrier
+	TexUnitList<LatteTextureViewVk*> list_referencedViews;
+	TexUnitList<LatteTextureVk*> list_fboCandidates; // prefiltered list of textures which may need a barrier
 	LatteConst::ShaderType shaderType{};
 	uint64 stateHash{};
 	class PipelineInfo* pipeline_info{};
@@ -735,6 +760,13 @@ public:
 	uint32 m_presentBlitCount = 0;
 	// The cursor's copy regions, kept so a frame allocates nothing
 	std::vector<VkBufferImageCopy> m_cursorRegions;
+
+	// draw_getOrCreateDescriptorSet's writes, the GPU thread's alone: a
+	// texture per unit, the uniform variables, the uniform buffers and the
+	// transform feedback buffer at most
+	static constexpr uint32 kMaxDescriptorWrites = LATTE_NUM_MAX_TEX_UNITS + 1 + LATTE_NUM_MAX_UNIFORM_BUFFERS + 1;
+	VkDescriptorImageInfo m_dsImageScratch[LATTE_NUM_MAX_TEX_UNITS];
+	VkWriteDescriptorSet m_dsWriteScratch[kMaxDescriptorWrites];
 	void NotePresentBlit(int x, int y, int width, int height);
 	void RestoreUnderLibretroCursor();
 	void DrawLibretroCursor();

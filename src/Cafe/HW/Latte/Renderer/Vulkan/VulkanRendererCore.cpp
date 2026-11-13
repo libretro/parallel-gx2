@@ -576,9 +576,15 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 	vkObjDS->descriptorSet = result;
 
 	sint32 textureCount = shader->resourceMapping.getTextureCount();
+	cemu_assert(textureCount <= LATTE_NUM_MAX_TEX_UNITS);
 
-	std::vector<VkWriteDescriptorSet> descriptorWrites;
-	std::vector<VkDescriptorImageInfo> textureArray;
+	// the GPU thread's scratch: nothing allocated
+	VkWriteDescriptorSet* const descriptorWrites = m_dsWriteScratch;
+	uint32 descriptorWriteCount = 0;
+	VkDescriptorImageInfo* const textureArray = m_dsImageScratch;
+	uint32 textureArrayCount = 0;
+	// a view and a sampler per texture
+	vkObjDS->reserveRefs((size_t)textureCount * 2);
 	for (int i = 0; i < textureCount; ++i)
 	{
 		VkDescriptorImageInfo info{};
@@ -612,14 +618,14 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 				info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 				info.imageView = nullTexture1D.view;
 				info.sampler = nullTexture1D.sampler;
-				textureArray.emplace_back(info);
+				textureArray[textureArrayCount++] = info;
 			}
 			else
 			{
 				info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 				info.imageView = nullTexture2D.view;
 				info.sampler = nullTexture2D.sampler;
-				textureArray.emplace_back(info);
+				textureArray[textureArrayCount++] = info;
 			}
 			continue;
 		}
@@ -631,7 +637,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			info.imageView = nullTexture1D.view;
 			info.sampler = nullTexture1D.sampler;
-			textureArray.emplace_back(info);
+			textureArray[textureArrayCount++] = info;
 			// cemuLog_log(LogType::Force, "Vulkan-Info: Shader 0x{:016x} uses 1D texture but bound texture has mismatching type (dim: 0x{:02x})", shader->baseHash, textureView->gx2Dim);
 			continue;
 		}
@@ -642,7 +648,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 			info.imageView = nullTexture2D.view;
 			info.sampler = nullTexture2D.sampler;
-			textureArray.emplace_back(info);
+			textureArray[textureArrayCount++] = info;
 			// cemuLog_log(LogType::Force, "Vulkan-Info: Shader 0x{:016x} uses 2D texture but bound texture has mismatching type (dim: 0x{:02x})", shader->baseHash, textureView->gx2Dim);
 			continue;
 		}
@@ -662,11 +668,11 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 		vkObjDS->addRef(imageViewObj);
 
 		// track relation between view and descriptor set
-		vectorAppendUnique(dsInfo->list_referencedViews, textureView);
+		dsInfo->list_referencedViews.AppendUnique(textureView);
 		textureView->AddDescriptorSetReference(dsInfo);
 
 		if (!baseTexture->IsCompressedFormat())
-			vectorAppendUnique(dsInfo->list_fboCandidates, baseTexture);
+			dsInfo->list_fboCandidates.AppendUnique(baseTexture);
 
 		uint32 stageSamplerIndex = shader->textureUnitSamplerAssignment[relative_textureUnit];
 		if (stageSamplerIndex != LATTE_DECOMPILER_SAMPLER_NONE)
@@ -825,7 +831,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 		VKRObjectSampler* samplerObj = VKRObjectSampler::GetOrCreateSampler(&samplerInfo);
 		vkObjDS->addRef(samplerObj);
 		info.sampler = samplerObj->GetSampler();
-		textureArray.emplace_back(info);
+		textureArray[textureArrayCount++] = info;
 	}
 
 	if (textureCount > 0)
@@ -839,8 +845,8 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			write_descriptor.dstArrayElement = 0;
 			write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			write_descriptor.descriptorCount = 1;
-			write_descriptor.pImageInfo = textureArray.data() + i;
-			descriptorWrites.emplace_back(write_descriptor);
+			write_descriptor.pImageInfo = textureArray + i;
+			descriptorWrites[descriptorWriteCount++] = write_descriptor;
 			performanceMonitor.vk.numDescriptorSamplerTextures.increment();
 			dsInfo->statsNumSamplerTextures++;
 		}
@@ -864,7 +870,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 		write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 		write_descriptor.descriptorCount = 1;
 		write_descriptor.pBufferInfo = &uniformVarsBufferInfo;
-		descriptorWrites.emplace_back(write_descriptor);
+		descriptorWrites[descriptorWriteCount++] = write_descriptor;
 		performanceMonitor.vk.numDescriptorDynUniformBuffers.increment();
 		dsInfo->statsNumDynUniformBuffers++;
 	}
@@ -900,7 +906,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 			write_descriptor.descriptorCount = 1;
 			write_descriptor.pBufferInfo = &uniformBufferInfo;
-			descriptorWrites.emplace_back(write_descriptor);
+			descriptorWrites[descriptorWriteCount++] = write_descriptor;
 			performanceMonitor.vk.numDescriptorDynUniformBuffers.increment();
 			dsInfo->statsNumDynUniformBuffers++;
 		}
@@ -923,13 +929,14 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 		write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		write_descriptor.descriptorCount = 1;
 		write_descriptor.pBufferInfo = &tfStorageBufferInfo;
-		descriptorWrites.emplace_back(write_descriptor);
+		descriptorWrites[descriptorWriteCount++] = write_descriptor;
 		performanceMonitor.vk.numDescriptorStorageBuffers.increment();
 		dsInfo->statsNumStorageBuffers++;
 	}
 
-	if (!descriptorWrites.empty())
-		vkUpdateDescriptorSets(m_logicalDevice, (uint32)descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+	cemu_assert_debug(textureArrayCount == (uint32)textureCount && descriptorWriteCount <= kMaxDescriptorWrites);
+	if (descriptorWriteCount)
+		vkUpdateDescriptorSets(m_logicalDevice, descriptorWriteCount, descriptorWrites, 0, nullptr);
 
 	ds_cache[stateHash] = dsInfo;
 

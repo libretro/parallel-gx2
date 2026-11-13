@@ -1,8 +1,11 @@
 #pragma once
+
+#include "util/helpers/PoolNew.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "util/math/vector2.h"
 
-class VKRMoveableRefCounterRef
+// One for every Vulkan object, made and dropped with it: from a pool
+class VKRMoveableRefCounterRef : public PoolNew<VKRMoveableRefCounterRef, 1024>
 {
 public:
 	class VKRMoveableRefCounter* ref;
@@ -56,6 +59,12 @@ public:
 	{
 		cemu_assert(false);
 		return *this;
+	}
+
+	// room for n more, in one allocation rather than one per doubling
+	void reserveRefs(size_t n)
+	{
+		refs.reserve(refs.size() + n);
 	}
 
 	void addRef(VKRMoveableRefCounter* refTarget)
@@ -231,7 +240,8 @@ private:
 	VkPipeline m_pipeline = VK_NULL_HANDLE;
 };
 
-class VKRObjectDescriptorSet : public VKRDestructibleObject
+// made on a descriptor set cache miss, while a game plays: from a pool
+class VKRObjectDescriptorSet : public VKRDestructibleObject, public PoolNew<VKRObjectDescriptorSet>
 {
 public:
 	VKRObjectDescriptorSet();

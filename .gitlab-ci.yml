@@ -716,6 +716,20 @@ test-lf-ring:
     - make -C test/lf_ring clean
     - SANITIZER=address,undefined ./test/lf_ring/run_tests.sh
 
+test-obj-pool:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/obj_pool/run_tests.sh
+    - make -C test/obj_pool clean
+    - SANITIZER=thread ./test/obj_pool/run_tests.sh
+    - make -C test/obj_pool clean
+    - SANITIZER=address,undefined ./test/obj_pool/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.

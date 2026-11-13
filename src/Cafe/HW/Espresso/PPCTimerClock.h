@@ -92,7 +92,13 @@ public:
 			m_epoch.Store(e);
 			m_rebasing.store(false, std::memory_order_release);
 		}
-		const uint64_t t = At(e, tsc);
+		// The epoch can be one made before the cap was last set - another
+		// read is making the new one - and run past it: no further than the
+		// cap read here, or one read beyond it would hold every later one
+		// there (m_last)
+		uint64_t t = At(e, tsc);
+		if (t > cap)
+			t = cap;
 		uint64_t last = m_last.load(std::memory_order_relaxed);
 		while (t > last)
 		{
@@ -103,6 +109,8 @@ public:
 	}
 
 private:
+	friend struct PPCTimerClockTest; // a read made while another rebases
+
 	struct Epoch
 	{
 		uint64_t tsc;

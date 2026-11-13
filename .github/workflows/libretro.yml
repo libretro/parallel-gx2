@@ -533,6 +533,16 @@ jobs:
           make -C test/lf_ring clean
           SANITIZER=address,undefined ./test/lf_ring/run_tests.sh
 
+      - name: "Object pool"
+        # the renderer's pool of same-size blocks, with no lock; plain,
+        # under TSan and under ASan + UBSan
+        run: |
+          ./test/obj_pool/run_tests.sh
+          make -C test/obj_pool clean
+          SANITIZER=thread ./test/obj_pool/run_tests.sh
+          make -C test/obj_pool clean
+          SANITIZER=address,undefined ./test/obj_pool/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;
