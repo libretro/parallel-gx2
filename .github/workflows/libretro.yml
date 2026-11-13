@@ -502,6 +502,26 @@ jobs:
           make -C test/hid_core clean
           SANITIZER=address,undefined ./test/hid_core/run_tests.sh
 
+      - name: "Async callback queue"
+        # coreinit's callbacks queued from any thread and taken by its
+        # callback thread, with no lock; plain, under TSan and under ASan + UBSan
+        run: |
+          ./test/async_cb/run_tests.sh
+          make -C test/async_cb clean
+          SANITIZER=thread ./test/async_cb/run_tests.sh
+          make -C test/async_cb clean
+          SANITIZER=address,undefined ./test/async_cb/run_tests.sh
+
+      - name: "Curl transfer threads"
+        # nlibcurl's transfers on a fixed set of host threads, a stopped
+        # title's jobs retired, with no lock; plain, under TSan and under ASan + UBSan
+        run: |
+          ./test/curl_jobs/run_tests.sh
+          make -C test/curl_jobs clean
+          SANITIZER=thread ./test/curl_jobs/run_tests.sh
+          make -C test/curl_jobs clean
+          SANITIZER=address,undefined ./test/curl_jobs/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;

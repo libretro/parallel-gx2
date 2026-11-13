@@ -14,8 +14,7 @@
 #include "Cafe/OS/libs/nsysnet/nsysnet.h"
 #include "Cafe/OS/libs/coreinit/coreinit_MEM.h"
 
-#include "util/helpers/MpscQueue.h"
-#include "Cafe/OS/common/PPCConcurrentQueue.h"
+#include "curl_jobs.h"
 #include "Common/FileStream.h"
 #include "config/ActiveSettings.h"
 
@@ -286,26 +285,78 @@ static_assert(sizeof(CURLMsg_t) <= 0xC, "sizeof(CURLMsg_t)");
 
 size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata);
 
-thread_local PPCConcurrentQueue<QueueMsg_t>* g_callerQueue;
-thread_local MpscQueue<QueueMsg_t>* g_threadQueue;
-void CurlWorkerThread(CURL_t* curl, PPCConcurrentQueue<QueueMsg_t>* callerQueue, MpscQueue<QueueMsg_t>* threadQueue)
+// An order carried out on a worker (curl_jobs.h), in the job's slot: the
+// caller's thread waits for what the worker hands it, under the scheduler
+// lock as the guest's own queues are.
+struct CurlOrder
 {
-	g_callerQueue = callerQueue;
-	g_threadQueue = threadQueue;
+	CURL_t* curl;
+	QueueOrder order;
+	uint32 arg;
+	OSThread_t* thread;
+	QueueMsg_t toCaller;
+	bool posted;
+};
 
-	const QueueMsg_t msg = threadQueue->pop();
+static CurlOrder s_orders[CURL_JOBS_SLOTS];
 
+// the slot of the order this worker carries out; -1 on the title's threads
+thread_local int t_orderSlot = -1;
+
+// to the caller, unless it is gone
+static bool PostToCaller(int slot, const QueueMsg_t& msg)
+{
+	CurlOrder& o = s_orders[slot];
+	__OSLockScheduler();
+	const bool live = curl_jobs_live(slot);
+	if (live)
+	{
+		o.toCaller = msg;
+		o.posted = true;
+		coreinit::__OSResumeThreadInternal(o.thread, 1);
+	}
+	__OSUnlockScheduler();
+	return live;
+}
+
+// a callback on the caller's thread, from the worker: its answer
+static uint32 CallOnCaller(const QueueMsg_t& msg)
+{
+	if (!PostToCaller(t_orderSlot, msg))
+		return 0;
+	return curl_jobs_await(t_orderSlot);
+}
+
+static QueueMsg_t TakeOnCaller(CurlOrder& o)
+{
+	__OSLockScheduler();
+	if (!o.posted)
+		coreinit::__OSSuspendThreadInternal(o.thread);
+	const QueueMsg_t msg = o.toCaller;
+	o.posted = false;
+	__OSUnlockScheduler();
+	return msg;
+}
+
+static uint32 RunOrderHere(CURL_t* curl, QueueOrder order, uint32 arg)
+{
+	if (order == QueueOrder_Perform)
+		return curlh_easy_perform(curl->curl);
+	if (order == QueueOrder_Pause)
+		return curlh_easy_pause(curl->curl, arg);
+	assert_dbg();
+	return 0;
+}
+
+static void CurlWorkerRun(int slot)
+{
+	CurlOrder& o = s_orders[slot];
+	t_orderSlot = slot;
 	QueueMsg_t resultMsg = {};
 	resultMsg.order = QueueOrder_Result;
-
-	if (msg.order == QueueOrder_Perform)
-		resultMsg.result = curlh_easy_perform(curl->curl);
-	else if(msg.order == QueueOrder_Pause)
-		resultMsg.result = curlh_easy_pause(curl->curl, msg.pause.bitmask);
-	else
-		assert_dbg();
-
-	callerQueue->push(resultMsg, curl->curlThread);
+	resultMsg.result = RunOrderHere(o.curl, o.order, o.arg);
+	t_orderSlot = -1;
+	PostToCaller(slot, resultMsg);
 }
 
 uint32 SendOrderToWorker(CURL_t* curl, QueueOrder order, uint32 arg1 = 0)
@@ -313,65 +364,53 @@ uint32 SendOrderToWorker(CURL_t* curl, QueueOrder order, uint32 arg1 = 0)
 	OSThread_t* currentThread = coreinit::OSGetCurrentThread();
 	curl->curlThread = currentThread;
 
-	// cemuLog_logDebug(LogType::Force, "CURRENTTHREAD: 0x{} -> {}",currentThread, order)
-
-	PPCConcurrentQueue<QueueMsg_t> callerQueue;
-	MpscQueue<QueueMsg_t> threadQueue; // the one worker thread takes from it
-	std::thread worker(CurlWorkerThread, curl, &callerQueue, &threadQueue);
-	worker.detach();
-
-	QueueMsg_t orderMsg = {};
-	orderMsg.order = order;
-
-	if (order == QueueOrder_Pause)
-		orderMsg.pause.bitmask = arg1;
-
-	threadQueue.push(orderMsg);
+	const int slot = curl_jobs_claim();
+	if (slot < 0)
+	{
+		// every slot busy: here, the callbacks called directly
+		return RunOrderHere(curl, order, arg1);
+	}
+	CurlOrder& o = s_orders[slot];
+	o.curl = curl;
+	o.order = order;
+	o.arg = arg1;
+	o.thread = currentThread;
+	o.posted = false;
+	if (!curl_jobs_queue(slot))
+	{
+		curl_jobs_release(slot);
+		return RunOrderHere(curl, order, arg1);
+	}
 
 	uint32 result;
 	while (true)
 	{
-		const QueueMsg_t msg = callerQueue.pop(currentThread);
+		const QueueMsg_t msg = TakeOnCaller(o);
 		if (msg.order == QueueOrder_ProgressCB)
 		{
-			QueueMsg_t sendMsg = {};
-			sendMsg.order = QueueOrder_CBDone;
-			sendMsg.result = PPCCoreCallback(curl->fprogress.GetMPTR(), curl->progress_client.GetMPTR(), msg.progress_cb.dltotal, msg.progress_cb.dlnow, msg.progress_cb.ultotal, msg.progress_cb.ulnow);
-			threadQueue.push(sendMsg);
+			curl_jobs_answer(slot, PPCCoreCallback(curl->fprogress.GetMPTR(), curl->progress_client.GetMPTR(), msg.progress_cb.dltotal, msg.progress_cb.dlnow, msg.progress_cb.ultotal, msg.progress_cb.ulnow));
 		}
 		else if (msg.order == QueueOrder_HeaderCB)
 		{
 			StackAllocator<char> tmp(msg.header_cb.size * msg.header_cb.nitems);
 			memcpy(tmp.GetPointer(), msg.header_cb.buffer, msg.header_cb.size * msg.header_cb.nitems);
-
-			QueueMsg_t sendMsg = {};
-			sendMsg.order = QueueOrder_CBDone;
-			sendMsg.result = PPCCoreCallback(curl->fwrite_header.GetMPTR(), tmp.GetMPTR(), msg.header_cb.size, msg.header_cb.nitems, curl->writeheader.GetMPTR());
-			threadQueue.push(sendMsg);
+			curl_jobs_answer(slot, PPCCoreCallback(curl->fwrite_header.GetMPTR(), tmp.GetMPTR(), msg.header_cb.size, msg.header_cb.nitems, curl->writeheader.GetMPTR()));
 		}
 		else if (msg.order == QueueOrder_ReadCB)
 		{
 			StackAllocator<char> tmp(msg.read_cb.size * msg.read_cb.nitems);
-
-			QueueMsg_t sendMsg = {};
-			sendMsg.order = QueueOrder_CBDone;
 			cemuLog_logDebug(LogType::Force, "QueueOrder_ReadCB size: {} nitems: {}", msg.read_cb.size, msg.read_cb.nitems);
-			sendMsg.result = PPCCoreCallback(curl->fread_func_set.GetMPTR(), tmp.GetMPTR(), msg.read_cb.size, msg.read_cb.nitems, curl->in_set.GetMPTR());
-			cemuLog_logDebug(LogType::Force, "readcb size: {}", (sint32)sendMsg.result);
-			if (sendMsg.result > 0)
-				memcpy(msg.read_cb.buffer, tmp.GetPointer(), sendMsg.result);
-
-			threadQueue.push(sendMsg);
+			const uint32 read = PPCCoreCallback(curl->fread_func_set.GetMPTR(), tmp.GetMPTR(), msg.read_cb.size, msg.read_cb.nitems, curl->in_set.GetMPTR());
+			cemuLog_logDebug(LogType::Force, "readcb size: {}", (sint32)read);
+			if ((sint32)read > 0)
+				memcpy(msg.read_cb.buffer, tmp.GetPointer(), read);
+			curl_jobs_answer(slot, read);
 		}
 		else if (msg.order == QueueOrder_WriteCB)
 		{
 			StackAllocator<char> tmp(msg.write_cb.size * msg.write_cb.nmemb);
 			memcpy(tmp.GetPointer(), msg.write_cb.buffer, msg.write_cb.size * msg.write_cb.nmemb);
-
-			QueueMsg_t sendMsg = {};
-			sendMsg.order = QueueOrder_CBDone;
-			sendMsg.result = PPCCoreCallback(curl->fwrite_func.GetMPTR(), tmp.GetMPTR(), msg.write_cb.size, msg.write_cb.nmemb, curl->out.GetMPTR());
-			threadQueue.push(sendMsg);
+			curl_jobs_answer(slot, PPCCoreCallback(curl->fwrite_func.GetMPTR(), tmp.GetMPTR(), msg.write_cb.size, msg.write_cb.nmemb, curl->out.GetMPTR()));
 		}
 		else if (msg.order == QueueOrder_Result)
 		{
@@ -379,8 +418,19 @@ uint32 SendOrderToWorker(CURL_t* curl, QueueOrder order, uint32 arg1 = 0)
 			break;
 		}
 	}
-
+	curl_jobs_release(slot);
 	return result;
+}
+
+// (already in namespace nlibcurl)
+void StartWorkers()
+{
+	curl_jobs_start(CurlWorkerRun);
+}
+
+void StopWorkers(void (*unblock)())
+{
+	curl_jobs_stop(unblock);
 }
 
 void _curl_set_default_parameters(CURL_t* curl)
@@ -966,7 +1016,7 @@ size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata)
 		return size * nitems;
 	}
 
-	if (g_callerQueue == nullptr || g_threadQueue == nullptr)
+	if (t_orderSlot < 0)
 	{
 		StackAllocator<char> tmp((uint32)(size * nitems));
 		memcpy(tmp.GetPointer(), buffer, size * nitems);
@@ -978,11 +1028,7 @@ size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata)
 	msg.header_cb.buffer = buffer;
 	msg.header_cb.size = (uint32)size;
 	msg.header_cb.nitems = (uint32)nitems;
-	g_callerQueue->push(msg, curl->curlThread);
-
-	msg = g_threadQueue->pop();
-	if (msg.order != QueueOrder_CBDone)
-		cemu_assert_suspicious();
+	msg.result = CallOnCaller(msg);
 
 #ifdef CEMU_DEBUG_ASSERT
 	char debug[500];
@@ -1004,7 +1050,7 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 
 	cemuLog_logDebug(LogType::Force, "write_callback(0x{} 0x{:x}, 0x{:x}, 0x{:08x})", (void*)ptr, size, nmemb, curl->out.GetMPTR());
 
-	if (g_callerQueue == nullptr || g_threadQueue == nullptr)
+	if (t_orderSlot < 0)
 	{
 		StackAllocator<char> tmp((uint32)(size * nmemb));
 		memcpy(tmp.GetPointer(), ptr, size * nmemb);
@@ -1017,11 +1063,7 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 	msg.write_cb.buffer = ptr;
 	msg.write_cb.size = (uint32)size;
 	msg.write_cb.nmemb = (uint32)nmemb;
-	g_callerQueue->push(msg, curl->curlThread);
-
-	msg = g_threadQueue->pop();
-	if (msg.order != QueueOrder_CBDone)
-		cemu_assert_suspicious();
+	msg.result = CallOnCaller(msg);
 
 	return msg.result;
 }
@@ -1044,7 +1086,7 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* instream)
 
 	cemuLog_logDebug(LogType::Force, "read_callback(0x{}, 0x{:x}, 0x{:x}, 0x{:08x}) [func: 0x{:x}]", (void*)buffer, size, nitems, curl->in_set.GetMPTR(), curl->fread_func_set.GetMPTR());
 
-	if (g_callerQueue == nullptr || g_threadQueue == nullptr)
+	if (t_orderSlot < 0)
 	{
 		StackAllocator<char> tmp((uint32)(size * nitems));
 		const sint32 result = PPCCoreCallback(curl->fread_func_set.GetMPTR(), tmp.GetMPTR(), (uint32)size, (uint32)nitems, curl->in_set.GetMPTR());
@@ -1059,11 +1101,7 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* instream)
 	msg.read_cb.nitems = (uint32)std::min<uint32>(nitems, 0x4000); // limit this to 16KB which is the limit in nlibcurl.rpl (Super Mario Maker crashes on level upload if the size is too big)
 
 	cemuLog_logDebug(LogType::Force, "read_callback(0x{}, 0x{:x}, 0x{:x}, 0x{:08x}) [func: 0x{:x}] PUSH", (void*)buffer, size, nitems, curl->in_set.GetMPTR(), curl->fread_func_set.GetMPTR());
-	g_callerQueue->push(msg, curl->curlThread);
-
-	msg = g_threadQueue->pop();
-	if (msg.order != QueueOrder_CBDone)
-		cemu_assert_suspicious();
+	msg.result = CallOnCaller(msg);
 
 	cemuLog_logDebug(LogType::Force, "read_callback(0x{}, 0x{:x}, 0x{:x}, 0x{:08x}) DONE Result: {}", (void*)buffer, size, nitems, curl->in_set.GetMPTR(), msg.result);
 
@@ -1076,7 +1114,7 @@ int progress_callback(void* clientp, double dltotal, double dlnow, double ultota
 	//peterBreak();
 	CURL_t* curl = (CURL_t*)clientp;
 	//int result = PPCCoreCallback(curl->fprogress.GetMPTR(), curl->progress_client.GetMPTR(), dltotal, dlnow, ultotal, ulnow);
-	if(g_callerQueue == nullptr || g_threadQueue == nullptr)
+	if (t_orderSlot < 0)
 		return PPCCoreCallback(curl->fprogress.GetMPTR(), curl->progress_client.GetMPTR(), dltotal, dlnow, ultotal, ulnow);
 
 	QueueMsg_t msg = {};
@@ -1085,11 +1123,7 @@ int progress_callback(void* clientp, double dltotal, double dlnow, double ultota
 	msg.progress_cb.dlnow = dlnow;
 	msg.progress_cb.ultotal = ultotal;
 	msg.progress_cb.ulnow = ulnow;
-	g_callerQueue->push(msg, curl->curlThread);
-
-	msg = g_threadQueue->pop();
-	if (msg.order != QueueOrder_CBDone)
-		cemu_assert_suspicious();
+	msg.result = CallOnCaller(msg);
 	
 	cemuLog_logDebug(LogType::Force, "progress_callback({:.02}, {:.02}, {:.02}, {:.02}) -> {}", dltotal, dlnow, ultotal, ulnow, msg.result);
 	return msg.result;
@@ -1526,7 +1560,8 @@ CURLcode curl_global_init_mem(uint32 flags, MEMPTR<curl_malloc_callback> malloc_
 			}
 			else if (reason == coreinit::RplEntryReason::Unloaded)
 			{
-				// todo
+				// the title's transfers hand it nothing more
+				curl_jobs_retire();
 			}
 		}
 	}s_COSnlibcurlModule;

@@ -16,6 +16,7 @@
 #include "Cafe/Account/Account.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 #include "Common/http_xfer.h"
+#include "Cafe/OS/libs/nlibcurl/nlibcurl.h"
 #include <boost/nowide/convert.hpp>
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
@@ -3745,6 +3746,8 @@ RETRO_API void retro_init()
 
 	// the network transfer thread, before anything transfers
 	http_xfer_init();
+	// and the threads a title's curl transfers run on
+	nlibcurl::StartWorkers();
 
 	LibretroAudioAPI::SetAudioCallback([](const int16_t* data, size_t frames) -> size_t {
 		if (s_audio_submission_allowed && audio_batch_cb && data && frames > 0)
@@ -6167,8 +6170,11 @@ RETRO_API void retro_deinit()
 	// lock, which the thread needs in order to exit: the frontend hangs.
 	FileCache_StopAsyncWriter();
 
-	// What would otherwise outlive this library: the network transfer
-	// thread is joined, and the crash handlers go back to the frontend's.
+	// What would otherwise outlive this library: the curl workers and the
+	// network transfer thread are joined - the transfers the workers are in
+	// ended by stopping the transfer thread - and the crash handlers go back
+	// to the frontend's.
+	nlibcurl::StopWorkers(http_xfer_deinit);
 	http_xfer_deinit();
 	ExceptionHandler_Shutdown();
 
