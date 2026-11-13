@@ -7,7 +7,7 @@
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/HW/Espresso/Debugger/Debugger.h"
-#include "Cafe/OS/RPL/rpl_symbol_storage.h"
+#include "Cafe/OS/RPL/rpl_symbols.h"
 #include "audio/IAudioAPI.h"
 #include "audio/IAudioInputAPI.h"
 #include "config/ActiveSettings.h"
@@ -673,8 +673,6 @@ namespace CafeSystem
 		logPlatformInfo();
 		cemuLog_log(LogType::Force, "Used CPU extensions: {}", g_CPUFeatures.GetCommaSeparatedExtensionList());
 		// misc systems
-		cemuLog_log(LogType::Force, "Init: rplSymbolStorage");
-		rplSymbolStorage_init();
 		// allocate memory for all SysAllocators
 		// must happen before COS module init, but also before iosu::kernel::Initialize()
 		cemuLog_log(LogType::Force, "Init: SysAllocators");

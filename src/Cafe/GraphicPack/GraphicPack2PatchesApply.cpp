@@ -2,7 +2,7 @@
 #include "Common/FileStream.h"
 #include "Cemu/PPCAssembler/ppcAssembler.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
-#include "Cafe/OS/RPL/rpl_symbol_storage.h"
+#include "Cafe/OS/RPL/rpl_symbols.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/HW/Espresso/Debugger/DebugSymbolStorage.h"
 
@@ -420,7 +420,7 @@ void PatchEntryInstruction::undoPatch()
 	uint8* patchAddr = (uint8*)memory_base + addr;
 	memcpy(patchAddr, m_dataBackup, m_length);
 	PPCRecompiler_invalidateRange(addr, addr + m_length);
-	rplSymbolStorage_removeRange(addr, m_length, RPL_STORED_SYMBOL_PATCH);
+	rpl_symbols_remove_range(addr, m_length, RPL_SYMBOL_PATCH);
 	DebugSymbolStorage::ClearRange(addr, m_length);
 }
 
@@ -434,7 +434,7 @@ bool registerU32Variable(PatchContext_t& ctx, std::string& name, uint32 value, P
 	}
 	ctx.map_values[name] = value;
 	// keep track of address symbols for the debugger
-	rplSymbolStorage_store(ctx.graphicPack->GetName().data(), name.data(), value, RPL_STORED_SYMBOL_PATCH);
+	rpl_symbols_store(std::string(ctx.graphicPack->GetName()).c_str(), name.c_str(), value, RPL_SYMBOL_PATCH);
 
 	return true;
 }

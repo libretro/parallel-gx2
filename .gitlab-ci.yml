@@ -630,6 +630,22 @@ test-host-fs:
     - make -C test/host_fs clean
     - SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+# The C (C89) the console's addresses are named in, with no lock: RPL exports
+# and imports, trampolines and graphic pack patches.
+test-rpl-symbols:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/rpl_symbols/run_tests.sh
+    - make -C test/rpl_symbols clean
+    - SANITIZER=thread ./test/rpl_symbols/run_tests.sh
+    - make -C test/rpl_symbols clean
+    - SANITIZER=address,undefined ./test/rpl_symbols/run_tests.sh
+
 # The C (C89) Miiverse's and the console services' payloads are base64
 # encoded and decoded in, decoding as Cemu always has.
 test-base64:

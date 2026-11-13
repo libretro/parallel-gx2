@@ -4,7 +4,7 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
-#include "Cafe/OS/RPL/rpl_symbol_storage.h"
+#include "Cafe/OS/RPL/rpl_symbols.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/HW/Espresso/Debugger/Debugger.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
@@ -158,7 +158,7 @@ MPTR _generateTrampolineFarJump(RPLModule* rplLoaderContext, MPTR destAddr)
 	// BCTR
 	memory_writeU32(trampolineAddr + 0xC, 0x4E800420);
 	// if the destination is a known symbol, create a proxy (duplicate) symbol at the jump
-	rplSymbolStorage_createJumpProxySymbol(trampolineAddr, destAddr);
+	rpl_symbols_jump_proxy(trampolineAddr, destAddr);
 	rplLoaderContext->trampolineMap.emplace(destAddr, trampolineAddr);
 	return trampolineAddr;
 }
@@ -781,7 +781,7 @@ uint32 rpl_mapHLEImport(RPLModule* rplLoaderContext, const char* rplName, const 
 		newImport.address = codeAddr;
 		list_mappedFunctionImports.push_back(newImport);
 		// remember in symbol storage for debugger
-		rplSymbolStorage_store(libName, funcName, codeAddr);
+		rpl_symbols_store(libName, funcName, codeAddr, 0);
 		return codeAddr;
 	}
 	else
@@ -816,7 +816,7 @@ uint32 rpl_mapHLEImport(RPLModule* rplLoaderContext, const char* rplName, const 
 	newImport.address = codeStart;
 	list_mappedFunctionImports.push_back(newImport);
 	// remember in symbol storage for debugger
-	rplSymbolStorage_store(libName, funcName, codeStart);
+	rpl_symbols_store(libName, funcName, codeStart, 0);
 	// return address of code start
 	return codeStart;
 }
@@ -1736,7 +1736,7 @@ void RPLLoader_LoadSectionDebugSymbols(RPLModule* rplLoaderContext, RPLFileSecti
 			char* symbolName = (char*)strtabData + nameOffset;
 			if (sym->info == 0x12)
 			{
-				rplSymbolStorage_store(rplLoaderContext->moduleName.c_str(), symbolName, sym->symbolAddress);
+				rpl_symbols_store(rplLoaderContext->moduleName.c_str(), symbolName, sym->symbolAddress, 0);
 			}
 		}
 	}
@@ -1802,7 +1802,7 @@ void RPLLoader_UnloadModule(RPLDependency* rplDependency, bool skipPPCCalls)
 	}
 	rpl->heapTrampolineArea.releaseAll();
 
-	// todo - remove from rplSymbolStorage_store
+	// todo - remove from rpl_symbols_store
 
 	// unload temp region
 	if (rpl->tempRegionPtr)
@@ -2467,7 +2467,7 @@ void RPLLoader_UnloadAll()
 	}
 	s_rplDependencyList.clear();
 	// unload all remaining symbols
-	rplSymbolStorage_unloadAll();
+	rpl_symbols_clear();
 	// free all code imports
 	g_heapTrampolineArea.releaseAll();
 	list_mappedFunctionImports.clear();

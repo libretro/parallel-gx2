@@ -469,6 +469,17 @@ jobs:
           make -C test/host_fs clean
           SANITIZER=address,undefined ./test/host_fs/run_tests.sh
 
+      - name: "Symbol names"
+        # the C (C89) the console's addresses are named in, with no lock:
+        # RPL exports and imports, trampolines and graphic pack patches;
+        # plain, under TSan and under ASan + UBSan
+        run: |
+          ./test/rpl_symbols/run_tests.sh
+          make -C test/rpl_symbols clean
+          SANITIZER=thread ./test/rpl_symbols/run_tests.sh
+          make -C test/rpl_symbols clean
+          SANITIZER=address,undefined ./test/rpl_symbols/run_tests.sh
+
       - name: "Base64"
         # the C (C89) Miiverse's and the console services' payloads are
         # encoded and decoded in, decoding as Cemu always has; plain and

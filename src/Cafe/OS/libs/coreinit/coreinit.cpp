@@ -1,6 +1,6 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Common/SysAllocator.h"
-#include "Cafe/OS/RPL/rpl_symbol_storage.h"
+#include "Cafe/OS/RPL/rpl_symbols.h"
 
 #include "Cafe/OS/libs/coreinit/coreinit_Misc.h"
 
@@ -105,10 +105,10 @@ void DebugLogStackTrace(OSThread_t* thread, MPTR sp)
 		uint32 returnAddress = 0;
 		returnAddress = memory_readU32(nextStackPtr + 4);
 
-		RPLStoredSymbol* symbol = rplSymbolStorage_getByClosestAddress(returnAddress);
+		const rpl_symbol_t* symbol = rpl_symbols_closest(returnAddress);
 
 		if(symbol)
-			cemuLog_log(LogType::Force, fmt::format("SP {:08x} ReturnAddr {:08x}   ({}.{}+0x{:x})", nextStackPtr, returnAddress, (const char*)symbol->libName, (const char*)symbol->symbolName, returnAddress - symbol->address));
+			cemuLog_log(LogType::Force, fmt::format("SP {:08x} ReturnAddr {:08x}   ({}.{}+0x{:x})", nextStackPtr, returnAddress, symbol->lib, symbol->name, returnAddress - symbol->address));
 		else
 			cemuLog_log(LogType::Force, fmt::format("SP {:08x} ReturnAddr {:08x}", nextStackPtr, returnAddress));
 
