@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <new>
 #include <type_traits>
 
 #include "util/helpers/EventWake.h"
@@ -33,6 +34,8 @@ public:
 
 	// Takes the oldest item if there is one; never waits
 	bool peek2(T& item) { return lf_ring_pop(&m_ring, &item); }
+	// The same into raw storage, for a T with no default constructor
+	bool peek_raw(void* item) { return lf_ring_pop(&m_ring, item); }
 
 	// Takes the oldest item, asleep until there is one
 	void pop(T& item)
@@ -71,4 +74,40 @@ private:
 	alignas(8) unsigned char m_cells[N * LF_RING_STRIDE(sizeof(T))]{};
 	lf_ring_t m_ring;
 	EventWake m_wake;
+};
+
+#include "util/helpers/MpscList.h"
+
+// Many threads hand items to one, which takes them all at once (TakeAll),
+// as MpscList does, but through a FixedQueue: nothing allocated while fewer
+// than N wait. Past that, the rest go to an MpscList, which allocates, so
+// none is lost; TakeAll takes the ring's first, then those, so items are in
+// order only while the ring has room.
+template<typename T, size_t N = 1024>
+class FixedList
+{
+public:
+	FixedList() = default;
+	FixedList(const FixedList&) = delete;
+	FixedList& operator=(const FixedList&) = delete;
+
+	void Push(const T& item)
+	{
+		if (!m_ring.push(item))
+			m_overflow.Push(T(item));
+	}
+
+	// Calls fn for everything pushed so far; of one thread at a time
+	template<typename TFn>
+	void TakeAll(TFn fn)
+	{
+		alignas(T) unsigned char raw[sizeof(T)];
+		while (m_ring.peek_raw(raw))
+			fn(std::move(*std::launder(reinterpret_cast<T*>(raw))));
+		m_overflow.TakeAll(fn);
+	}
+
+private:
+	FixedQueue<T, N> m_ring;
+	MpscList<T> m_overflow;
 };

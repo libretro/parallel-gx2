@@ -1,5 +1,5 @@
 #pragma once
-#include "util/helpers/MpscList.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/helpers/FixedQueue.h"
 #include "util/helpers/MpmcQueue.h"
 
@@ -72,7 +72,7 @@ private:
 	std::atomic_bool m_stopCacheStoreThread{ false };
 
 	std::unordered_set<PipelineHash, PipelineHash::HashFunc> m_pipelineIsCached;
-	MpscList<PipelineHash> m_pipelinesLoaded; // from the compile threads, see TakeLoadedHashes
+	FixedList<PipelineHash, 4096> m_pipelinesLoaded; // from the compile threads, see TakeLoadedHashes
 	void TakeLoadedHashes();
 	class FileCache* s_cache;
 

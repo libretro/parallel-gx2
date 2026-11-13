@@ -1673,9 +1673,9 @@ void LibretroInitProgress(const char* stage)
 // a priority and a duration and is what a modern frontend wants; the old
 // SET_MESSAGE is a frame count, so it is converted at the 60 fps the interface
 // assumes, and is all an older one understands.
-static void libretro_show_message(unsigned level, unsigned durationMs, const std::string& text)
+static void libretro_show_message(unsigned level, unsigned durationMs, const char* text)
 {
-	libretro_log(level >= RETRO_LOG_ERROR ? RETRO_LOG_ERROR : RETRO_LOG_INFO, "%s\n", text.c_str());
+	libretro_log(level >= RETRO_LOG_ERROR ? RETRO_LOG_ERROR : RETRO_LOG_INFO, "%s\n", text);
 
 	if (!environ_cb)
 		return;
@@ -1684,7 +1684,7 @@ static void libretro_show_message(unsigned level, unsigned durationMs, const std
 	if (environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &version) && version >= 1)
 	{
 		struct retro_message_ext msg = {};
-		msg.msg = text.c_str();
+		msg.msg = text;
 		msg.duration = durationMs;
 		msg.priority = 3;
 		msg.level = (enum retro_log_level)level;
@@ -1696,9 +1696,14 @@ static void libretro_show_message(unsigned level, unsigned durationMs, const std
 	}
 
 	struct retro_message msg = {};
-	msg.msg = text.c_str();
+	msg.msg = text;
 	msg.frames = (unsigned)(durationMs * s_output_fps / 1000);
 	environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+}
+
+static void libretro_show_message(unsigned level, unsigned durationMs, const std::string& text)
+{
+	libretro_show_message(level, durationMs, text.c_str());
 }
 
 // Where mlc01 lives, decided in libretro_init_paths and applied after the
@@ -7146,7 +7151,7 @@ RETRO_API void retro_run()
 	H264::FrameTick();
 	// Cemu's notifications, the error viewer's text among them, from whatever
 	// thread they came from, to the frontend's messages here on its own
-	LatteOverlay_takeNotifications([](const std::string& text, sint32 durationMs) {
+	LatteOverlay_takeNotifications([](const char* text, sint32 durationMs) {
 		libretro_show_message(RETRO_LOG_INFO, (unsigned)std::max<sint32>(durationMs, 1000), text);
 	});
 

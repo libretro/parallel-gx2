@@ -12,18 +12,20 @@ void LatteOverlay_pushNotification(const std::string& text, sint32 duration);
 template<typename TFn>
 void LatteOverlay_takeNotifications(TFn fn);
 
-#include "util/helpers/MpscList.h"
+#include "util/helpers/FixedQueue.h"
 
+// Copied in whole: nothing allocated while fewer than 64 wait. A longer text
+// is cut short.
 struct LatteOverlayNotification
 {
-	std::string text;
+	char text[256];
 	sint32 duration;
 };
 
-MpscList<LatteOverlayNotification>& LatteOverlay_notifications();
+FixedList<LatteOverlayNotification, 64>& LatteOverlay_notifications();
 
 template<typename TFn>
 void LatteOverlay_takeNotifications(TFn fn)
 {
-	LatteOverlay_notifications().TakeAll([&](LatteOverlayNotification&& n) { fn(n.text, n.duration); });
+	LatteOverlay_notifications().TakeAll([&](LatteOverlayNotification&& n) { fn((const char*)n.text, n.duration); });
 }

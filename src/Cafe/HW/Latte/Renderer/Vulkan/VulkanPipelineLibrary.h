@@ -4,7 +4,7 @@
 #include <memory>
 #include <vulkan/vulkan.h>
 
-#include "util/helpers/MpscList.h"
+#include "util/helpers/FixedQueue.h"
 
 // Graphics pipeline libraries (VK_EXT_graphics_pipeline_library,
 // docs/SHADER-STUTTER.md M2): a pipeline as four parts, each compiled once
@@ -100,5 +100,5 @@ private:
 	Slot* FindSlot(VulkanPipelineLibraryPart part, uint64 key) const;
 	std::unique_ptr<Slot[]> m_slots[VULKAN_PIPELINE_LIBRARY_PARTS];
 	std::atomic<size_t> m_count[VULKAN_PIPELINE_LIBRARY_PARTS];
-	MpscList<VkPipeline> m_adopted;
+	FixedList<VkPipeline> m_adopted;
 };

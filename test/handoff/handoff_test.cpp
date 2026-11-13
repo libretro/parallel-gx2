@@ -46,6 +46,9 @@
 //    lose none and keep none they dropped, and an owner's destruction hands
 //    each remaining one over once, even as their destructors remove them
 //    from it and from the other bags;
+//  - FixedList (the renderer's destruction requests, the pipeline cache's
+//    loaded hashes and libraries, the overlay's notifications): every item
+//    taken once, past its ring too;
 //  - FixedQueue and MpmcQueue (the GX2 event, thread deallocator, IOSU and
 //    pipeline cache writer queues; the two pipeline compile pools): every
 //    item taken exactly once, each producer's in order where promised, a pop
@@ -1120,6 +1123,59 @@ static void TestFixedQueue()
 	}
 }
 
+// FixedList (the Vulkan renderer's destruction requests, the pipeline cache's
+// loaded hashes and adopted libraries, the overlay's notifications): several
+// threads pushing past its ring at once, each item taken once - the ring's
+// and the overflow's - for a type with no default constructor too
+static void TestFixedList()
+{
+	struct Item
+	{
+		Item(int p, int i) : p(p), i(i) {}
+		int p, i;
+	};
+	FixedList<Item, 64> list;
+	constexpr int kProducers = 4, kItems = 30000;
+	std::atomic<int> done{0};
+	std::vector<std::thread> producers;
+	for (int p = 0; p < kProducers; p++)
+		producers.emplace_back([&, p] {
+			for (int i = 0; i < kItems; i++)
+				list.Push(Item(p, i));
+			done.fetch_add(1);
+		});
+	std::vector<uint8_t> seen((size_t)kProducers * kItems, 0);
+	bool twice = false, bad = false;
+	int got = 0;
+	auto take = [&] {
+		list.TakeAll([&](Item&& item) {
+			if (item.p < 0 || item.p >= kProducers || item.i < 0 || item.i >= kItems)
+			{
+				bad = true;
+				return;
+			}
+			uint8_t& s = seen[(size_t)item.p * kItems + item.i];
+			twice = twice || s;
+			s = 1;
+			got++;
+		});
+	};
+	while (done.load() < kProducers)
+		take();
+	for (auto& t : producers)
+		t.join();
+	take();
+	CHECK(!bad && !twice);
+	CHECK(got == kProducers * kItems);
+	// while the ring has room, in order
+	for (int i = 0; i < 64; i++)
+		list.Push(Item(0, i));
+	int next = 0;
+	bool ordered = true;
+	list.TakeAll([&](Item&& item) { ordered = ordered && item.i == next++; });
+	CHECK(ordered && next == 64);
+}
+
 static void TestMpmcQueue()
 {
 	// Several consumers, items pushed both while they keep up and in bursts
@@ -1798,6 +1854,7 @@ int main()
 	TestLogFileSink();
 	TestSeqlockValue();
 	TestMpscList();
+	TestFixedList();
 	TestVkQueueLock();
 	TestAudioDevicesGate();
 	TestAtomicPageSet();

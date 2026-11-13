@@ -382,7 +382,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 }
 
 // The set is the GPU thread's alone; the compile threads loading the cache
-// hand it what they loaded through an MpscList instead of a lock on it
+// hand it what they loaded through a FixedList instead of a lock on it
 void VulkanPipelineStableCache::TakeLoadedHashes()
 {
 	m_pipelinesLoaded.TakeAll([this](PipelineHash&& hash) { m_pipelineIsCached.emplace(hash); });

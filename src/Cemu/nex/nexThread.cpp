@@ -3,14 +3,14 @@
 #include "nexThread.h"
 
 #include <atomic>
-#include "util/helpers/MpscList.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/helpers/EventWake.h"
 
 #include "nexWait.h"
 
 // Services handed to the nex thread, from whichever thread registers them: no
 // lock, the nex thread takes them all at the top of each pass
-static MpscList<nexService*> s_queuedServices;
+static FixedList<nexService*, 64> s_queuedServices;
 static std::atomic<uint32> s_queuedServiceCount{0};
 static ImmortalEventWake s_servicesWake; // the nex thread with no services sleeps on it
 

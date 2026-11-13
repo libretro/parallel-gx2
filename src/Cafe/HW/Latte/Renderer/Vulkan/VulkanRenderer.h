@@ -14,7 +14,7 @@
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/IdleWait.h"
 #include "libretro/LibretroViews.h"
-#include "util/helpers/MpscList.h"
+#include "util/helpers/FixedQueue.h"
 #include "util/containers/flat_hash_map.hpp"
 #include "util/containers/robin_hood.h"
 
@@ -252,10 +252,11 @@ public:
 	void ProcessDestructionQueue();
 
 	// Released from the GPU thread and the pipeline compile threads, through
-	// an MpscList; ProcessDestructionQueue (the GPU thread) takes them into
-	// the vector, which is its alone. No lock either side - a spinlock both
-	// took before. The count is for the overlay.
-	MpscList<VKRDestructibleObject*> m_destructionRequests;
+	// a FixedList - nothing allocated while fewer than 4096 wait;
+	// ProcessDestructionQueue (the GPU thread) takes them into the vector,
+	// which is its alone. No lock either side - a spinlock both took before.
+	// The count is for the overlay.
+	FixedList<VKRDestructibleObject*, 4096> m_destructionRequests;
 	std::vector<VKRDestructibleObject*> m_destructionQueue;
 	std::atomic<uint32> m_destructionQueueSize{0};
 
