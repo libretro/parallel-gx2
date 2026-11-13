@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/helpers/PoolNew.h"
+#include "util/helpers/u64_map.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "util/math/vector2.h"
 
@@ -246,7 +247,11 @@ class VKRObjectSampler : public VKRDestructibleObject, public PoolNew<VKRObjectS
 
 	VkSampler GetSampler() const { return m_sampler; }
   private:
-	static std::unordered_map<uint64, VKRObjectSampler*> s_samplerCache;
+	// the GPU thread's: a fixed table (u64_map.h), nothing allocated for a
+	// new sampler. Full, a new one is made uncached
+	static constexpr size_t kSamplerCacheSlots = 4096;
+	static u64_map_slot_t s_samplerCacheSlots[kSamplerCacheSlots];
+	static u64_map_t s_samplerCache;
 	VkSampler m_sampler{ VK_NULL_HANDLE };
 	uint64 m_hash;
 };

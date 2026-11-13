@@ -281,6 +281,9 @@ VulkanRenderer::VulkanRenderer(VkInstance instance, VkPhysicalDevice physDevice,
 	cemuLog_log(LogType::Force, "------- Init Vulkan graphics backend (libretro shared device) -------");
 
 	m_useExternalDevice = true;
+	// room for what a scene change destroys at once, made now rather than
+	// while a game plays
+	m_destructionQueue.reserve(4096);
 
 	// Use externally provided objects
 	m_instance = instance;
@@ -2953,17 +2956,23 @@ void VulkanRenderer::ReleaseDestructibleObject(VKRDestructibleObject* destructib
 void VulkanRenderer::ProcessDestructionQueue()
 {
 	m_destructionRequests.TakeAll([this](VKRDestructibleObject*&& obj) { m_destructionQueue.emplace_back(obj); });
-	for (auto it = m_destructionQueue.begin(); it != m_destructionQueue.end();)
+	// in one pass, those still in use moved up over those destroyed, where
+	// erasing each in place moved every one after it: the vector keeps its
+	// room, so past its peak nothing more is allocated. A delete only pushes
+	// to m_destructionRequests, never to this
+	size_t kept = 0;
+	for (size_t i = 0; i < m_destructionQueue.size(); i++)
 	{
-		if ((*it)->canDestroy())
+		VKRDestructibleObject* obj = m_destructionQueue[i];
+		if (obj->canDestroy())
 		{
-			delete (*it);
-			it = m_destructionQueue.erase(it);
+			delete obj;
 			m_destructionQueueSize.fetch_sub(1, std::memory_order_relaxed);
-			continue;
 		}
-		++it;
+		else
+			m_destructionQueue[kept++] = obj;
 	}
+	m_destructionQueue.resize(kept);
 }
 
 VkDescriptorSetInfo::~VkDescriptorSetInfo()
@@ -3578,7 +3587,8 @@ static uint64 CalcHashSamplerCreateInfo(const VkSamplerCreateInfo& info)
 	return h;
 }
 
-std::unordered_map<uint64, VKRObjectSampler*> VKRObjectSampler::s_samplerCache;
+u64_map_slot_t VKRObjectSampler::s_samplerCacheSlots[kSamplerCacheSlots];
+u64_map_t VKRObjectSampler::s_samplerCache = {VKRObjectSampler::s_samplerCacheSlots, kSamplerCacheSlots, 0};
 
 VKRObjectSampler::VKRObjectSampler(VkSamplerCreateInfo* samplerInfo)
 {
@@ -3594,9 +3604,10 @@ VKRObjectSampler::~VKRObjectSampler()
 	vkDestroySampler(VulkanRenderer::GetInstance()->GetLogicalDevice(), m_sampler, nullptr);
 	performanceMonitor.vk.numSamplers.decrement();
 	// remove from cache
-	auto it = s_samplerCache.find(m_hash);
-	if(it != s_samplerCache.end())
-		s_samplerCache.erase(it);
+	// this one's entry only: an uncached one with the same hash leaves the
+	// cached one be
+	if (u64_map_get(&s_samplerCache, m_hash) == this)
+		u64_map_take(&s_samplerCache, m_hash);
 }
 
 void VKRObjectSampler::RefCountReachedZero()
@@ -3608,14 +3619,11 @@ VKRObjectSampler* VKRObjectSampler::GetOrCreateSampler(VkSamplerCreateInfo* samp
 {
 	auto* vulkanRenderer = VulkanRenderer::GetInstance();
 	uint64 hash = CalcHashSamplerCreateInfo(*samplerInfo);
-	auto it = s_samplerCache.find(hash);
-	if (it != s_samplerCache.end())
-	{
-		auto* sampler = it->second;
+	if (auto* sampler = static_cast<VKRObjectSampler*>(u64_map_get(&s_samplerCache, hash)))
 		return sampler;
-	}
 	auto* sampler = new VKRObjectSampler(samplerInfo);
-	s_samplerCache[hash] = sampler;
+	if (!u64_map_put(&s_samplerCache, hash, sampler))
+		cemuLog_logDebugOnce(LogType::Force, "Vulkan sampler cache full: samplers made uncached");
 	return sampler;
 }
 
@@ -3623,18 +3631,17 @@ void VKRObjectSampler::DestroyCache()
 {
 	// assuming all other objects which depend on vkSampler are destroyed, this cache should also have been emptied already
 	// but just to be sure lets still clear the cache
-	cemu_assert_debug(s_samplerCache.empty());
-	// Emptied before the deletes, not after: ~VKRObjectSampler erases its own
-	// entry from this map, which invalidates the iterator the loop is standing
-	// on and leaves it walking freed nodes. Only reachable when the cache is
-	// still populated at teardown, which is why it never fires in a run that
-	// ends by process exit.
-	auto cache = std::move(s_samplerCache);
-	s_samplerCache.clear();
-	for(auto& sampler : cache)
+	cemu_assert_debug(s_samplerCache.count == 0);
+	// each taken out before its delete, whose own take then finds nothing
+	size_t cursor = 0;
+	uint64 hash;
+	while (void* p = u64_map_next(&s_samplerCache, &cursor, &hash))
 	{
-		cemu_assert_debug(sampler.second->m_refCount == 0);
-		delete sampler.second;
+		auto* sampler = static_cast<VKRObjectSampler*>(p);
+		u64_map_take(&s_samplerCache, hash);
+		cursor = 0;
+		cemu_assert_debug(sampler->m_refCount == 0);
+		delete sampler;
 	}
 }
 

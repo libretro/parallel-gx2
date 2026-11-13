@@ -78,6 +78,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/async_cb.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_jobs.c \
 	$(CORE_DIR)/src/util/helpers/lf_ring.c \
+	$(CORE_DIR)/src/util/helpers/u64_map.c \
 	$(CORE_DIR)/src/util/helpers/obj_pool.c \
 	$(CORE_DIR)/src/util/IniParser/ini_file.c \
 	$(CORE_DIR)/src/util/xml/xml_tree.c \

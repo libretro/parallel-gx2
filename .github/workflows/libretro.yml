@@ -553,6 +553,14 @@ jobs:
           make -C test/vkr_refs clean
           SANITIZER=address,undefined ./test/vkr_refs/run_tests.sh
 
+      - name: "Fixed map"
+        # the table behind the Vulkan sampler cache, against a plain list;
+        # plain and under ASan + UBSan
+        run: |
+          ./test/u64_map/run_tests.sh
+          make -C test/u64_map clean
+          SANITIZER=address,undefined ./test/u64_map/run_tests.sh
+
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
         # it once called a GDB stub the core never makes, or ran forever;
