@@ -1,9 +1,10 @@
 /* coreinit's tables without locks: the virtual address range a title
  * allocates from (src/Cafe/OS/libs/coreinit/virt_range.c) - the lowest
  * free pages that fit, freed once and only where an allocation begins, a
- * range across words given back whole when another takes part of it - and
- * the FSA clients (fsa_clients.c) - found by handle, a closed one not
- * mistaken for the next in its slot, taken out once. Under TSan and ASan,
+ * range across words given back whole when another takes part of it, and
+ * in 32 byte pages as nn_fp's IPC buffers take it - and the FSA clients
+ * (fsa_clients.c) - found by handle, a closed one not mistaken for the
+ * next in its slot, taken out once. Under TSan and ASan,
  * threads allocate and free at once and none is handed pages another
  * holds. C89, as the C89 lane builds it. */
 
@@ -248,12 +249,46 @@ static void test_fsa_threads(void)
    CHECK(retro_atomic_load_acquire_int(&s_removed) == 300);
 }
 
+/* nn_fp's IPC buffers: 0x12000 bytes of the console's memory in 32 byte
+ * pages, sizes of a few bytes to a few KB, each aligned to 32 and inside,
+ * none overlapping, and all of it there again once given back */
+#define FP_BASE 0x10001000u
+#define FP_SIZE 0x12000u
+static void test_fp_buffers(void)
+{
+   static uint32_t got[FP_SIZE / 32];
+   static unsigned char owner[FP_SIZE / 32];
+   int n = 0, i;
+   uint32_t size = 1;
+   virt_range_init(&s_r, FP_BASE, FP_SIZE, 32);
+   memset(owner, 0, sizeof(owner));
+   for (;;)
+   {
+      uint32_t a = virt_range_alloc(&s_r, size, 32), p;
+      if (!a)
+         break;
+      CHECK(a >= FP_BASE && a + size <= FP_BASE + FP_SIZE && !(a & 31));
+      for (p = (a - FP_BASE) / 32; p < (a - FP_BASE + size + 31) / 32; p++)
+      {
+         CHECK(!owner[p]);
+         owner[p] = 1;
+      }
+      got[n++] = a;
+      size = size * 7 % 3001 + 1;
+   }
+   CHECK(n > 10);
+   for (i = 0; i < n; i++)
+      CHECK(virt_range_free(&s_r, got[i]));
+   CHECK(virt_range_alloc(&s_r, FP_SIZE, 32) == FP_BASE);
+}
+
 int main(void)
 {
    test_basic();
    test_words();
    test_race();
    test_threads();
+   test_fp_buffers();
    test_fsa_clients();
    test_fsa_threads();
    if (failures)

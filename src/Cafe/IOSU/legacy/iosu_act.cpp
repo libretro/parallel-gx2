@@ -26,7 +26,6 @@ static_assert(sizeof(NexToken) == 0x25C);
 struct  
 {
 	bool isInitialized;
-	std::mutex actMutex;
 }iosuAct = { };
 
 // account manager
@@ -405,7 +404,7 @@ namespace iosu
 
 		actAccountData_t* GetAccountBySlotNo(uint8 slotNo)
 		{
-			// only call this while holding actMutex
+			// the accounts are not changed while a title runs, so they are read with no lock
 			uint8 accIndex;
 			if(slotNo == iosu::act::ACT_SLOT_CURRENT)
 			{
@@ -423,50 +422,6 @@ namespace iosu
 			return &_actAccountData[accIndex];
 		}
 
-		// has ownership of account data
-		// while any thread has a LockedAccount in non-null state no other thread can access the account data
-		class LockedAccount
-		{
-		  public:
-			LockedAccount(uint8 slotNo)
-			{
-				iosuAct.actMutex.lock();
-				m_account = GetAccountBySlotNo(slotNo);
-				if(!m_account)
-					iosuAct.actMutex.unlock();
-			}
-
-			~LockedAccount()
-			{
-				if(m_account)
-					iosuAct.actMutex.unlock();
-			}
-
-			void Release()
-			{
-				if(m_account)
-					iosuAct.actMutex.unlock();
-				m_account = nullptr;
-			}
-
-			actAccountData_t* operator->()
-			{
-				return m_account;
-			}
-
-			actAccountData_t& operator*()
-			{
-				return *m_account;
-			}
-
-			LockedAccount(const LockedAccount&) = delete;
-			LockedAccount& operator=(const LockedAccount&) = delete;
-
-			operator bool() const { return m_account != nullptr; }
-
-		  private:
-			actAccountData_t* m_account{nullptr};
-		};
 
 		bool getPrincipalId(uint8 slot, uint32* principalId)
 		{
@@ -556,7 +511,7 @@ namespace iosu
 		{
 			if (accountSlot != ACT_SLOT_CURRENT)
 				return ACTResult_InvalidValue;
-			LockedAccount account(accountSlot);
+			const actAccountData_t* account = GetAccountBySlotNo(accountSlot);
 			if (!account)
 				return ACTResult_AccountDoesNotExist;
 			if (!account->IsNetworkAccount())
@@ -587,7 +542,7 @@ namespace iosu
 			static constexpr size_t IndependentTokenMaxLength = 512+1; // 512 bytes + null terminator
 			if(accountSlot != ACT_SLOT_CURRENT)
 				return ACTResult_InvalidValue;
-			LockedAccount account(accountSlot);
+			const actAccountData_t* account = GetAccountBySlotNo(accountSlot);
 			if (!account)
 				return ACTResult_AccountDoesNotExist;
 			if (!account->IsNetworkAccount())
@@ -597,7 +552,6 @@ namespace iosu
 				return ACTResult_OutOfRange;
 			NAPI::AuthInfo authInfo;
 			NAPI::NAPI_MakeAuthInfoFromCurrentAccount(authInfo);
-			account.Release();
 			NAPI::ACTGetIndependentTokenResult tokenResult = NAPI::ACT_GetIndependentToken_WithCache(authInfo, titleId, titleVersion, clientId);
 			uint32 returnCode = 0;
 			if (tokenResult.isValid())

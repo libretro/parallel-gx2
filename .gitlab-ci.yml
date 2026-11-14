@@ -872,6 +872,22 @@ test-hid-portal:
     - make -C test/hid_portal clean
     - SANITIZER=thread ./test/hid_portal/run_tests.sh
 
+# What the friend server notifies goes from the nex thread to the service
+# thread's readers with no lock.
+test-note-log:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/note_log/run_tests.sh
+    - make -C test/note_log clean
+    - SANITIZER=address,undefined ./test/note_log/run_tests.sh
+    - make -C test/note_log clean
+    - SANITIZER=thread ./test/note_log/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.
@@ -1165,6 +1181,17 @@ test-title-lifecycle:
     GIT_SUBMODULE_STRATEGY: none
   script:
     - ./tools/check_title_lifecycle.sh
+
+# No mutex, condition variable or lock guard in a file that has none now,
+# and the list of those that still do only shrinks.
+test-host-locks:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_host_locks.sh
 
 # An idle GPU thread sleeps until the CPU submits, and the waits between
 # loading a title and its first frame sleep until notified, not by the clock.

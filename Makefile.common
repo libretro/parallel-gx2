@@ -83,6 +83,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/util/helpers/pin_table.c \
 	$(CORE_DIR)/src/Cafe/HW/Espresso/Recompiler/rec_store.c \
 	$(CORE_DIR)/src/util/helpers/mailbox.c \
+	$(CORE_DIR)/src/util/helpers/note_log.c \
 	$(CORE_DIR)/src/libretro/libretro_mic.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/fsa_clients.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/virt_range.c \

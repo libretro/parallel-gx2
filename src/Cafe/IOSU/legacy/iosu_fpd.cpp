@@ -13,66 +13,69 @@
 #include "Common/socket.h"
 #include "Common/CafeString.h"
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
+#include "util/helpers/note_log.h"
 
 
 namespace iosu
 {
 	namespace fpd
 	{
-		using NotificationRunningId = uint64;
+		using NotificationRunningId = int;
 
 		struct NotificationEntry
 		{
-			NotificationEntry(uint64 index, NexFriends::NOTIFICATION_TYPE type, uint32 pid) : timestamp(std::chrono::steady_clock::now()), runningId(index), type(type), pid(pid) {}
-			std::chrono::steady_clock::time_point timestamp;
-			NotificationRunningId runningId;
 			NexFriends::NOTIFICATION_TYPE type;
 			uint32 pid;
 		};
 
+		// What the friend server notified, posted by the nex thread alone and
+		// read by the service thread, with no lock; a notification older than
+		// 10 seconds is passed over
 		class
 		{
 		  public:
-			void TrackNotification(NexFriends::NOTIFICATION_TYPE type, uint32 pid)
+			void Reset()
 			{
-				std::unique_lock _l(m_mtxNotificationQueue);
-				m_notificationQueue.emplace_back(m_notificationQueueIndex++, type, pid);
+				note_log_init(&m_log);
 			}
 
-			void RemoveExpired()
+			void TrackNotification(NexFriends::NOTIFICATION_TYPE type, uint32 pid)
 			{
-				// remove entries older than 10 seconds
-				std::chrono::steady_clock::time_point expireTime = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-				std::erase_if(m_notificationQueue, [expireTime](const auto& notification) {
-					return notification.timestamp < expireTime;
-				});
+				const uint64 now = NowMs();
+				int32_t w[NOTE_LOG_WORDS] = {(int32_t)type, (int32_t)pid, (int32_t)(uint32)now, (int32_t)(uint32)(now >> 32)};
+				note_log_post(&m_log, w);
 			}
 
 			std::optional<NotificationEntry> GetNextNotification(NotificationRunningId& previousRunningId)
 			{
-				std::unique_lock _l(m_mtxNotificationQueue);
-				auto it = std::lower_bound(m_notificationQueue.begin(), m_notificationQueue.end(), previousRunningId, [](const auto& notification, const auto& runningId) {
-					return notification.runningId <= runningId;
-				});
-				size_t itIndex = it - m_notificationQueue.begin();
-				if(it == m_notificationQueue.end())
-					return std::nullopt;
-				previousRunningId = it->runningId;
-				return *it;
+				const uint64 expired = NowMs() - 10000;
+				int32_t w[NOTE_LOG_WORDS];
+				while (note_log_next(&m_log, &previousRunningId, w))
+				{
+					const uint64 at = (uint64)(uint32)w[2] | ((uint64)(uint32)w[3] << 32);
+					if (at < expired)
+						continue;
+					return NotificationEntry{(NexFriends::NOTIFICATION_TYPE)w[0], (uint32)w[1]};
+				}
+				return std::nullopt;
 			}
 
 		  private:
-			std::vector<NotificationEntry> m_notificationQueue;
-			std::mutex m_mtxNotificationQueue;
-			std::atomic_uint64_t m_notificationQueueIndex{1};
+			static uint64 NowMs()
+			{
+				return (uint64)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() + 10000;
+			}
+
+			note_log_t m_log{};
 		}g_NotificationQueue;
 
 		struct
 		{
 			bool isThreadStarted;
 			bool isInitialized2;
+			// the service thread's alone, but for what the nex thread notifies
 			NexFriends* nexFriendSession;
-			std::mutex mtxFriendSession;
+			std::atomic<NexFriends*> notifyingSession;
 			// session state
 			std::atomic_bool sessionStarted{false};
 			// current state
@@ -85,11 +88,13 @@ namespace iosu
 			if(!GetConfig().notification.friends)
 				return;
 			std::string message;
+			// on the nex thread, which the session stops before it goes
+			NexFriends* session = g_fpd.notifyingSession.load(std::memory_order_acquire);
 			if(type == NexFriends::NOTIFICATION_TYPE::NOTIFICATION_TYPE_ONLINE)
 			{
 				LatteOverlay_pushNotification("Connected to friend service", 5000);
-				if(g_fpd.nexFriendSession && g_fpd.nexFriendSession->getPendingFriendRequestCount() > 0)
-					LatteOverlay_pushNotification(fmt::format("You have {} pending friend request(s)", g_fpd.nexFriendSession->getPendingFriendRequestCount()), 5000);
+				if(session && session->getPendingFriendRequestCount() > 0)
+					LatteOverlay_pushNotification(fmt::format("You have {} pending friend request(s)", session->getPendingFriendRequestCount()), 5000);
 			}
 			else
 			{
@@ -111,9 +116,9 @@ namespace iosu
 				if (!msg_format.empty())
 				{
 					std::string name = fmt::format("{:#x}", pid);
-					if (g_fpd.nexFriendSession)
+					if (session)
 					{
-						const std::string tmp = g_fpd.nexFriendSession->getAccountNameByPid(pid);
+						const std::string tmp = session->getAccountNameByPid(pid);
 						if (!tmp.empty())
 							name = tmp;
 					}
@@ -424,7 +429,6 @@ namespace iosu
 			void TimerUpdate() override
 			{
 				// called once a second while service is running
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (!g_fpd.nexFriendSession)
 					return;
 				g_fpd.nexFriendSession->update();
@@ -439,7 +443,6 @@ namespace iosu
 						break;
 				}
 				// handle notification responses
-				g_NotificationQueue.RemoveExpired();
 				for(auto& client : m_clients)
 					SendQueuedNotifications(client);
 			}
@@ -960,7 +963,6 @@ namespace iosu
 
 			nnResult CallHandler_GetFriendList_GetFriendListAll(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut, bool isAll)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if(numVecIn != 2 || numVecOut != 2)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(startIndex, uint32be, 0);
@@ -983,7 +985,6 @@ namespace iosu
 
 			nnResult CallHandler_GetFriendRequestList(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if(numVecIn != 2 || numVecOut != 2)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(startIndex, uint32be, 0);
@@ -1006,7 +1007,6 @@ namespace iosu
 
 			nnResult CallHandler_GetFriendRequestListEx(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if(numVecIn != 2 || numVecOut != 1)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(count, uint32be, 1);
@@ -1031,7 +1031,6 @@ namespace iosu
 
 			nnResult CallHandler_GetBlackList(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if(numVecIn != 2 || numVecOut != 2)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(startIndex, uint32be, 0);
@@ -1053,7 +1052,6 @@ namespace iosu
 
 			nnResult CallHandler_GetFriendListEx(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if(numVecIn != 2 || numVecOut != 1)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(count, uint32be, 1);
@@ -1119,7 +1117,6 @@ namespace iosu
 
 			nnResult CallHandler_GetBasicInfoAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 2 || numVecOut != 1)
 					return FPResult_InvalidIPCParam;
 				DeclareInput(count, uint32be, 1);
@@ -1146,7 +1143,6 @@ namespace iosu
 
 			nnResult CallHandler_UpdateCommentAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1175,7 +1171,6 @@ namespace iosu
 
 			nnResult CallHandler_UpdatePreferenceAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1192,7 +1187,6 @@ namespace iosu
 
 			nnResult CallHandler_AddFriendRequestAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 2 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1217,7 +1211,6 @@ namespace iosu
 
 			nnResult CallHandler_AcceptFriendRequestAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1244,7 +1237,6 @@ namespace iosu
 			nnResult CallHandler_DeleteFriendRequestAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
 				// reject incoming friend request
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1271,7 +1263,6 @@ namespace iosu
 			nnResult CallHandler_CancelFriendRequestAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
 				// retract outgoing friend request
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1297,7 +1288,6 @@ namespace iosu
 
 			nnResult CallHandler_MarkFriendRequestsAsReceivedAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 2 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1318,7 +1308,6 @@ namespace iosu
 
 			nnResult CallHandler_RemoveFriendAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 1 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1335,7 +1324,6 @@ namespace iosu
 
 			nnResult CallHandler_DeleteFriendFlagsAsync(FPDClient* fpdClient, IPCIoctlVector* vecIn, uint32 numVecIn, IPCIoctlVector* vecOut, uint32 numVecOut)
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (numVecIn != 3 || numVecOut != 0)
 					return FPResult_InvalidIPCParam;
 				if (!g_fpd.nexFriendSession)
@@ -1480,19 +1468,19 @@ namespace iosu
 				// start session
 				const uint32_t hostIp = ((struct sockaddr_in*)addrs->ai_addr)->sin_addr.s_addr;
 				freeaddrinfo(addrs);
-				g_fpd.mtxFriendSession.lock();
 				g_fpd.nexFriendSession = new NexFriends(hostIp, nexTokenResult.nexToken.port, "ridfebb9", myPid, nexTokenResult.nexToken.nexPassword, nexTokenResult.nexToken.token, accountId, (uint8*)&miiData, screenName, (uint8)countryCode, g_fpd.myPresence);
+				g_fpd.notifyingSession.store(g_fpd.nexFriendSession, std::memory_order_release);
 				g_fpd.nexFriendSession->setNotificationHandler(NotificationHandler);
-				g_fpd.mtxFriendSession.unlock();
 				cemuLog_log(LogType::Force, "IOSU_FPD: Created friend server session");
 			}
 
 			void StopFriendSession()
 			{
-				std::unique_lock _l(g_fpd.mtxFriendSession);
 				bool expected = true;
 				if (!g_fpd.sessionStarted.compare_exchange_strong(expected, false) )
 					return;
+				g_fpd.notifyingSession.store(nullptr, std::memory_order_release);
+				// stops the nex thread before the session goes
 				delete g_fpd.nexFriendSession;
 				g_fpd.nexFriendSession = nullptr;
 			}
@@ -1508,13 +1496,15 @@ namespace iosu
 		{
 			void TitleStart() override
 			{
+				g_NotificationQueue.Reset();
 				gFPDService.Start();
 				gFPDService.SetTimerUpdate(1000); // call TimerUpdate() once a second
 			}
 			void TitleStop() override
 			{
-				gFPDService.StopFriendSession();
+				// the service thread is joined first: the session is its alone
 				gFPDService.Stop();
+				gFPDService.StopFriendSession();
 			}
 		}sIOSUModuleNNFPD;
 

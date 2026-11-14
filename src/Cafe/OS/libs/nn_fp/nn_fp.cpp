@@ -6,7 +6,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_IOS.h"
 #include "Cafe/OS/libs/coreinit/coreinit_IPC.h"
 #include "Cafe/OS/libs/nn_common.h"
-#include "util/ChunkedHeap/ChunkedHeap.h"
+#include "Cafe/OS/libs/coreinit/virt_range.h"
 #include "Common/CafeString.h"
 
 namespace nn
@@ -26,7 +26,6 @@ namespace nn
 			IOSDevHandle fpdHandle;
 			SysAllocator<coreinit::OSMutex> fpMutex;
 			SysAllocator<uint8, 0x12000> g_fpdAllocatorSpace;
-			VHeap* fpBufferHeap{nullptr};
 			// PPC buffers for async notification query
 			SysAllocator<uint32be> notificationCount;
 			SysAllocator<iosu::fpd::FPDNotification, 256> notificationBuffer;
@@ -36,38 +35,37 @@ namespace nn
 			MEMPTR<void> notificationHandlerParam{nullptr};
 		}g_fp = { };
 
+		// The IPC buffers in the console's memory set aside for them, in 32
+		// byte pages taken and given back with no lock (virt_range.c), by
+		// any guest thread
 		class
 		{
 		  public:
 			void Init()
 			{
-				std::unique_lock _l(m_mtx);
-				g_fp.fpBufferHeap = new VHeap(g_fp.g_fpdAllocatorSpace.GetPtr(), g_fp.g_fpdAllocatorSpace.GetByteSize());
-			}
-
-			void Destroy()
-			{
-				std::unique_lock _l(m_mtx);
-				delete g_fp.fpBufferHeap;
+				virt_range_init(&m_range, memory_getVirtualOffsetFromPointer(g_fp.g_fpdAllocatorSpace.GetPtr()),
+					g_fp.g_fpdAllocatorSpace.GetByteSize(), 32);
 			}
 
 			void* Allocate(uint32 size, uint32 alignment)
 			{
-				std::unique_lock _l(m_mtx);
-				void* p = g_fp.fpBufferHeap->alloc(size, 32);
-				if (!p)
+				const uint32 addr = virt_range_alloc(&m_range, size, std::max<uint32>(alignment, 32));
+				if (!addr)
+				{
 					cemuLog_log(LogType::Force, "nn_fp: Internal heap is full");
-				return p;
+					return nullptr;
+				}
+				return memory_getPointerFromVirtualOffset(addr);
 			}
 
 			void Free(void* ptr)
 			{
-				std::unique_lock _l(m_mtx);
-				g_fp.fpBufferHeap->free(ptr);
+				if (ptr)
+					virt_range_free(&m_range, memory_getVirtualOffsetFromPointer(ptr));
 			}
 
 		  private:
-			std::mutex m_mtx;
+			virt_range_t m_range;
 		}FPIpcBufferAllocator;
 
 		class FPIpcContext {

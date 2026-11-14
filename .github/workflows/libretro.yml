@@ -121,6 +121,11 @@ jobs:
         # stop take no lock
         run: ./tools/check_title_lifecycle.sh
 
+      - name: "Host locks only where listed"
+        # no mutex, condition variable or lock guard in a file that has none
+        # now, and the list of those that still do only shrinks
+        run: ./tools/check_host_locks.sh
+
       - name: "GPU thread waits woken, not timed or spun"
         # an idle GPU thread sleeps until the CPU submits; the GPU thread's
         # start, the title start, the graphic packs, the GPU's init, GX2Init
@@ -640,6 +645,16 @@ jobs:
           SANITIZER=address,undefined ./test/hid_portal/run_tests.sh
           make -C test/hid_portal clean
           SANITIZER=thread ./test/hid_portal/run_tests.sh
+      - name: "Notes to any readers"
+        # what the friend server notifies goes from the nex thread to the
+        # service thread's readers with no lock; plain, under ASan + UBSan
+        # and under TSan
+        run: |
+          ./test/note_log/run_tests.sh
+          make -C test/note_log clean
+          SANITIZER=address,undefined ./test/note_log/run_tests.sh
+          make -C test/note_log clean
+          SANITIZER=thread ./test/note_log/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
