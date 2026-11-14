@@ -32,6 +32,10 @@ struct PPCRecFunction_t
 	size_t x86Size;
 	std::vector<ppcRecRange_t> list_ranges;
 	boost::container::small_vector<JumpTableEntry, 2> jumpTableEntries;
+	// ended by an invalidation (or refused): its jump table entries gone
+	std::atomic<bool> dead{false};
+	// the recompiler thread's list of every function it stored
+	PPCRecFunction_t* nextFunction = nullptr;
 };
 
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.h"

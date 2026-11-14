@@ -125,9 +125,8 @@ static int s_failures = 0;
 
 // --- recompiler work queue ----------------------------------------------
 
-// The core's pushers are serialised by the recompiler's spinlock; this is that
-static std::atomic_flag s_pushLock = ATOMIC_FLAG_INIT;
-
+// Three cores pushing at once, with no lock between them, and the recompiler
+// thread taking: every address once, each core's in its order
 static void TestWorkQueueStream()
 {
 	auto q = std::make_unique<PPCRecompilerWorkQueue>();
@@ -165,11 +164,7 @@ static void TestWorkQueueStream()
 		producers.emplace_back([&, p] {
 			for (uint32_t seq = 1; seq <= kPerProducer;)
 			{
-				while (s_pushLock.test_and_set(std::memory_order_acquire))
-					std::this_thread::yield();
-				const bool pushed = q->Push(p * (kPerProducer + 1) + seq);
-				s_pushLock.clear(std::memory_order_release);
-				if (pushed)
+				if (q->Push(p * (kPerProducer + 1) + seq))
 					seq++;
 				else
 					std::this_thread::yield(); // full: the interpreter would offer it again later

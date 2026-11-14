@@ -605,6 +605,15 @@ jobs:
           SANITIZER=address,undefined ./test/libretro_mic/run_tests.sh
           make -C test/libretro_mic clean
           SANITIZER=thread ./test/libretro_mic/run_tests.sh
+      - name: "Recompiler bookkeeping"
+        # the recompiled functions' store and the invalidation log, with no
+        # lock; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/rec_store/run_tests.sh
+          make -C test/rec_store clean
+          SANITIZER=address,undefined ./test/rec_store/run_tests.sh
+          make -C test/rec_store clean
+          SANITIZER=thread ./test/rec_store/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
