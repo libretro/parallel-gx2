@@ -587,6 +587,15 @@ jobs:
           SANITIZER=address,undefined ./test/os_claims/run_tests.sh
           make -C test/os_claims clean
           SANITIZER=thread ./test/os_claims/run_tests.sh
+      - name: "Mailbox"
+        # the slot an amiibo touched on the host's side is handed to the
+        # title's through; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/mailbox/run_tests.sh
+          make -C test/mailbox clean
+          SANITIZER=address,undefined ./test/mailbox/run_tests.sh
+          make -C test/mailbox clean
+          SANITIZER=thread ./test/mailbox/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:

@@ -8,7 +8,6 @@
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/OS/RPL/rpl_symbols.h"
 #include "audio/IAudioAPI.h"
-#include "audio/IAudioInputAPI.h"
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
 #include "Cafe/TitleList/GameInfo.h"
@@ -452,7 +451,6 @@ void cemu_initForGame()
 	GraphicPack2::ActivateForCurrentTitle();
 	// print audio log
 	IAudioAPI::PrintLogging();
-	IAudioInputAPI::PrintLogging();
 	// everything initialized
 	cemuLog_log(LogType::Force, "------- Run title -------");
 	// wait till GPU thread is initialized

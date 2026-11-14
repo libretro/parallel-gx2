@@ -24,7 +24,6 @@
 #include "Cafe/OS/libs/vpad/vpad.h"
 
 #include "audio/IAudioAPI.h"
-#include "audio/IAudioInputAPI.h"
 #if BOOST_OS_WINDOWS
 #pragma comment(lib,"Dbghelp.lib")
 #endif
@@ -129,7 +128,7 @@ void CemuCommonInit()
 	// long as it lives, and they outlive the work. A libretro core on Windows
 	// was never unloaded because of them - FreeLibrary left the DLL in memory
 	// with one reference still taken (NNshi's module trace).
-	std::thread threadInitAudioAPI([]{ IAudioAPI::InitializeStatic(); IAudioInputAPI::InitializeStatic(); });
+	std::thread threadInitAudioAPI([]{ IAudioAPI::InitializeStatic(); });
 	std::thread threadInitGraphicPacks([]{ GraphicPack2::LoadAll(); });
 	CEMU_INIT_STAGE("input");
 	InputManager::instance().load();

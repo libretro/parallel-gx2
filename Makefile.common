@@ -80,6 +80,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/util/helpers/lf_ring.c \
 	$(CORE_DIR)/src/util/helpers/u64_map.c \
 	$(CORE_DIR)/src/util/helpers/pin_table.c \
+	$(CORE_DIR)/src/util/helpers/mailbox.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/fsa_clients.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/virt_range.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/os_claims.c \
@@ -346,7 +347,6 @@ CORE_SOURCES_CXX += \
 	$(CORE_DIR)/src/Common/FileStream.cpp \
 	$(CORE_DIR)/src/Common/cpu_features.cpp \
 	$(CORE_DIR)/src/audio/IAudioAPI.cpp \
-	$(CORE_DIR)/src/audio/IAudioInputAPI.cpp \
 	$(CORE_DIR)/src/config/ActiveSettings.cpp \
 	$(CORE_DIR)/src/config/CemuConfig.cpp \
 	$(CORE_DIR)/src/config/NetworkSettings.cpp \

@@ -6,22 +6,29 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Common/FileStream.h"
 #include "Cafe/CafeSystem.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Scheduler.h"
+#include "util/helpers/mailbox.h"
 
-std::recursive_mutex g_nfpMutex;
+// Taken by the title's threads around the library's state: a guest mutex,
+// held by the guest thread - which may move between host threads, and share
+// one with others - not the host. The host's side (a tag touched, a tag
+// taken away) goes through atomics and the touch mailbox below instead.
+SysAllocator<coreinit::OSMutex> g_nfpMutex;
+
+static void nnNfp_takeTouchedTag();
 
 void nnNfpLock()
 {
-	g_nfpMutex.lock();
-}
-
-bool nnNfpTryLock()
-{
-	return g_nfpMutex.try_lock();
+	// as OSLockMutex, but not a point where the thread may be cancelled
+	__OSLockScheduler();
+	coreinit::OSLockMutexInternal(g_nfpMutex.GetPtr());
+	__OSUnlockScheduler();
+	nnNfp_takeTouchedTag();
 }
 
 void nnNfpUnlock()
 {
-	g_nfpMutex.unlock();
+	coreinit::OSUnlockMutex(g_nfpMutex.GetPtr());
 }
 
 struct AmiiboInternal
@@ -172,18 +179,19 @@ struct AmiiboProcessedData
 
 struct  
 {
-	bool nfpIsInitialized;
-	MPTR activateEvent;
-	MPTR deactivateEvent;
+	// read by the host too (a touch, the tag taken away), so atomics
+	std::atomic<bool> nfpIsInitialized;
+	std::atomic<MPTR> activateEvent;
+	std::atomic<MPTR> deactivateEvent;
 	bool isDetecting;
-	bool isMounted;
+	std::atomic<bool> isMounted;
 	bool isReadOnly;
 	bool hasOpenApplicationArea; // set to true if application area was opened or created
 	// currently active Amiibo
-	bool hasActiveAmiibo;
+	std::atomic<bool> hasActiveAmiibo;
 	fs::path amiiboPath;
 	bool hasInvalidHMAC;
-	uint32 amiiboTouchTime;
+	std::atomic<uint32> amiiboTouchTime;
 	AmiiboRawNFCData amiiboNFCData; // raw data
 	AmiiboInternal amiiboInternal; // decrypted internal format
 	AmiiboProcessedData amiiboProcessedData;
@@ -742,12 +750,28 @@ void nnNfpExport_GetAmiiboSettingsArgs(PPCInterpreter_t* hCPU)
 	osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_NFP, 0));
 }
 
+// A tag touched on the host's side, waiting for the title's
+static mailbox_t s_touchMailbox;
+static AmiiboRawNFCData s_touchedRaw;
+static uint8 s_touchedUid[7];
+static fs::path s_touchedPath;
+
+static void nnNfp_takeTouchedTag()
+{
+	if (!mailbox_begin_take(&s_touchMailbox))
+		return;
+	memcpy(&nfp_data.amiiboNFCData, &s_touchedRaw, sizeof(AmiiboRawNFCData));
+	nfp_data.amiiboProcessedData.uidLength = 7;
+	memcpy(nfp_data.amiiboProcessedData.uid, s_touchedUid, 7);
+	nfp_data.amiiboPath = s_touchedPath;
+	mailbox_end_take(&s_touchMailbox);
+	amiiboDecrypt();
+}
+
 void nnNfp_unloadAmiibo()
 {
-	nnNfpLock();
 	nfp_data.isMounted = false;
 	nfp_data.hasActiveAmiibo = false;
-	nnNfpUnlock();
 }
 
 bool nnNfp_isInitialized()
@@ -829,23 +853,26 @@ bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 	{
 		cemuLog_log(LogType::Force, "nn_nfp: Mismatch in serial checksum of scanned NFC tag");
 	}
-	nfp_data.amiiboProcessedData.uidLength = 7;
-	memcpy(nfp_data.amiiboProcessedData.uid, serialNumber, 7);
+	// handed to the title's side, which takes it the next time it takes
+	// the library's lock: the data is the guest's to touch, under its mutex
+	if (!mailbox_begin_put(&s_touchMailbox))
+	{
+		*nfcError = NFC_ERROR_NO_ACCESS;
+		return false;
+	}
+	memcpy(&s_touchedRaw, &rawData, sizeof(AmiiboRawNFCData));
+	memcpy(s_touchedUid, serialNumber, 7);
+	s_touchedPath = filePath;
+	mailbox_end_put(&s_touchMailbox);
 	// signal activation event
 	nnNfp_unloadAmiibo();
-	nnNfpLock();
-	memcpy(&nfp_data.amiiboNFCData, &rawData, sizeof(AmiiboRawNFCData));
-	// decrypt amiibo
-	amiiboDecrypt();
-	nfp_data.amiiboPath = filePath;
-	nfp_data.hasActiveAmiibo = true;
-	if (nfp_data.activateEvent)
+	nfp_data.amiiboTouchTime.store(GetTickCount(), std::memory_order_relaxed);
+	nfp_data.hasActiveAmiibo.store(true, std::memory_order_release);
+	if (const MPTR ev = nfp_data.activateEvent.load())
 	{
-		MEMPTR<coreinit::OSEvent> osEvent(nfp_data.activateEvent);
+		MEMPTR<coreinit::OSEvent> osEvent(ev);
 		coreinit::OSSignalEvent(osEvent);
 	}
-	nfp_data.amiiboTouchTime = GetTickCount();
-	nnNfpUnlock();
 	*nfcError = NFC_ERROR_NO_ACCESS;
 	return true;
 }
@@ -882,27 +909,23 @@ bool nnNfp_writeCurrentAmiibo()
 	return true;
 }
 
+// From the scheduler's system events: a tag touched 1.5 s ago is taken away,
+// once, with no lock
 void nnNfp_update()
 {
-	// lock-free check if amiibo is touching
-	if (nfp_data.hasActiveAmiibo == false)
+	if (!nfp_data.hasActiveAmiibo.load(std::memory_order_acquire))
 		return;
-	if (!nnNfpTryLock())
+	uint32 amiiboElapsedTouchTime = GetTickCount() - nfp_data.amiiboTouchTime.load(std::memory_order_relaxed);
+	if (amiiboElapsedTouchTime < 1500)
 		return;
-	// make sure amiibo is still touching after acquiring lock
-	if (nfp_data.hasActiveAmiibo == false)
+	if (!nfp_data.hasActiveAmiibo.exchange(false))
 		return;
-	uint32 amiiboElapsedTouchTime = GetTickCount() - nfp_data.amiiboTouchTime;
-	if (amiiboElapsedTouchTime >= 1500)
+	nfp_data.isMounted = false;
+	if (const MPTR ev = nfp_data.deactivateEvent.load())
 	{
-		nnNfp_unloadAmiibo();
-		if (nfp_data.deactivateEvent)
-		{
-			coreinit::OSEvent* osEvent = (coreinit::OSEvent*)memory_getPointerFromVirtualOffset(nfp_data.deactivateEvent);
-			coreinit::OSSignalEvent(osEvent);
-		}
+		coreinit::OSEvent* osEvent = (coreinit::OSEvent*)memory_getPointerFromVirtualOffset(ev);
+		coreinit::OSSignalEvent(osEvent);
 	}
-	nnNfpUnlock();
 }
 
 void nnNfpExport_GetNfpState(PPCInterpreter_t* hCPU)
@@ -968,19 +991,18 @@ namespace nn::nfp
 
 		cemu_assert(index == 0);
 
-		nnNfpLock();
-
 		StackAllocator<NFCTagInfoCallbackParam_t> _callbackParam;
 		NFCTagInfoCallbackParam_t* callbackParam = _callbackParam.GetPointer();
 
 		memset(callbackParam, 0x00, sizeof(NFCTagInfoCallbackParam_t));
 
+		nnNfpLock();
 		memcpy(callbackParam->uid, nfp_data.amiiboProcessedData.uid, nfp_data.amiiboProcessedData.uidLength);
 		callbackParam->uidLength = (uint8)nfp_data.amiiboProcessedData.uidLength;
-
-		PPCCoreCallback(functionPtr, index, 0, _callbackParam.GetPointer(), userParam);
-
 		nnNfpUnlock();
+
+		// the title's callback, run without the library's lock
+		PPCCoreCallback(functionPtr, index, 0, _callbackParam.GetPointer(), userParam);
 
 
 		return 0; // 0 -> success
@@ -1048,6 +1070,8 @@ namespace nn::nfp
 
 		void RPLMapped() override
 		{
+			coreinit::OSInitMutex(g_nfpMutex.GetPtr());
+			mailbox_init(&s_touchMailbox);
 			nnNfp_load(); // legacy interface, update these to use cafeExportRegister / cafeExportRegisterFunc
 
 			cafeExportRegisterFunc(nn::nfp::GetErrorCode, "nn_nfp", "GetErrorCode__Q2_2nn3nfpFRCQ2_2nn6Result", LogType::NN_NFP);

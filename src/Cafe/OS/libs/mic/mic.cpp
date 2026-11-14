@@ -1,6 +1,5 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "input/InputManager.h"
-#include "audio/IAudioInputAPI.h"
 #include "config/CemuConfig.h"
 
 enum class MIC_RESULT
@@ -15,7 +14,6 @@ enum class MIC_RESULT
 
 #define MIC_SAMPLERATE				32000
 
-const int MIC_SAMPLES_PER_3MS_32KHZ = (96);  // 32000*3/1000
 
 enum class MIC_STATUS_FLAGS : uint32
 {
@@ -142,36 +140,6 @@ void micExport_MICInit(PPCInterpreter_t* hCPU)
 	// return status
 	memory_writeU32(hCPU->gpr[6], 0); // no error
 	osLib_returnFromFunction(hCPU, (drcIndex==0)?MIC_HANDLE_DRC0:MIC_HANDLE_DRC1); // success
-
-	auto& config = GetConfig();
-	const auto audio_api = IAudioInputAPI::Cubeb; // change this if more input apis get implemented
-
-	std::unique_lock lock(g_audioInputMutex);
-	if (!g_inputAudio)
-	{
-		IAudioInputAPI::DeviceDescriptionPtr device_description;
-		if (IAudioInputAPI::IsAudioInputAPIAvailable(audio_api))
-		{
-			auto devices = IAudioInputAPI::GetDevices(audio_api);
-			const auto it = std::find_if(devices.begin(), devices.end(), [&config](const auto& d) {return d->GetIdentifier() == config.input_device; });
-			if (it != devices.end())
-				device_description = *it;
-		}
-
-		if (device_description)
-		{
-			try
-			{
-				g_inputAudio = IAudioInputAPI::CreateDevice(audio_api, device_description, MIC_SAMPLERATE, 1, MIC_SAMPLES_PER_3MS_32KHZ, 16);
-				g_inputAudio->SetVolume(config.input_volume);
-			}
-			catch (std::runtime_error& ex)
-			{
-				cemuLog_log(LogType::Force, "can't initialize audio input: {}", ex.what());
-				exit(0);
-			}
-		}
-	}
 }
 
 void micExport_MICOpen(PPCInterpreter_t* hCPU)
@@ -205,10 +173,6 @@ void micExport_MICOpen(PPCInterpreter_t* hCPU)
 	// success
 	MICStatus.drc[drcIndex].isOpen = true;
 	osLib_returnFromFunction(hCPU, (uint32)MIC_RESULT::SUCCESS);
-
-	std::shared_lock lock(g_audioInputMutex);
-	if(g_inputAudio)
-		g_inputAudio->Play();
 }
 
 void micExport_MICClose(PPCInterpreter_t* hCPU)
@@ -235,10 +199,6 @@ void micExport_MICClose(PPCInterpreter_t* hCPU)
 	// success
 	MICStatus.drc[drcIndex].isOpen = false;
 	osLib_returnFromFunction(hCPU, (uint32)MIC_RESULT::SUCCESS);
-
-	std::shared_lock lock(g_audioInputMutex);
-	if (g_inputAudio)
-		g_inputAudio->Stop();
 }
 
 void micExport_MICGetStatus(PPCInterpreter_t* hCPU)
@@ -401,17 +361,6 @@ void micExport_MICSetDataConsumed(PPCInterpreter_t* hCPU)
 	return;
 }
 
-void mic_updateDevicePlayState(bool isPlaying)
-{
-	if (g_inputAudio)
-	{
-		if (isPlaying)
-			g_inputAudio->Play();
-		else
-			g_inputAudio->Stop();
-	}
-}
-
 void mic_updateOnAXFrame()
 {
 	sint32 drcIndex = 0;
@@ -419,22 +368,11 @@ void mic_updateOnAXFrame()
 	{
 		drcIndex = 1;
 		if (mic_isActive(1) == false) 
-		{
-			std::shared_lock lock(g_audioInputMutex);
-			mic_updateDevicePlayState(false);
 			return;
-		}
 	}
 
-	std::shared_lock lock(g_audioInputMutex);
-	mic_updateDevicePlayState(true);
-	if (g_inputAudio)
-	{
-		sint16 micSampleData[MIC_SAMPLES_PER_3MS_32KHZ];
-		g_inputAudio->ConsumeBlock(micSampleData);
-		mic_feedSamples(0, micSampleData, MIC_SAMPLES_PER_3MS_32KHZ);
-	}
-	else
+	// no microphone in the core: a tone while the GamePad's mic button is
+	// held, silence otherwise
 	{
 		const sint32 micSampleCount = 32000 / 32;
 		sint16 micSampleData[micSampleCount];
