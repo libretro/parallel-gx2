@@ -6,8 +6,8 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/ISA/LatteInstructions.h"
 #include "HW/Latte/Renderer/Renderer.h"
-#include "util/containers/LookupTableL3.h"
-#include "util/helpers/fspinlock.h"
+#include "Cafe/HW/Latte/Core/FetchShaderRegistry.h"
+#include "util/helpers/PoolNew.h"
 #ifdef ENABLE_METAL
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #endif
@@ -438,19 +438,16 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 	newFetchShader->CheckIfVerticesNeedManualFetchMtl(contextRegister);
 #endif
 
-	// register in cache
-	// its possible that during multi-threaded shader cache loading, two identical (same hash) fetch shaders get created simultaneously
-	// we catch and handle this case here. RegisterInCache() is atomic and if another fetch shader is already registered, we abandon the local instance
+	// register in cache; one with the same hash already there is used instead
 	LatteFetchShader* registeredFS = newFetchShader->RegisterInCache(fsHash);
-	if (registeredFS)
+	if (!registeredFS)
+		newFetchShader->m_isRegistered = true;
+	else if (registeredFS != newFetchShader)
 	{
 		delete newFetchShader;
 		newFetchShader = registeredFS;
 	}
-	else
-	{
-		newFetchShader->m_isRegistered = true;
-	}
+	// else the cache is full: this one is used, not kept in it
 	return newFetchShader;
 }
 
@@ -462,14 +459,19 @@ LatteFetchShader::~LatteFetchShader()
 		LatteSHRC_RemoveShaderStateCacheEntryByKey(m_shaderStateCacheKeys.back());
 }
 
-struct FetchShaderLookupInfo
+// One for each fetch shader address the GPU was given, from a pool: none
+// allocated while a game plays once it has used as many as it ever will
+struct FetchShaderLookupInfo : PoolNew<FetchShaderLookupInfo>
 {
 	LatteFetchShader* fetchShader;
 	uint32 programSize;
 	uint32 lastFrameAccessed;
 };
 
-LookupTableL3<8, 8, 8, FetchShaderLookupInfo*> g_fetchShaderLookupCache;
+// The GPU thread's alone, like everything here: by fetch shader address, and
+// the fetch shaders by the hash of their program
+static FetchShaderRegistry<FetchShaderLookupInfo, 16384> g_fetchShaderLookupCache;
+static FetchShaderRegistry<LatteFetchShader, 16384> s_fetchShaderByHash;
 
 LatteFetchShader::CacheHash LatteFetchShader::CalculateCacheHash(void* programCode, uint32 programSize)
 {
@@ -493,11 +495,7 @@ LatteFetchShader::CacheHash LatteFetchShader::CalculateCacheHash(void* programCo
 
 LatteFetchShader* LatteFetchShader::FindInCacheByHash(LatteFetchShader::CacheHash fsHash)
 {
-	// does not hold s_spinlockFetchShaderCache for better performance. Be careful not to call this while another thread invokes RegisterInCache()
-	auto itr = s_fetchShaderByHash.find(fsHash);
-	if (itr == s_fetchShaderByHash.end())
-		return nullptr;
-	return itr->second;
+	return s_fetchShaderByHash.Find(fsHash);
 }
 
 void* _getFSProgramPtr()
@@ -516,7 +514,7 @@ LatteFetchShader* LatteFetchShader::FindByGPUState()
 	uint32 fsPhysAddr24 = LatteGPUState.contextRegister[mmSQ_PGM_START_FS + 0];
 	cemu_assert_debug(fsPhysAddr24 < 0x1000000); // should only contain the upper 24 bit of the address in the lower 24 bit of the register
 
-	FetchShaderLookupInfo* lookupInfo = g_fetchShaderLookupCache.lookup(fsPhysAddr24);
+	FetchShaderLookupInfo* lookupInfo = g_fetchShaderLookupCache.Find(fsPhysAddr24);
 	if (lookupInfo)
 	{
 		// return fetch shader if still the same
@@ -555,45 +553,29 @@ LatteFetchShader* LatteFetchShader::FindByGPUState()
 			fetchShader = LatteShaderRecompiler_createFetchShader(fsHash, LatteGPUState.contextNew.GetRawView(), (uint32*)_getFSProgramPtr(), _getFSProgramSize());
 			cemu_assert(fetchShader);
 		}
-		// create new lookup entry
+		// create new lookup entry (with the table full, found by hash each time)
 		lookupInfo = new FetchShaderLookupInfo();
 		lookupInfo->fetchShader = fetchShader;
 		lookupInfo->programSize = _getFSProgramSize();
 		lookupInfo->lastFrameAccessed = LatteGPUState.frameCounter;
-		g_fetchShaderLookupCache.store(fsPhysAddr24, lookupInfo);
-#ifdef CEMU_DEBUG_ASSERT
-		cemu_assert_debug(g_fetchShaderLookupCache.lookup(fsPhysAddr24) == lookupInfo);
-#endif
+		if (g_fetchShaderLookupCache.Register(fsPhysAddr24, lookupInfo) != nullptr)
+		{
+			delete lookupInfo;
+			return fetchShader;
+		}
 	}
 	return lookupInfo->fetchShader;
 }
 
-FSpinlock s_spinlockFetchShaderCache;
-
 LatteFetchShader* LatteFetchShader::RegisterInCache(CacheHash fsHash)
 {
-	s_spinlockFetchShaderCache.lock();
-	auto itr = s_fetchShaderByHash.find(fsHash);
-	if (itr != s_fetchShaderByHash.end())
-	{
-		LatteFetchShader* fs = itr->second;
-		s_spinlockFetchShaderCache.unlock();
-		return fs;
-	}
-	s_fetchShaderByHash.emplace(fsHash, this);
-	s_spinlockFetchShaderCache.unlock();
-	return nullptr;
+	return s_fetchShaderByHash.Register(fsHash, this);
 }
 
 void LatteFetchShader::UnregisterInCache()
 {
 	if (!m_isRegistered)
 		return;
-	s_spinlockFetchShaderCache.lock();
-	auto itr = s_fetchShaderByHash.find(m_cacheHash);
-	cemu_assert(itr == s_fetchShaderByHash.end());
-	s_fetchShaderByHash.erase(itr);
-	s_spinlockFetchShaderCache.unlock();
+	s_fetchShaderByHash.Unregister(m_cacheHash, this);
+	m_isRegistered = false;
 }
-
-std::unordered_map<LatteFetchShader::CacheHash, LatteFetchShader*> LatteFetchShader::s_fetchShaderByHash;

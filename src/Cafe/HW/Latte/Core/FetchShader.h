@@ -63,14 +63,12 @@ struct LatteFetchShader
 	// keys in shader state cache
 	std::vector<uint64> m_shaderStateCacheKeys;
 
-	// fetch shader cache (move these to separate Cache class?)
-	LatteFetchShader* RegisterInCache(CacheHash fsHash); // fails if another fetch shader object is already registered with the same fsHash. Returns the previously registered fetch shader or null
+	// fetch shader cache, the GPU thread's alone (FetchShaderRegistry.h)
+	LatteFetchShader* RegisterInCache(CacheHash fsHash); // fails if another fetch shader object is already registered with the same fsHash. Returns the previously registered fetch shader, null when this one is registered, or this one when the cache is full (not registered)
 	void UnregisterInCache();
 	static CacheHash CalculateCacheHash(void* programCode, uint32 programSize);
 	static LatteFetchShader* FindInCacheByHash(CacheHash fsHash);
 	static LatteFetchShader* FindByGPUState();
-
-	static std::unordered_map<CacheHash, LatteFetchShader*> s_fetchShaderByHash;
 };
 
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash fsHash, uint32* contextRegister, uint32* fsProgramCode, uint32 fsProgramSize);

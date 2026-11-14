@@ -84,6 +84,7 @@
 //    waiter (no poll - a lost wake hangs this test), work never waits for
 //    it, and a stop or a deadline ends its waits.
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompilerWorkQueue.h"
+#include "Cafe/HW/Latte/Core/FetchShaderRegistry.h"
 #include "Cafe/HW/Latte/Core/LatteGpuWake.h"
 #include "util/helpers/ThreadStartedFlag.h"
 #include "util/helpers/EventWake.h"
@@ -1996,6 +1997,57 @@ static void TestSemaphores()
 	}
 }
 
+// --- fetch shader registry ----------------------------------------------
+
+// The fetch shaders by hash, and the GPU's fetch shader addresses: a second
+// one with a hash already there gets the first, one taken out is gone only
+// if it was what the hash had, and a full table keeps what it has and says
+// so, where the map before allocated a node for each
+static void TestFetchShaderRegistry()
+{
+	struct Obj { int id; };
+	auto reg = std::make_unique<FetchShaderRegistry<Obj, 16>>();
+	Obj a{1}, b{2}, c{3};
+	CHECK(reg->Find(0x1234) == nullptr);
+	CHECK(reg->Register(0x1234, &a) == nullptr);   // kept
+	CHECK(reg->Find(0x1234) == &a);
+	CHECK(reg->Register(0x1234, &b) == &a);        // the first, b not kept
+	CHECK(reg->Find(0x1234) == &a);
+	CHECK(reg->Register(0, &c) == nullptr);        // any key, 0 too
+	CHECK(reg->Find(0) == &c);
+	reg->Unregister(0x1234, &b);                   // not what it has: stays
+	CHECK(reg->Find(0x1234) == &a);
+	reg->Unregister(0x1234, &a);
+	CHECK(reg->Find(0x1234) == nullptr);
+	reg->Unregister(0x1234, &a);                   // twice: nothing
+	CHECK(reg->Count() == 1);
+	// three quarters of 16: twelve, then full
+	std::vector<Obj> objs(20);
+	size_t kept = 1; // c
+	for (uint64_t k = 100; k < 120; k++)
+	{
+		Obj* o = &objs[k - 100];
+		Obj* r = reg->Register(k, o);
+		if (r == nullptr)
+			kept++;
+		else
+			CHECK(r == o);                       // full: itself, not kept
+	}
+	CHECK(kept == 12 && reg->Count() == 12);
+	CHECK(reg->Find(0) == &c);
+	for (uint64_t k = 100; k < 111; k++)
+		CHECK(reg->Find(k) == &objs[k - 100]);
+	CHECK(reg->Find(111) == nullptr);
+	// taken out: room again
+	reg->Unregister(100, &objs[0]);
+	CHECK(reg->Register(200, &a) == nullptr);
+	CHECK(reg->Find(200) == &a);
+	for (uint64_t k = 101; k < 111; k++)
+		CHECK(reg->Find(k) == &objs[k - 100]);    // moved back, still found
+	reg->Clear();
+	CHECK(reg->Count() == 0 && reg->Find(200) == nullptr);
+}
+
 int main()
 {
 	TestWorkQueueStream();
@@ -2023,6 +2075,7 @@ int main()
 	TestClaimTicket();
 	TestNexWait();
 	TestRcuCell();
+	TestFetchShaderRegistry();
 	TestSemaphores();
 	TestIdleWait();
 	TestAudioRingSpans(2);
