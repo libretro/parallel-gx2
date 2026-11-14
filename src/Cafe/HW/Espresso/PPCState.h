@@ -240,7 +240,10 @@ static inline float flushDenormalToZero(float f)
 using HLECALL = void(*)(PPCInterpreter_t*);
 using HLEIDX = sint32;
 
-HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName);
+// every call registered gets an index below this
+inline constexpr size_t PPC_HLE_TABLE_CAPACITY = 0x4000;
+// hleName: what OSCommon names the call (not kept)
+HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string_view hleName = {});
 HLECALL PPCInterpreter_getHLECall(HLEIDX funcIndex);
 
 // HLE scheduler

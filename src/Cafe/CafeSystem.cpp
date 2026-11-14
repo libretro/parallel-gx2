@@ -917,6 +917,7 @@ namespace CafeSystem
     void SetupMemorySpace()
     {
         memory_mapForCurrentTitle();
+        RPLLoader_WriteHLEStubs();
         LoadSharedData();
     }
 

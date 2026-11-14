@@ -52,11 +52,11 @@ void PPCInterpreter_handleUnsupportedHLECall(PPCInterpreter_t* hCPU)
 // index taken with an atomic add, the call published into it after. Two
 // threads registering one call at once may each get an index; both work.
 // No lock - where the readers read it with none while it was written.
-static constexpr size_t HLE_TABLE_CAPACITY = 0x4000;
+static constexpr size_t HLE_TABLE_CAPACITY = PPC_HLE_TABLE_CAPACITY;
 static std::atomic<HLECALL> s_ppcHleTable[HLE_TABLE_CAPACITY]{};
 static std::atomic<sint32> s_ppcHleTableWriteIndex{0};
 
-HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName)
+HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string_view /*hleName*/)
 {
 	const sint32 count = std::min<sint32>(s_ppcHleTableWriteIndex.load(std::memory_order_acquire), (sint32)HLE_TABLE_CAPACITY);
 	for (sint32 i = 0; i < count; i++)

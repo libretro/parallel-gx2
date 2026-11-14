@@ -664,6 +664,17 @@ jobs:
           SANITIZER=address,undefined ./test/use_gate/run_tests.sh
           make -C test/use_gate clean
           SANITIZER=thread ./test/use_gate/run_tests.sh
+      - name: "HLE call table"
+        # threads registering the same calls at once each get an index whose
+        # entry is that call, and the same one again after: the stubs
+        # RPLLoader_MakePPCCallable hands out stand on it; plain, under
+        # ASan + UBSan and under TSan
+        run: |
+          ./test/hle_table/run_tests.sh
+          make -C test/hle_table clean
+          SANITIZER=address,undefined ./test/hle_table/run_tests.sh
+          make -C test/hle_table clean
+          SANITIZER=thread ./test/hle_table/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:

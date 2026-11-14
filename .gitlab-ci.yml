@@ -904,6 +904,24 @@ test-use-gate:
     - make -C test/use_gate clean
     - SANITIZER=thread ./test/use_gate/run_tests.sh
 
+# Threads registering the same HLE calls at once each get an index whose
+# entry is that call; the stubs RPLLoader_MakePPCCallable hands out stand on it.
+test-hle-table:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: dependencies/fmt dependencies/glm
+    CC: gcc-12
+    CXX: g++-12
+  script:
+    - ./test/hle_table/run_tests.sh
+    - make -C test/hle_table clean
+    - SANITIZER=address,undefined ./test/hle_table/run_tests.sh
+    - make -C test/hle_table clean
+    - SANITIZER=thread ./test/hle_table/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.

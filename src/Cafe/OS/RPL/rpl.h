@@ -5,6 +5,7 @@ struct RPLModule;
 #define RPL_INVALID_HANDLE		0xFFFFFFFF
 
 void RPLLoader_InitState();
+void RPLLoader_WriteHLEStubs();
 void RPLLoader_UnloadAll();
 
 uint8* RPLLoader_AllocateTrampolineCodeSpace(sint32 size);

@@ -4,6 +4,8 @@
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/libs/coreinit/coreinit_DynLoad.h"
 #include "Cafe/OS/libs/coreinit/coreinit_MEM.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Scheduler.h"
 
 namespace coreinit
 {
@@ -12,7 +14,33 @@ namespace coreinit
 	MPTR _osDynLoadTLSFuncAlloc = MPTR_NULL;
 	MPTR _osDynLoadTLSFuncFree = MPTR_NULL;
 
-	static std::vector<NotifyCallbackEntry> notifyCallbacks;
+	// The loader is the title's to share between its threads, as on the
+	// console: every OSDynLoad call that loads, unloads or looks at the
+	// modules or the notify callbacks holds this guest mutex. It is
+	// recursive, so a module's entry point or a notify callback that calls
+	// OSDynLoad on the same thread goes on.
+	SysAllocator<OSMutex> s_dynLoadMutex;
+
+	class DynLoadLock
+	{
+	public:
+		DynLoadLock()
+		{
+			// as OSLockMutex, but not a point where the thread may be cancelled
+			__OSLockScheduler();
+			OSLockMutexInternal(s_dynLoadMutex.GetPtr());
+			__OSUnlockScheduler();
+		}
+		~DynLoadLock() { OSUnlockMutex(s_dynLoadMutex.GetPtr()); }
+		DynLoadLock(const DynLoadLock&) = delete;
+		DynLoadLock& operator=(const DynLoadLock&) = delete;
+	};
+
+	// fixed, so a callback adding or removing one while the list is walked
+	// moves nothing under the walk, and nothing is allocated
+	static constexpr sint32 DYNLOAD_MAX_NOTIFY_CALLBACKS = 32;
+	static NotifyCallbackEntry s_notifyCallbacks[DYNLOAD_MAX_NOTIFY_CALLBACKS];
+	static sint32 s_notifyCallbackCount = 0;
 
 	uint32 OSDynLoad_SetAllocator(MPTR allocFunc, MPTR freeFunc)
 	{
@@ -64,6 +92,7 @@ namespace coreinit
 
 	uint32 OSDynLoad_AcquireInternal(const char* libName, uint32be* moduleHandleOut, bool checkOnly)
 	{
+		DynLoadLock lock;
 		// truncate path
 		sint32 fileNameStartIndex = 0;
 		sint32 tempLen = (sint32)strlen(libName);
@@ -112,8 +141,9 @@ namespace coreinit
 			return 0xFFFCFFE9; // module not found
 		}
 
-		for (const auto& cb : notifyCallbacks) 
+		for (sint32 i = 0; i < s_notifyCallbackCount; i++)
 		{
+			const NotifyCallbackEntry cb = s_notifyCallbacks[i];
 			MEMPTR<OSDynLoad_NotifyData> notifyData;
 			notifyData = (OSDynLoad_NotifyData*)OSDynLoad_AllocatorAlloc(sizeof(OSDynLoad_NotifyData), 4);
 			RPLModule* module = RPLLoader_GetModuleByName(tempLibName);
@@ -151,9 +181,11 @@ namespace coreinit
 	{
 		if (moduleHandle == RPL_INVALID_HANDLE)
 			return;
+		DynLoadLock lock;
 
-		for (const auto& cb : notifyCallbacks) 
+		for (sint32 i = 0; i < s_notifyCallbackCount; i++)
 		{
+			const NotifyCallbackEntry cb = s_notifyCallbacks[i];
 			MEMPTR<OSDynLoad_NotifyData> notifyData;
 			notifyData = (OSDynLoad_NotifyData*)OSDynLoad_AllocatorAlloc(sizeof(OSDynLoad_NotifyData), 4);
 			RPLModule* module = RPLLoader_GetModuleByName(RPLLoader_GetModuleNameByHandle(moduleHandle));
@@ -191,6 +223,7 @@ namespace coreinit
 
 	uint32 OSDynLoad_FindExport(uint32 moduleHandle, uint32 isData, const char* exportName, betype<MPTR>* addrOut)
 	{
+		DynLoadLock lock;
 		if (moduleHandle == 0xFFFFFFFF)
 		{
 			// main module
@@ -208,6 +241,7 @@ namespace coreinit
 
 	uint32 OSDynLoad_GetModuleName(uint32 moduleHandle, char* nameBuf, sint32be* nameBufSize) 
 	{
+		DynLoadLock lock;
 		if (moduleHandle == 0xFFFFFFFF)
 		{
 			// main module
@@ -224,6 +258,7 @@ namespace coreinit
 
 	sint32 OSDynLoad_GetNumberOfRPLs()
 	{
+		DynLoadLock lock;
 		return (sint32)RPLLoader_GetModuleList().size();
 	}
 
@@ -231,6 +266,7 @@ namespace coreinit
 	{
 		if (count == 0)
 			return 1;
+		DynLoadLock lock;
 		auto modules = RPLLoader_GetModuleList();
 		for (uint32 i = first; i < first + count; i++)
 		{
@@ -263,22 +299,37 @@ namespace coreinit
 		if (!notifyFn)
 			return 0xBAD1000E; // notify function pointer is null
 
-		notifyCallbacks.emplace_back(notifyFn, userContext);
+		DynLoadLock lock;
+		if (s_notifyCallbackCount >= DYNLOAD_MAX_NOTIFY_CALLBACKS)
+		{
+			cemuLog_log(LogType::Force, "OSDynLoad_AddNotifyCallback: more than {} callbacks", DYNLOAD_MAX_NOTIFY_CALLBACKS);
+			return 0xBAD10019; // out of memory
+		}
+		s_notifyCallbacks[s_notifyCallbackCount++] = NotifyCallbackEntry(notifyFn, userContext);
 		return 0;
 	}
 
 	uint32 OSDynLoad_DelNotifyCallback(MEMPTR<OSDynLoadNotifyFunc> notifyFn, MEMPTR<void> userContext) 
 	{
-		std::erase_if(notifyCallbacks, [&](const NotifyCallbackEntry& entry) 
+		DynLoadLock lock;
+		sint32 kept = 0;
+		for (sint32 i = 0; i < s_notifyCallbackCount; i++)
 		{
-			return entry.callback.GetMPTR() == notifyFn.GetMPTR() && entry.userContext == userContext;
-		});
-
+			const NotifyCallbackEntry& entry = s_notifyCallbacks[i];
+			if (entry.callback.GetMPTR() == notifyFn.GetMPTR() && entry.userContext == userContext)
+				continue;
+			s_notifyCallbacks[kept++] = entry;
+		}
+		s_notifyCallbackCount = kept;
 		return 0;
 	}
 
 	void InitializeDynLoad()
 	{
+		// each title starts with none
+		OSInitMutex(s_dynLoadMutex.GetPtr());
+		s_notifyCallbackCount = 0;
+
 		cafeExportRegister("coreinit", OSDynLoad_SetAllocator, LogType::Placeholder);
 		cafeExportRegister("coreinit", OSDynLoad_SetTLSAllocator, LogType::Placeholder);
 		cafeExportRegister("coreinit", OSDynLoad_GetAllocator, LogType::Placeholder);

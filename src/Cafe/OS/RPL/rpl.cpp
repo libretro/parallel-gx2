@@ -35,7 +35,12 @@ public:
 };
 
 VHeap rplLoaderHeap_workarea(nullptr, MEMORY_RPLLOADER_AREA_SIZE);
-PPCCodeHeap rplLoaderHeap_lowerAreaCodeMem2(nullptr, MEMORY_CODE_TRAMPOLINE_AREA_SIZE);
+// The last of the trampoline area holds a stub per HLE call index, written as
+// each title's memory is mapped: RPLLoader_MakePPCCallable hands out the one for its
+// call's index, so any guest thread gets one with no lock, map or allocation
+static constexpr uint32 RPL_HLE_STUBS_SIZE = (uint32)PPC_HLE_TABLE_CAPACITY * 4;
+static constexpr MPTR RPL_HLE_STUBS_ADDR = MEMORY_CODE_TRAMPOLINE_AREA_ADDR + MEMORY_CODE_TRAMPOLINE_AREA_SIZE - RPL_HLE_STUBS_SIZE;
+PPCCodeHeap rplLoaderHeap_lowerAreaCodeMem2(nullptr, MEMORY_CODE_TRAMPOLINE_AREA_SIZE - RPL_HLE_STUBS_SIZE);
 PPCCodeHeap rplLoaderHeap_codeArea2(nullptr, MEMORY_CODEAREA_SIZE);
 
 ChunkedFlatAllocator<64 * 1024> g_heapTrampolineArea;
@@ -53,7 +58,6 @@ uint32 rplLoader_sdataAddr = MPTR_NULL; // r13
 uint32 rplLoader_sdata2Addr = MPTR_NULL; // r2
 uint32 rplLoader_currentDataAllocatorAddr = 0x10000000;
 
-std::map<void(*)(PPCInterpreter_t* hCPU), uint32> g_map_callableExports;
 
 struct RPLMappingRegion
 {
@@ -725,18 +729,20 @@ void _calculateMappedImportNameHash(const char* rplName, const char* funcName, u
 	*h2Out = h2;
 }
 
+// Any thread: the stub that calls this HLE function. The index is the HLE
+// table's, taken with no lock, and every index's stub is already written
 uint32 RPLLoader_MakePPCCallable(void(*ppcCallableExport)(PPCInterpreter_t* hCPU))
 {
-	auto it = g_map_callableExports.find(ppcCallableExport);
-	if (it != g_map_callableExports.end())
-		return it->second;
-	// get HLE function index
-	sint32 functionIndex = PPCInterpreter_registerHLECall(ppcCallableExport, fmt::format("PPCCallback{:x}", (uintptr_t)ppcCallableExport));
-	MPTR codeAddr = memory_getVirtualOffsetFromPointer(RPLLoader_AllocateTrampolineCodeSpace(4));
-	uint32 opcode = (1 << 26) | functionIndex;
-	memory_write<uint32>(codeAddr, opcode);
-	g_map_callableExports[ppcCallableExport] = codeAddr;
-	return codeAddr;
+	const sint32 functionIndex = PPCInterpreter_registerHLECall(ppcCallableExport);
+	return RPL_HLE_STUBS_ADDR + (uint32)functionIndex * 4;
+}
+
+// once the title's memory is mapped
+void RPLLoader_WriteHLEStubs()
+{
+	for (uint32 i = 0; i < (uint32)PPC_HLE_TABLE_CAPACITY; i++)
+		memory_write<uint32>(RPL_HLE_STUBS_ADDR + i * 4, (1 << 26) | i);
+	rplLoader_maxCodeAddress = std::max(rplLoader_maxCodeAddress, RPL_HLE_STUBS_ADDR + RPL_HLE_STUBS_SIZE);
 }
 
 uint32 rpl_mapHLEImport(RPLModule* rplLoaderContext, const char* rplName, const char* funcName, bool functionMustExist)
@@ -2467,7 +2473,6 @@ void RPLLoader_UnloadAll()
 	// free all code imports
 	g_heapTrampolineArea.releaseAll();
 	list_mappedFunctionImports.clear();
-	g_map_callableExports.clear();
 	rplLoader_applicationHasMemoryControl = false;
 	rplLoader_maxCodeAddress = 0;
 	rplLoader_currentDataAllocatorAddr = 0x10000000;

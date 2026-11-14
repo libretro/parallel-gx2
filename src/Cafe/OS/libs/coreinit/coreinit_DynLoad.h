@@ -26,6 +26,7 @@ namespace coreinit
 		MEMPTR<OSDynLoadNotifyFunc> callback;
 		MEMPTR<void> userContext;
 
+		NotifyCallbackEntry() = default;
 		NotifyCallbackEntry(MEMPTR<OSDynLoadNotifyFunc> func, MEMPTR<void> context) : callback(func), userContext(context) {}
 	};
 
