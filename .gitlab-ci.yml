@@ -1138,6 +1138,18 @@ test-input-per-frame:
   script:
     - ./tools/check_input_per_frame.sh
 
+# Titles start and stop on the frontend's thread alone: a title launching
+# another or exiting asks retro_run, and the GPU thread's start and stop take
+# no lock.
+test-title-lifecycle:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - ./tools/check_title_lifecycle.sh
+
 # An idle GPU thread sleeps until the CPU submits, and the waits between
 # loading a title and its first frame sleep until notified, not by the clock.
 test-gpu-waits:

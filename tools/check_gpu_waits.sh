@@ -106,7 +106,7 @@ check $L '^int Latte_ThreadEntry\(\)' LatteGpuWake_WaitUntil
 check $L '^void Latte_GpuPauseGate\(\)' LatteGpuWake_WaitUntil
 check src/Cafe/GraphicPack/GraphicPack2.cpp '^void GraphicPack2::WaitUntilReady\(\)' LatteGpuWake_WaitUntil
 check src/Cafe/CafeSystem.cpp '^void cemu_initForGame\(\)' LatteGpuWake_WaitUntil
-check src/libretro/CemuLibretro.cpp 'libretro_prepare_and_launch_title\(\)$' LatteGpuWake_WaitUntil
+check src/libretro/CemuLibretro.cpp 'libretro_prepare_and_launch_title\(uint64 launchTitleId\)$' LatteGpuWake_WaitUntil
 check src/Cafe/IOSU/nn/iosu_nn_service.cpp 'void IPCSimpleService::Start\(\)' 'm_threadInitialized.Wait()'
 check src/Cafe/IOSU/nn/iosu_nn_service.cpp 'void IPCService::Start\(\)' 'm_threadInitialized.Wait()'
 check src/Cafe/IOSU/ODM/iosu_odm.cpp 'void Initialize\(\)' 's_threadInitialized.Wait()'

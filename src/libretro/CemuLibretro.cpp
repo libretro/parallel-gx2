@@ -117,6 +117,9 @@ static void* cemu_gl_get_proc(const char* name);
 // ============================================================================
 
 static std::atomic<bool> s_ppc_process_exited{false};
+// Another title the emulated process asked for (OSLaunchTitle and the like),
+// 0 for none: stopped and started by retro_run, as a reset is
+static std::atomic<uint64> s_title_launch_requested{0};
 
 class LibretroSystemImplementation : public CafeSystem::SystemImplementation
 {
@@ -132,6 +135,13 @@ public:
 		// retro_run ask the frontend to unload us, the same reason upstream's
 		// wx frontend queues an event instead of acting directly.
 		s_ppc_process_exited.store(true, std::memory_order_release);
+	}
+
+	void CafeLaunchTitle(uint64 titleId) override
+	{
+		// The same: recorded on the PPC thread, done by retro_run, the one
+		// thread every start and stop of a title happens on
+		s_title_launch_requested.store(titleId, std::memory_order_release);
 	}
 };
 
@@ -2455,7 +2465,7 @@ static void libretro_next_screen_layout()
 
 static void libretro_start_wua_conversion(TitleId baseTitleId, const fs::path& gamePath);
 static bool libretro_stop_title();
-static void libretro_prepare_and_launch_title();
+static void libretro_prepare_and_launch_title(uint64 launchTitleId = 0);
 static void libretro_create_renderer();
 static void libretro_set_convert_status(std::string text, int progress = -1);
 static void libretro_request_install();
@@ -5085,7 +5095,9 @@ static void libretro_frame_gate_rearm()
 	retro_eventcount_notify(&s_gate_wake);
 }
 
-static void libretro_prepare_and_launch_title()
+// launchTitleId: a title the emulated process asked for, where 0 is the
+// content's own
+static void libretro_prepare_and_launch_title(uint64 launchTitleId)
 {
 	libretro_frame_gate_rearm();
 	// The account comes in here, on a reset as on a start. act read the
@@ -5101,7 +5113,12 @@ static void libretro_prepare_and_launch_title()
 
 	// Try as a title first (WUD/WUX/WUA/folder)
 	TitleInfo launchTitle{gamePath};
-	if (launchTitle.IsValid())
+	if (launchTitleId)
+	{
+		libretro_log(RETRO_LOG_INFO, "preparing the title the emulated process asked for (%016llx)\n", (unsigned long long)launchTitleId);
+		status = CafeSystem::PrepareForegroundTitle(launchTitleId);
+	}
+	else if (launchTitle.IsValid())
 	{
 		libretro_log(RETRO_LOG_INFO, "Valid title detected, launching via TitleId\n");
 
@@ -6117,6 +6134,7 @@ RETRO_API void retro_unload_game()
 	s_gate_tokens.store(1, std::memory_order_release);
 	s_gate_hold_open.store(0, std::memory_order_release);
 	s_ppc_process_exited = false;
+	s_title_launch_requested.store(0, std::memory_order_release);
 	// An install loaded as content has nothing else to wait for it
 	if (s_install_content && s_convert_thread.joinable())
 	{
@@ -7303,11 +7321,39 @@ RETRO_API void retro_run()
 			libretro_apply_core_options();
 			libretro_update_output_fps();
 		}
+		// a title launch asked for before the reset goes with it
+		s_title_launch_requested.store(0, std::memory_order_release);
 		if (libretro_reset_stop_title())
 		{
 			libretro_create_renderer();
 			libretro_setup_graphic_packs(); // pack options changed since are taken now
 			libretro_prepare_and_launch_title();
+		}
+		video_cb(NULL, libretro_out_width(), libretro_out_height(), 0);
+		return;
+	}
+
+	// The emulated process asked for another title: the same two halves as a
+	// reset, here, with that title in place of the content's own. Upstream
+	// did both on a detached thread of their own, beside whatever the
+	// frontend's thread was doing - a close among them - and under OpenGL
+	// with no way to run the GPU, which is this thread's to run.
+	if (const uint64 launchTitleId = s_title_launch_requested.exchange(0, std::memory_order_acq_rel);
+		launchTitleId && s_game_loaded)
+	{
+		cemuLog_log(LogType::Force, "[libretro] the title asked for title {:016x}: stopping it and starting that", launchTitleId);
+		if (libretro_reset_stop_title())
+		{
+			libretro_create_renderer();
+			libretro_setup_graphic_packs();
+			libretro_prepare_and_launch_title(launchTitleId);
+			if (!s_game_loaded)
+			{
+				libretro_show_message(RETRO_LOG_ERROR, 6000,
+					"The title asked for another title, which could not be started");
+				if (environ_cb)
+					environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
+			}
 		}
 		video_cb(NULL, libretro_out_width(), libretro_out_height(), 0);
 		return;

@@ -1366,6 +1366,11 @@ namespace CafeSystem
 		s_implementation->CafePPCProcessExit();
 	}
 
+	void RequestTitleLaunch(uint64 titleId)
+	{
+		s_implementation->CafeLaunchTitle(titleId);
+	}
+
 	std::optional<sint32> GetForegroundTitleReturnStatus()
 	{
 		return s_foregroundReturnStatus;

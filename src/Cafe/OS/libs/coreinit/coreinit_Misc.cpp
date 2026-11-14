@@ -695,20 +695,6 @@ namespace coreinit
 		return s_sdkVersion;
 	}
 
-	void OSLauncherThread(uint64 titleId)
-	{
-		CafeSystem::ShutdownTitle();
-		CafeSystem::PrepareForegroundTitle(titleId);
-		CafeSystem::RequestRecreateCanvas();
-		CafeSystem::LaunchForegroundTitle();
-	}
-
-	void OSShutdownThread(sint32 status)
-	{
-		CafeSystem::ShutdownTitle();
-		CafeSystem::NotifyPPCProcessExit(status);
-	}
-
 	uint32 __LaunchByTitleId(uint64 titleId, uint32 argc, MEMPTR<char>* argv)
 	{
 		// prepare argument buffer
@@ -739,9 +725,12 @@ namespace coreinit
 		for(uint32 i=0; i<argc; i++)
 			argArray.emplace_back(argv[i]);
 		CafeSystem::SetOverrideArgs(argArray);
-		// spawn launcher thread (this current thread will be destroyed during relaunch)
-		std::thread launcherThread(OSLauncherThread, titleId);
-		launcherThread.detach();
+		// The title is stopped and the other started by the thread that owns the
+		// title's lifecycle (the frontend's), where a detached thread of its
+		// own did it beside the frontend's - and under OpenGL could not run
+		// the GPU, which only the frontend's thread can. This thread goes with
+		// the title.
+		CafeSystem::RequestTitleLaunch(titleId);
 		// suspend this thread
 		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
 		return 0;
@@ -860,9 +849,11 @@ namespace coreinit
 
 	void __PPCExit(sint32 status)
 	{
-		// spawn shutdown thread (the current thread has to be destroyed as part of the shutdown process)
-		std::thread shutdownThread(OSShutdownThread, status);
-		shutdownThread.detach();
+		// The frontend is asked to close the content, and the title is shut
+		// down by its close (on its own thread), where a detached thread did it
+		// here, beside a close the frontend could be making at the same time.
+		// This thread goes with the title.
+		CafeSystem::NotifyPPCProcessExit(status);
 		// suspend this thread
 		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
 	}

@@ -115,6 +115,12 @@ jobs:
         # thread waking every millisecond to update them
         run: ./tools/check_input_per_frame.sh
 
+      - name: "Titles start and stop on the frontend's thread"
+        # a title launching another or exiting asks retro_run, as a reset
+        # does, rather than a thread of its own; the GPU thread's start and
+        # stop take no lock
+        run: ./tools/check_title_lifecycle.sh
+
       - name: "GPU thread waits woken, not timed or spun"
         # an idle GPU thread sleeps until the CPU submits; the GPU thread's
         # start, the title start, the graphic packs, the GPU's init, GX2Init

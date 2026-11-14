@@ -1,9 +1,6 @@
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Espresso/Const.h"
 #include "Cafe/OS/libs/gx2/GX2_Event.h"
-#ifdef ENABLE_VULKAN
-#include "Cafe/HW/Latte/Renderer/Vulkan/VsyncDriver.h"
-#endif
 #include "util/highresolutiontimer/HighResolutionTimer.h"
 #include "config/CemuConfig.h"
 #include "Cafe/CafeSystem.h"
@@ -11,7 +8,6 @@
 
 sint32 s_customVsyncFrequency = -1;
 
-void LatteTiming_NotifyHostVSync();
 void LatteTiming_signalVsync();
 
 // calculate time between vsync events in timer units
@@ -54,8 +50,6 @@ bool LatteTiming_getCustomVsyncFrequency(sint32& customFrequency)
 	return true;
 }
 
-bool s_usingHostDrivenVSync = false;
-
 // The vsync comes from the guest's time (LatteTiming_GuestVSync), not from
 // the timer in LatteTiming_HandleTimedVsync: the frontend's frames set that
 // time's pace
@@ -75,21 +69,6 @@ void LatteTiming_TriggerVSync()
 {
 	if (s_usingLibretroVSync)
 		LatteTiming_signalVsync();
-}
-
-void LatteTiming_EnableHostDrivenVSync()
-{
-	if (s_usingHostDrivenVSync)
-		return;
-	#ifdef ENABLE_VULKAN
-	VsyncDriver_startThread(LatteTiming_NotifyHostVSync);
-	s_usingHostDrivenVSync = true;
-	#endif
-}
-
-bool LatteTiming_IsUsingHostDrivenVSync()
-{
-	return s_usingHostDrivenVSync;
 }
 
 void LatteTiming_Init()
@@ -148,34 +127,6 @@ void LatteTiming_signalVsync()
 	GX2::__GX2NotifyEvent(GX2::GX2CallbackEventType::VSYNC);
 }
 
-HRTick s_lastHostVsync = 0;
-
-// notify when host vsync event is triggered (on renderer canvas)
-void LatteTiming_NotifyHostVSync()
-{
-	if (!LatteTiming_IsUsingHostDrivenVSync())
-		return;
-	auto nowTimePoint = HighResolutionTimer::now().getTick();
-	auto dif = nowTimePoint - s_lastHostVsync;
-	auto vsyncPeriod = LatteTime_CalculateTimeBetweenVSync();
-
-
-	if (dif < vsyncPeriod)
-	{
-		// skip
-		return;
-	}
-	uint64 elapsedPeriods = dif / vsyncPeriod;
-	if (elapsedPeriods >= 10)
-	{
-		s_lastHostVsync = nowTimePoint;
-	}
-	else
-		s_lastHostVsync += vsyncPeriod;
-
-	LatteTiming_signalVsync();
-}
-
 // The emulated vsync by the guest's time, at the rate the timer in
 // LatteTiming_HandleTimedVsync keeps on the wall clock
 uint64 LatteTiming_GuestVSyncPeriod()
@@ -219,7 +170,7 @@ void LatteTiming_HandleTimedVsync()
 	if( currentTimer >= LatteGPUState.timer_nextVSync )
 	{
 		// In libretro mode, vsync is triggered by retro_run(), not by timer
-		if(!LatteTiming_IsUsingHostDrivenVSync() && !LatteTiming_IsUsingLibretroVSync())
+		if(!LatteTiming_IsUsingLibretroVSync())
 			LatteTiming_signalVsync();
 		// even if vsync is delegated to the host device, we still use this virtual vsync timer to check finished states
 		LatteQuery_UpdateFinishedQueries();

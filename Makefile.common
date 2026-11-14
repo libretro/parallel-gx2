@@ -428,7 +428,6 @@ ifeq ($(HAVE_VULKAN),1)
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/TextureReadbackVk.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VKRMemoryManager.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VKRPipelineInfo.cpp \
-	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VsyncDriver.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp \
 	$(CORE_DIR)/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.cpp \

@@ -13,6 +13,10 @@ namespace CafeSystem
 	public:
 		virtual void CafeRecreateCanvas() = 0;
 		virtual void CafePPCProcessExit() = 0; // emulated process exited
+		// The emulated process asked for another title. Called on the
+		// emulated PPC thread: the title is stopped and the other started on
+		// the thread that owns the title's lifecycle, never on this one.
+		virtual void CafeLaunchTitle(uint64 titleId) = 0;
 	};
 
 	enum class PREPARE_STATUS_CODE
@@ -71,6 +75,7 @@ namespace CafeSystem
 	uint32 GetRPXHashUpdated();
 	void RequestRecreateCanvas();
 	void NotifyPPCProcessExit(sint32 status);
+	void RequestTitleLaunch(uint64 titleId);
 
 	void DumpCurrentRPX();
 };

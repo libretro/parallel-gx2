@@ -656,13 +656,14 @@ static void Latte_GpuCothreadEntry()
 	cemu_assert_unimplemented();
 	LatteGpuCothread_Exit();
 }
-std::mutex sLatteThreadStateMutex;
+// Latte_Start, Latte_Stop and Latte_JoinGpuThreadIfLeft are the frontend's
+// thread's alone, as every start and stop of a title is (a title launching
+// another or exiting asks retro_run to do it), so they take no lock.
 
 // initializes GPU thread which in turn also activates graphic packs
 // does not return until the thread finished initialization
 void Latte_Start()
 {
-	std::unique_lock _lock(sLatteThreadStateMutex);
 	cemu_assert_debug(!sLatteThreadRunning);
 	sLatteThreadRunning = true;
 	sLatteThreadFinishedInit = false;
@@ -696,7 +697,6 @@ void Latte_Start()
 
 void Latte_Stop()
 {
-	std::unique_lock _lock(sLatteThreadStateMutex);
 	if (!sLatteThreadRunning)
 	{
 		// Nothing to stop, as far as this flag knows - but if a thread is still
@@ -705,7 +705,6 @@ void Latte_Stop()
 		return;
 	}
 	sLatteThreadRunning = false;
-	_lock.unlock();
 	// The one thing upstream's stop does not cover. A thread parked at the
 	// pause gate, or anywhere else it waits on LatteGpuWake, does check the
 	// stop signal - but only when something wakes it. A frontend destroys the
@@ -778,7 +777,6 @@ bool Latte_GetStopSignal()
 // threads), so this is the same wait, for the same thread, from the other path.
 void Latte_JoinGpuThreadIfLeft()
 {
-	std::unique_lock _lock(sLatteThreadStateMutex);
 	if (sLatteThread.joinable())
 		sLatteThread.join();
 	LatteGpuCothread_Delete();
