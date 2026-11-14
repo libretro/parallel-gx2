@@ -3,7 +3,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
-#include "util/helpers/fspinlock.h"
+#include "Cafe/OS/libs/coreinit/fast_mutex.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -471,54 +471,69 @@ namespace coreinit
 		fastMutex->contendedLink.prev = nullptr;
 	}
 
-	FSpinlock g_fastMutexSpinlock;
-
-	void _OSFastMutex_AcquireContention(OSFastMutex* fastMutex)
+	// No lock of the host's (fast_mutex.c): the owner is taken and given back
+	// with a compare-and-swap, and only a thread that must wait takes the
+	// scheduler lock, which the wait queue needs anyway; contendedState (the
+	// console's own contention marker) counts the threads about to wait or
+	// waiting, so a giver wakes one only when there is one.
+	static retro_atomic_int_t* _OSFastMutex_Owner(OSFastMutex* fastMutex)
 	{
-		g_fastMutexSpinlock.lock();
+		return reinterpret_cast<retro_atomic_int_t*>(&fastMutex->owner);
 	}
 
-	void _OSFastMutex_ReleaseContention(OSFastMutex* fastMutex)
+	static retro_atomic_int_t* _OSFastMutex_Waiters(OSFastMutex* fastMutex)
 	{
-		g_fastMutexSpinlock.unlock();
+		return reinterpret_cast<retro_atomic_int_t*>(&fastMutex->contendedState);
+	}
+
+	// the owner field's own bits for a thread (never 0)
+	static int _OSFastMutex_Id(OSThread_t* thread)
+	{
+		MEMPTR<OSThread_t> p = thread;
+		int raw;
+		memcpy(&raw, &p, sizeof(raw));
+		return raw;
 	}
 
 	void OSFastMutex_LockInternal(OSFastMutex* fastMutex)
 	{
 		cemu_assert_debug(!__OSHasSchedulerLock());
 		OSThread_t* currentThread = OSGetCurrentThread();
-		_OSFastMutex_AcquireContention(fastMutex);
+		const int me = _OSFastMutex_Id(currentThread);
+		retro_atomic_int_t* owner = _OSFastMutex_Owner(fastMutex);
+		retro_atomic_int_t* waiters = _OSFastMutex_Waiters(fastMutex);
 		while (true)
 		{
-			if (fastMutex->owner.atomic_compare_exchange(nullptr, currentThread))//(fastMutex->owner == nullptr)
+			if (fast_mutex_take(owner, me))
 			{
 				// acquire lock
-				cemu_assert_debug(fastMutex->owner == currentThread);
 				cemu_assert_debug(fastMutex->lockCount == 0);
 				fastMutex->lockCount = 1;
 
 				// todo - add to thread owned fast mutex queue
-				break;
+				return;
 			}
-			else if (fastMutex->owner == currentThread)
+			if (fast_mutex_owned(owner, me))
 			{
 				fastMutex->lockCount = fastMutex->lockCount + 1;
-				break;
+				return;
 			}
-			else
+			__OSLockScheduler();
+			if (fast_mutex_wait_begin(owner, waiters, me))
 			{
-				currentThread->waitingForFastMutex = fastMutex;
-				__OSLockScheduler();
-				fastMutex->threadQueueSmall.queueOnly(currentThread);
-				_OSFastMutex_ReleaseContention(fastMutex);
-				PPCCore_switchToSchedulerWithLock();
-				currentThread->waitingForFastMutex = nullptr;
+				// given back meanwhile
 				__OSUnlockScheduler();
-				_OSFastMutex_AcquireContention(fastMutex);
-				continue;
+				cemu_assert_debug(fastMutex->lockCount == 0);
+				fastMutex->lockCount = 1;
+				return;
 			}
+			currentThread->waitingForFastMutex = fastMutex;
+			fastMutex->threadQueueSmall.queueOnly(currentThread);
+			PPCCore_switchToSchedulerWithLock();
+			currentThread->waitingForFastMutex = nullptr;
+			fast_mutex_wait_end(waiters);
+			__OSUnlockScheduler();
 		}
-		_OSFastMutex_ReleaseContention(fastMutex);
 	}
 
 	void OSFastMutex_Lock(OSFastMutex* fastMutex)
@@ -529,58 +544,47 @@ namespace coreinit
 	bool OSFastMutex_TryLock(OSFastMutex* fastMutex)
 	{
 		OSThread_t* currentThread = OSGetCurrentThread();
-		_OSFastMutex_AcquireContention(fastMutex);
-		if (fastMutex->owner.atomic_compare_exchange(nullptr, currentThread))
+		const int me = _OSFastMutex_Id(currentThread);
+		if (fast_mutex_take(_OSFastMutex_Owner(fastMutex), me))
 		{
 			// acquire lock
-			cemu_assert_debug(fastMutex->owner == currentThread);
 			cemu_assert_debug(fastMutex->lockCount == 0);
 			fastMutex->lockCount = 1;
 
 			// todo - add to thread owned fast mutex queue
+			return true;
 		}
-		else if (fastMutex->owner == currentThread)
+		if (fast_mutex_owned(_OSFastMutex_Owner(fastMutex), me))
 		{
 			fastMutex->lockCount = fastMutex->lockCount + 1;
+			return true;
 		}
-		else
-		{
-			_OSFastMutex_ReleaseContention(fastMutex);
-			return false;
-		}
-		_OSFastMutex_ReleaseContention(fastMutex);
-		return true;
+		return false;
 	}
 
 	void OSFastMutex_UnlockInternal(OSFastMutex* fastMutex)
 	{
 		cemu_assert_debug(!__OSHasSchedulerLock());
-		OSThread_t* currentThread = OSGetCurrentThread();
-		_OSFastMutex_AcquireContention(fastMutex);
-		if (fastMutex->owner != currentThread)
+		const int me = _OSFastMutex_Id(OSGetCurrentThread());
+		if (!fast_mutex_owned(_OSFastMutex_Owner(fastMutex), me))
 		{
 			// seen in Paper Mario Color Splash
 			//cemuLog_log(LogType::Force, "OSFastMutex_Unlock() called on mutex which is not owned by current thread");
-			_OSFastMutex_ReleaseContention(fastMutex);
 			return;
 		}
 		cemu_assert_debug(fastMutex->lockCount > 0);
 		fastMutex->lockCount = fastMutex->lockCount - 1;
-		if (fastMutex->lockCount == 0)
+		if (fastMutex->lockCount != 0)
+			return;
+		// a waiter, or one about to be: woken under the scheduler lock, which
+		// it holds until it is queued
+		if (fast_mutex_give(_OSFastMutex_Owner(fastMutex), _OSFastMutex_Waiters(fastMutex), me))
 		{
-			// set owner to null
-			if (!fastMutex->owner.atomic_compare_exchange(currentThread, nullptr))
-			{
-				cemu_assert_debug(false); // should never happen
-			}
+			__OSLockScheduler();
 			if (!fastMutex->threadQueueSmall.isEmpty())
-			{
-				__OSLockScheduler();
 				fastMutex->threadQueueSmall.wakeupSingleThreadWaitQueue(false);
-				__OSUnlockScheduler();
-			}
+			__OSUnlockScheduler();
 		}
-		_OSFastMutex_ReleaseContention(fastMutex);
 	}
 
 	void OSFastMutex_Unlock(OSFastMutex* fastMutex)
@@ -608,7 +612,7 @@ namespace coreinit
 		sint32 prevLockCount = fastMutex->lockCount;
 		// unlock mutex
 		fastMutex->lockCount = 0;
-		fastMutex->owner = nullptr;
+		retro_atomic_cas_int(_OSFastMutex_Owner(fastMutex), _OSFastMutex_Id(OSGetCurrentThread()), 0);
 		if (!fastMutex->threadQueueSmall.isEmpty())
 			fastMutex->threadQueueSmall.wakeupEntireWaitQueue(false);
 		// wait on condition

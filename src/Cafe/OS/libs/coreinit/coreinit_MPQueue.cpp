@@ -2,17 +2,20 @@
 #include "Cafe/OS/libs/coreinit/coreinit_MPQueue.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
-#include "util/helpers/fspinlock.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 
 // titles that utilize MP task queue: Yoshi's Woolly World, Fast Racing Neo, Tokyo Mirage Sessions, Mii Maker
 
-#define AcquireMPQLock() s_workaroundSpinlock.lock()
-#define ReleaseMPQLock() s_workaroundSpinlock.unlock()
+#define AcquireMPQLock() OSFastMutex_Lock(s_workaroundMutex.GetPtr())
+#define ReleaseMPQLock() OSFastMutex_Unlock(s_workaroundMutex.GetPtr())
 
 namespace coreinit
 {
 
-	FSpinlock s_workaroundSpinlock; // workaround for a race condition
+	// One lock for every task queue, a workaround for a race condition: a
+	// guest fast mutex (a compare-and-swap when free), held by the guest
+	// thread, where a host spinlock was
+	SysAllocator<OSFastMutex> s_workaroundMutex;
 	/*
 		Race condition pseudo-code:
 
@@ -35,7 +38,7 @@ namespace coreinit
 
 	void MPInitTask(MPTask* task, void* func, void* data, uint32 size)
 	{
-		s_workaroundSpinlock.lock();
+		AcquireMPQLock();
 		task->thisptr = task;
 		
 		task->coreIndex = PPC_CORE_COUNT;
@@ -48,7 +51,7 @@ namespace coreinit
 		
 		task->userdata = nullptr;
 		task->runtime = 0;
-		s_workaroundSpinlock.unlock();
+		ReleaseMPQLock();
 	}
 
 	bool MPTermTask(MPTask* task)
@@ -488,6 +491,7 @@ namespace coreinit
 
 	void InitializeMP()
 	{
+		OSFastMutex_Init(s_workaroundMutex.GetPtr(), nullptr);
 		// task
 		cafeExportRegister("coreinit", MPInitTask, LogType::CoreinitMP);
 		cafeExportRegister("coreinit", MPTermTask, LogType::CoreinitMP);

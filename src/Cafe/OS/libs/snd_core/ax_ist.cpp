@@ -794,7 +794,7 @@ namespace snd_core
 
 	void AXIst_SyncVPB(AXVPBInternal_t** lastProcessedDSPShadowCopy, AXVPBInternal_t** lastProcessedPPCShadowCopy)
 	{
-		__AXVoiceListSpinlock.lock();
+		AXVoiceList_Lock();
 
 		AXVPBInternal_t* previousInternalDSP = nullptr;
 		AXVPBInternal_t* previousInternalPPC = nullptr;
@@ -885,7 +885,7 @@ namespace snd_core
 			else
 				*lastProcessedPPCShadowCopy = nullptr;
 		}
-		__AXVoiceListSpinlock.unlock();
+		AXVoiceList_Unlock();
 	}
 
 	void AXIst_HandleFrameCallbacks()

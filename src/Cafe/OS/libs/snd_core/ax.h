@@ -1,6 +1,5 @@
 #pragma once
 
-#include "util/helpers/fspinlock.h"
 #include "Cafe/OS/RPL/COSModule.h"
 
 struct PPCInterpreter_t;
@@ -332,7 +331,11 @@ namespace snd_core
 
 	void AXMix_process(struct AXVPBInternal_t* internalShadowCopyHead);
 
-	extern FSpinlock __AXVoiceListSpinlock;
+	// The voice lists' lock: a guest fast mutex, taken by the title's threads
+	// and the AX thread, recursive (a voice dropped for another calls back
+	// into the title, which may free one)
+	void AXVoiceList_Lock();
+	void AXVoiceList_Unlock();
 
 	// AX multi voice
 	struct AXVPBMULTI

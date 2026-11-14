@@ -614,6 +614,15 @@ jobs:
           SANITIZER=address,undefined ./test/rec_store/run_tests.sh
           make -C test/rec_store clean
           SANITIZER=thread ./test/rec_store/run_tests.sh
+      - name: "Guest fast mutex"
+        # OSFastMutex with no lock of the host's, against a stand-in
+        # scheduler; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/fast_mutex/run_tests.sh
+          make -C test/fast_mutex clean
+          SANITIZER=address,undefined ./test/fast_mutex/run_tests.sh
+          make -C test/fast_mutex clean
+          SANITIZER=thread ./test/fast_mutex/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:

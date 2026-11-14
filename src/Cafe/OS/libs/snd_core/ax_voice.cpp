@@ -4,7 +4,6 @@
 #include "Cafe/OS/libs/snd_core/ax.h"
 #include "Cafe/OS/libs/snd_core/ax_internal.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
-#include "util/helpers/fspinlock.h"
 
 namespace snd_core
 {
@@ -19,8 +18,24 @@ namespace snd_core
 	}
 
 	/* voice lists */
-	FSpinlock __AXVoiceListSpinlock;
+	SysAllocator<coreinit::OSFastMutex> __AXVoiceListMutex;
 
+	// A guest fast mutex (a compare-and-swap when free, the scheduler only for
+	// a thread that must wait), held by the guest thread: a host spinlock was
+	// held across the title's drop callback, which spun for good when the
+	// callback freed a voice, or when another guest thread on the same host
+	// thread wanted it
+	void AXVoiceList_Lock()
+	{
+		coreinit::OSFastMutex_Lock(__AXVoiceListMutex.GetPtr());
+	}
+
+	void AXVoiceList_Unlock()
+	{
+		coreinit::OSFastMutex_Unlock(__AXVoiceListMutex.GetPtr());
+	}
+
+	// room for every voice from the start: nothing allocated while a game plays
 	std::vector<AXVPB*> __AXVoicesPerPriority[AX_PRIORITY_MAX];
 	std::vector<AXVPB*> __AXFreeVoices;
 
@@ -79,8 +94,13 @@ namespace snd_core
     void AXVoiceList_Reset()
     {
         __AXFreeVoices.clear();
+        __AXFreeVoices.reserve(AX_MAX_VOICES);
         for (uint32 i = 0; i < AX_PRIORITY_MAX; i++)
+        {
             __AXVoicesPerPriority[i].clear();
+            __AXVoicesPerPriority[i].reserve(AX_MAX_VOICES);
+        }
+        coreinit::OSFastMutex_Init(__AXVoiceListMutex.GetPtr(), nullptr);
     }
 
 	SysAllocator<AXVPBInternal_t, AX_MAX_VOICES> _buffer__AXVPBInternalVoiceArray;
@@ -396,7 +416,7 @@ namespace snd_core
 	AXVPB* AXAcquireVoiceEx(uint32 priority, MPTR callbackEx, MPTR userParam)
 	{
 		cemu_assert(priority != AX_PRIORITY_FREE && priority < AX_PRIORITY_MAX);
-		__AXVoiceListSpinlock.lock();
+		AXVoiceList_Lock();
 		AXVPB* vpb = AXVoiceList_GetFreeVoice();
 		if (vpb != nullptr)
 		{
@@ -409,7 +429,7 @@ namespace snd_core
 			if (!vpb)
 			{
 				// no voice available
-				__AXVoiceListSpinlock.unlock();
+				AXVoiceList_Unlock();
 				return nullptr;
 			}
 		}
@@ -417,18 +437,18 @@ namespace snd_core
 		vpb->callback = MPTR_NULL;
 		vpb->callbackEx = callbackEx;
 		AXVPB_SetVoiceDefault(vpb);
-		__AXVoiceListSpinlock.unlock();
+		AXVoiceList_Unlock();
 		return vpb;
 	}
 
 	void AXFreeVoice(AXVPB* vpb)
 	{
 		cemu_assert(vpb != nullptr);
-		__AXVoiceListSpinlock.lock();
+		AXVoiceList_Lock();
 		if (vpb->priority == (uint32be)AX_PRIORITY_FREE)
 		{
 			cemuLog_log(LogType::Force, "AXFreeVoice() called on free voice");
-			__AXVoiceListSpinlock.unlock();
+			AXVoiceList_Unlock();
 			return;
 		}
 		AXVoiceProtection_Release(vpb);
@@ -441,7 +461,7 @@ namespace snd_core
 		vpb->callback = MPTR_NULL;
 		vpb->callbackEx = MPTR_NULL;
 		AXVoiceList_AddFreeVoice(vpb);
-		__AXVoiceListSpinlock.unlock();
+		AXVoiceList_Unlock();
 	}
 
     void __AXVPBResetVoices()
@@ -501,6 +521,7 @@ namespace snd_core
 
 	void AXVPB_Init()
 	{
+		AXVoiceList_Reset();
 		__AXVPBResetVoices();
 		AXVPBInit();
 	}
