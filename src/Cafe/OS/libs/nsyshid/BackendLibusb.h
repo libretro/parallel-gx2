@@ -6,6 +6,7 @@
 #include <libusb-1.0/libusb.h>
 #endif
 #include "Backend.h"
+#include "util/helpers/use_gate.h"
 
 namespace nsyshid::backend::libusb
 {
@@ -108,42 +109,34 @@ namespace nsyshid::backend::libusb
 		uint8 m_libusbEndpointOut;
 
 	  private:
+		bool OpenHandle();
 		void CloseDevice();
 
 		libusb_context* m_ctx;
-		std::mutex m_handleMutex;
-		std::atomic<sint32> m_handleInUseCounter;
-		std::condition_variable m_handleInUseCounterDecremented;
+		// The handle, opened and closed through the gate: a transfer enters
+		// it and never waits, an open or a close has the handle to itself
+		// once the transfers already in have left (use_gate.c)
+		use_gate_t m_handleGate;
 		libusb_device_handle* m_libusbHandle;
 		std::vector<ConfigDescriptor> m_config_descriptors;
 
+		// a transfer's hold on the handle, on its stack: no handle (and
+		// nothing to give back) while the device is closed or changing
 		class HandleLock {
 		  public:
-			HandleLock() = delete;
-
-			HandleLock(libusb_device_handle** handle,
-					   std::mutex& handleMutex,
-					   std::atomic<sint32>& handleInUseCounter,
-					   std::condition_variable& handleInUseCounterDecremented,
-					   DeviceLibusb& device);
-
+			explicit HandleLock(DeviceLibusb& device);
 			~HandleLock();
 
 			HandleLock(const HandleLock&) = delete;
-
 			HandleLock& operator=(const HandleLock&) = delete;
 
-			bool IsValid();
-
-			libusb_device_handle* GetHandle();
+			bool IsValid() const { return m_handle != nullptr; }
+			libusb_device_handle* GetHandle() const { return m_handle; }
 
 		  private:
+			use_gate_t* m_gate;
+			bool m_entered;
 			libusb_device_handle* m_handle;
-			std::mutex& m_handleMutex;
-			std::atomic<sint32>& m_handleInUseCounter;
-			std::condition_variable& m_handleInUseCounterDecremented;
 		};
-
-		std::unique_ptr<HandleLock> AquireHandleLock();
 	};
 } // namespace nsyshid::backend::libusb

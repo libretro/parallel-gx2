@@ -368,7 +368,6 @@ namespace nsyshid::backend::libusb
 				 protocol),
 		  m_ctx(ctx),
 		  m_libusbHandle(nullptr),
-		  m_handleInUseCounter(-1),
 		  m_libusbBusNumber(libusbBusNumber),
 		  m_libusbDeviceAddress(libusbDeviceAddress),
 		  m_libusbHasEndpointIn(false),
@@ -377,26 +376,34 @@ namespace nsyshid::backend::libusb
 		  m_libusbEndpointOut(0)
 	{
 		m_config_descriptors = std::move(configs);
+		use_gate_init(&m_handleGate);
 	}
 
 	DeviceLibusb::~DeviceLibusb()
 	{
 		CloseDevice();
+		use_gate_free(&m_handleGate);
 	}
 
 	bool DeviceLibusb::Open()
 	{
-		std::unique_lock<std::mutex> lock(m_handleMutex);
 		if (IsOpened())
+			return true;
+		// the handle to itself: transfers are turned away, and another open
+		// or a close waits its turn
+		use_gate_change_begin(&m_handleGate);
+		if (m_libusbHandle)
 		{
+			use_gate_change_end(&m_handleGate, true);
 			return true;
 		}
-		// we may still be in the process of closing the device; wait for that to finish
-		while (m_handleInUseCounter != -1)
-		{
-			m_handleInUseCounterDecremented.wait(lock);
-		}
+		const bool opened = OpenHandle();
+		use_gate_change_end(&m_handleGate, m_libusbHandle != nullptr);
+		return opened;
+	}
 
+	bool DeviceLibusb::OpenHandle()
+	{
 		libusb_device** devices;
 		ssize_t deviceCount = libusb_get_device_list(m_ctx, &devices);
 		if (deviceCount < 0)
@@ -442,7 +449,6 @@ namespace nsyshid::backend::libusb
 					libusb_free_device_list(devices, 1);
 					return false;
 				}
-				this->m_handleInUseCounter = 0;
 			}
 
 			int ret = ClaimAllInterfaces(0);
@@ -465,31 +471,26 @@ namespace nsyshid::backend::libusb
 
 	void DeviceLibusb::CloseDevice()
 	{
-		std::unique_lock<std::mutex> lock(m_handleMutex);
-		if (IsOpened())
+		// waits for the transfers already in to leave, and turns new ones away
+		use_gate_change_begin(&m_handleGate);
+		if (m_libusbHandle)
 		{
-			auto handle = m_libusbHandle;
-			m_libusbHandle = nullptr;
-			while (m_handleInUseCounter > 0)
-			{
-				m_handleInUseCounterDecremented.wait(lock);
-			}
 			ReleaseAllInterfacesForCurrentConfig();
-			libusb_close(handle);
-			m_handleInUseCounter = -1;
-			m_handleInUseCounterDecremented.notify_all();
+			libusb_close(m_libusbHandle);
+			m_libusbHandle = nullptr;
 		}
+		use_gate_change_end(&m_handleGate, false);
 	}
 
 	bool DeviceLibusb::IsOpened()
 	{
-		return m_libusbHandle != nullptr && m_handleInUseCounter >= 0;
+		return use_gate_is_open(&m_handleGate);
 	}
 
 	Device::ReadResult DeviceLibusb::Read(ReadMessage* message)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_logDebug(LogType::Force,
 							 "nsyshid::DeviceLibusb::read(): cannot read from a non-opened device\n");
@@ -506,7 +507,7 @@ namespace nsyshid::backend::libusb
 		int ret = 0;
 		do
 		{
-			ret = libusb_interrupt_transfer(handleLock->GetHandle(),
+			ret = libusb_interrupt_transfer(handleLock.GetHandle(),
 											this->m_libusbEndpointIn,
 											message->data,
 											message->length,
@@ -532,8 +533,8 @@ namespace nsyshid::backend::libusb
 
 	Device::WriteResult DeviceLibusb::Write(WriteMessage* message)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_logDebug(LogType::Force,
 							 "nsyshid::DeviceLibusb::write(): cannot write to a non-opened device\n");
@@ -547,7 +548,7 @@ namespace nsyshid::backend::libusb
 
 		message->bytesWritten = 0;
 		int actualLength = 0;
-		int ret = libusb_interrupt_transfer(handleLock->GetHandle(),
+		int ret = libusb_interrupt_transfer(handleLock.GetHandle(),
 											this->m_libusbEndpointOut,
 											message->data,
 											message->length,
@@ -576,8 +577,8 @@ namespace nsyshid::backend::libusb
 									 uint8* output,
 									 uint32 outputMaxLength)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_logDebug(LogType::Force, "nsyshid::DeviceLibusb::getDescriptor(): device is not opened");
 			return false;
@@ -586,7 +587,7 @@ namespace nsyshid::backend::libusb
 		if (descType == 0x02)
 		{
 			struct libusb_config_descriptor* conf = nullptr;
-			libusb_device* dev = libusb_get_device(handleLock->GetHandle());
+			libusb_device* dev = libusb_get_device(handleLock.GetHandle());
 			int ret = libusb_get_active_config_descriptor(dev, &conf);
 			if (ret == 0)
 			{
@@ -697,7 +698,7 @@ namespace nsyshid::backend::libusb
 		{
 			uint16 wValue = uint16(descType) << 8 | uint16(descIndex);
 			// HID Get_Descriptor requests are handled via libusb_control_transfer
-			int ret = libusb_control_transfer(handleLock->GetHandle(),
+			int ret = libusb_control_transfer(handleLock.GetHandle(),
 											  LIBUSB_REQUEST_TYPE_STANDARD | LIBUSB_ENDPOINT_IN,
 											  LIBUSB_REQUEST_GET_DESCRIPTOR,
 											  wValue,
@@ -718,8 +719,8 @@ namespace nsyshid::backend::libusb
 							   uint8 reportId,
 							   uint8 duration)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_log(LogType::Force, "nsyshid::DeviceLibusb::SetIdle(): device is not opened");
 			return false;
@@ -728,7 +729,7 @@ namespace nsyshid::backend::libusb
 		uint16 wValue = uint16(duration) << 8 | uint16(reportId);
 
 		// HID Set_Idle requests are handled via libusb_control_transfer
-		int ret = libusb_control_transfer(handleLock->GetHandle(),
+		int ret = libusb_control_transfer(handleLock.GetHandle(),
 										  LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT,
 										  HID_CLASS_SET_IDLE, // Defined in HID Class Specific Requests (7.2)
 										  wValue,
@@ -789,7 +790,7 @@ namespace nsyshid::backend::libusb
 	int DeviceLibusb::ReleaseAllInterfaces(uint8 config_num)
 	{
 		const int ret = DoForEachInterface(m_config_descriptors, config_num, [this](uint8 i) {
-			return libusb_release_interface(AquireHandleLock()->GetHandle(), i);
+			return libusb_release_interface(this->m_libusbHandle, i);
 		});
 		if (ret < LIBUSB_SUCCESS && ret != LIBUSB_ERROR_NO_DEVICE && ret != LIBUSB_ERROR_NOT_FOUND)
 		{
@@ -801,7 +802,7 @@ namespace nsyshid::backend::libusb
 	int DeviceLibusb::ReleaseAllInterfacesForCurrentConfig()
 	{
 		int config_num;
-		const int get_config_ret = libusb_get_configuration(AquireHandleLock()->GetHandle(), &config_num);
+		const int get_config_ret = libusb_get_configuration(m_libusbHandle, &config_num);
 		if (get_config_ret < LIBUSB_SUCCESS)
 			return get_config_ret;
 		return ReleaseAllInterfaces(config_num);
@@ -809,14 +810,14 @@ namespace nsyshid::backend::libusb
 
 	bool DeviceLibusb::SetProtocol(uint8 ifIndex, uint8 protocol)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_logDebug(LogType::Force, "nsyshid::DeviceLibusb::SetProtocol(): device is not opened");
 			return false;
 		}
 
-		int ret = libusb_control_transfer(handleLock->GetHandle(),
+		int ret = libusb_control_transfer(handleLock.GetHandle(),
 										  LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT,
 										  HID_CLASS_SET_PROTOCOL, // Defined in HID Class Specific Requests (7.2)
 										  protocol,
@@ -835,8 +836,8 @@ namespace nsyshid::backend::libusb
 
 	bool DeviceLibusb::SetReport(ReportMessage* message)
 	{
-		auto handleLock = AquireHandleLock();
-		if (!handleLock->IsValid())
+		HandleLock handleLock(*this);
+		if (!handleLock.IsValid())
 		{
 			cemuLog_logDebug(LogType::Force, "nsyshid::DeviceLibusb::SetReport(): device is not opened");
 			return false;
@@ -844,7 +845,7 @@ namespace nsyshid::backend::libusb
 
 		uint16 wValue = uint16(message->reportType) << 8 | uint16(message->reportId);
 
-		int ret = libusb_control_transfer(handleLock->GetHandle(),
+		int ret = libusb_control_transfer(handleLock.GetHandle(),
 										  LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT,
 										  HID_CLASS_SET_REPORT, // Defined in HID Class Specific Requests (7.2)
 										  wValue,
@@ -861,50 +862,15 @@ namespace nsyshid::backend::libusb
 		return true;
 	}
 
-	std::unique_ptr<DeviceLibusb::HandleLock> DeviceLibusb::AquireHandleLock()
+	DeviceLibusb::HandleLock::HandleLock(DeviceLibusb& device)
+		: m_gate(&device.m_handleGate), m_entered(use_gate_enter(m_gate)),
+		  m_handle(m_entered ? device.m_libusbHandle : nullptr)
 	{
-		return std::make_unique<HandleLock>(&m_libusbHandle,
-											m_handleMutex,
-											m_handleInUseCounter,
-											m_handleInUseCounterDecremented,
-											*this);
-	}
-
-	DeviceLibusb::HandleLock::HandleLock(libusb_device_handle** handle,
-										 std::mutex& handleMutex,
-										 std::atomic<sint32>& handleInUseCounter,
-										 std::condition_variable& handleInUseCounterDecremented,
-										 DeviceLibusb& device)
-		: m_handle(nullptr),
-		  m_handleMutex(handleMutex),
-		  m_handleInUseCounter(handleInUseCounter),
-		  m_handleInUseCounterDecremented(handleInUseCounterDecremented)
-	{
-		std::lock_guard<std::mutex> lock(handleMutex);
-		if (device.IsOpened() && handle != nullptr && handleInUseCounter >= 0)
-		{
-			this->m_handle = *handle;
-			this->m_handleInUseCounter++;
-		}
 	}
 
 	DeviceLibusb::HandleLock::~HandleLock()
 	{
-		if (IsValid())
-		{
-			std::lock_guard<std::mutex> lock(m_handleMutex);
-			m_handleInUseCounter--;
-			m_handleInUseCounterDecremented.notify_all();
-		}
-	}
-
-	bool DeviceLibusb::HandleLock::IsValid()
-	{
-		return m_handle != nullptr;
-	}
-
-	libusb_device_handle* DeviceLibusb::HandleLock::GetHandle()
-	{
-		return m_handle;
+		if (m_entered)
+			use_gate_leave(m_gate);
 	}
 } // namespace nsyshid::backend::libusb

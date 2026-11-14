@@ -655,6 +655,15 @@ jobs:
           SANITIZER=address,undefined ./test/note_log/run_tests.sh
           make -C test/note_log clean
           SANITIZER=thread ./test/note_log/run_tests.sh
+      - name: "A handle used while it may close"
+        # a USB device's transfers never wait and never see its handle being
+        # opened or closed; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/use_gate/run_tests.sh
+          make -C test/use_gate clean
+          SANITIZER=address,undefined ./test/use_gate/run_tests.sh
+          make -C test/use_gate clean
+          SANITIZER=thread ./test/use_gate/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:

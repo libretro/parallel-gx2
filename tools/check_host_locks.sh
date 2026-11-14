@@ -10,8 +10,6 @@ allowed='src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
 src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.cpp
 src/Cafe/IOSU/nn/boss/boss_service.cpp
 src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp
-src/Cafe/OS/libs/nsyshid/BackendLibusb.cpp
-src/Cafe/OS/libs/nsyshid/BackendLibusb.h
 src/Cemu/napi/napi_act.cpp
 src/Cemu/nex/nexFriends.cpp
 src/Cemu/nex/nexFriends.h
