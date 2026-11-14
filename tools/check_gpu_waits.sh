@@ -69,10 +69,13 @@ pp()
 		$CXX -E -P -DENABLE_LIBRETRO -DENABLE_VULKAN -x c++ - 2>/dev/null
 }
 
-# the body of the function whose definition line matches $2, in file $1
+# the body of the function whose definition line matches $2, in file $1.
+# A \( or \) in it is a bracket expression by the time awk sees it: awk -v
+# reads escapes, and gawk takes "\(" for a group, not a parenthesis.
 body()
 {
-	pp "$1" | awk -v start="$2" '
+	start=$(printf '%s\n' "$2" | sed 's/\\(/[(]/g; s/\\)/[)]/g')
+	pp "$1" | awk -v start="$start" '
 		!on && $0 ~ start { on = 1 }
 		on {
 			print

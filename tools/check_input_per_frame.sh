@@ -29,19 +29,19 @@ body()
 		}'
 }
 
-ctor=$(pp src/input/InputManager.cpp | body '^InputManager::InputManager\(\)')
+ctor=$(pp src/input/InputManager.cpp | body '^InputManager::InputManager[(][)]')
 if [ -z "$ctor" ]; then
 	echo "InputManager::InputManager() not found"; fail=1
 elif echo "$ctor" | grep -q 'std::thread'; then
 	echo "InputManager starts a thread under libretro:"; echo "$ctor"; fail=1
 fi
 
-run=$(pp src/libretro/CemuLibretro.cpp | body 'retro_run\(\)')
+run=$(pp src/libretro/CemuLibretro.cpp | body '(^|[^_a-zA-Z0-9])retro_run[(][)]')
 if [ -z "$run" ]; then
 	echo "retro_run() not found"; fail=1
 elif ! echo "$run" | awk '
-		/libretro_poll_input\(\)/ { polled = 1 }
-		/update_controllers\(\)/ { if (polled) ok = 1 }
+		/libretro_poll_input[(][)]/ { polled = 1 }
+		/update_controllers[(][)]/ { if (polled) ok = 1 }
 		END { exit !ok }'; then
 	echo "retro_run does not update the controllers after polling input"; fail=1
 fi
