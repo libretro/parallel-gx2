@@ -45,32 +45,32 @@ namespace WindowSystem
 		std::atomic_bool is_fullscreen;
 		std::atomic_bool debugger_focused;
 
+		// Keys held, a bit each for the first kKeyCount key codes, set and read
+		// from any thread with no lock
+		static constexpr uint32 kKeyCount = 512;
+
 		void set_keystate(uint32 keycode, bool state)
 		{
-			const std::lock_guard<std::mutex> lock(keycode_mutex);
-			m_keydown[keycode] = state;
+			if (keycode >= kKeyCount)
+				return;
+			const uint32 bit = 1u << (keycode & 31);
+			if (state)
+				m_keydown[keycode >> 5].fetch_or(bit, std::memory_order_relaxed);
+			else
+				m_keydown[keycode >> 5].fetch_and(~bit, std::memory_order_relaxed);
 		}
 
 		bool get_keystate(uint32 keycode)
 		{
-			const std::lock_guard<std::mutex> lock(keycode_mutex);
-			auto result = m_keydown.find(keycode);
-			if (result == m_keydown.end())
+			if (keycode >= kKeyCount)
 				return false;
-			return result->second;
+			return (m_keydown[keycode >> 5].load(std::memory_order_relaxed) >> (keycode & 31)) & 1;
 		}
 
 		void set_keystatesup()
 		{
-			const std::lock_guard<std::mutex> lock(keycode_mutex);
-			std::for_each(m_keydown.begin(), m_keydown.end(), [](std::pair<const uint32, bool>& el) { el.second = false; });
-		}
-
-		template<typename fn>
-		void iter_keystates(fn f)
-		{
-			const std::lock_guard<std::mutex> lock(keycode_mutex);
-			std::for_each(m_keydown.cbegin(), m_keydown.cend(), f);
+			for (auto& word : m_keydown)
+				word.store(0, std::memory_order_relaxed);
 		}
 
 		WindowHandleInfo window_main;
@@ -81,8 +81,7 @@ namespace WindowSystem
 		WindowHandleInfo canvas_pad;
 
 	  private:
-		std::mutex keycode_mutex;
-		std::unordered_map<uint32, bool> m_keydown;
+		std::atomic<uint32> m_keydown[kKeyCount / 32] = {};
 	};
 
 	enum class ErrorCategory

@@ -683,7 +683,6 @@ void GraphicPack2::NotifyModuleLoaded(const RPLModule* rpl)
 {
 	cemuLog_log(LogType::Force, "Loaded module \'{}\' with checksum 0x{:08x}", rpl->moduleName, rpl->patchCRC);
 
-	std::lock_guard<std::recursive_mutex> lock(mtx_patches);
 	list_modules.emplace_back(rpl);
 
 	// todo - iterate all active graphic packs and apply any matching patch groups
@@ -691,6 +690,5 @@ void GraphicPack2::NotifyModuleLoaded(const RPLModule* rpl)
 
 void GraphicPack2::NotifyModuleUnloaded(const RPLModule* rpl)
 {
-	std::lock_guard<std::recursive_mutex> lock(mtx_patches);
 	list_modules.erase(std::remove(list_modules.begin(), list_modules.end(), rpl), list_modules.end());
 }

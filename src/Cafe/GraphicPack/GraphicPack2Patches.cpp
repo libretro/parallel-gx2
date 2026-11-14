@@ -129,7 +129,6 @@ void GraphicPack2::LoadPatchFiles()
 
 void GraphicPack2::EnablePatches()
 {
-	std::lock_guard<std::recursive_mutex> lock(mtx_patches);
 	for (auto& itr : list_modules)
 		ApplyPatchesForModule(itr);
 }
@@ -138,7 +137,6 @@ void GraphicPack2::UnloadPatches()
 {
 	if (list_patchGroups.empty())
 		return;
-	std::lock_guard<std::recursive_mutex> lock(mtx_patches);
 	// if any patch groups were applied then revert here
 	// do this by calling RevertPatchesForModule for every module?
 	for (auto& itr : list_modules)
@@ -190,5 +188,4 @@ void GraphicPack2::RevertPatchesForModule(const RPLModule* rpl)
 		UndoPatchGroups(list_groups, rpl);
 }
 
-std::recursive_mutex GraphicPack2::mtx_patches;
 std::vector<const RPLModule*> GraphicPack2::list_modules;

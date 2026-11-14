@@ -11,18 +11,7 @@
 #define AF_BLUETOOTH AF_BTH
 #define BTPROTO_RFCOMM BT_PORT_ANY
 
-class SlimRWLock
+inline uint32_t GetExceptionError()
 {
-public:
-	SlimRWLock();
-
-	void LockRead();
-	void UnlockRead();
-	void LockWrite();
-	void UnlockWrite();
-
-private:
-	/*SRWLOCK*/ void* m_lock;
-};
-
-uint32_t GetExceptionError();
+	return (uint32_t)GetLastError();
+}

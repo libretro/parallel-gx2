@@ -1341,11 +1341,10 @@ uint8* codeMemoryBlock = nullptr;
 sint32 codeMemoryBlockIndex = 0;
 sint32 codeMemoryBlockSize = 0;
 
-std::mutex mtx_allocExecutableMemory;
-
+// The recompiler thread's alone, as is all code generation once it runs (the
+// glue before it is made by the init that starts it), so taken with no lock
 uint8* PPCRecompilerX86_allocateExecutableMemory(sint32 size)
 {
-	std::lock_guard<std::mutex> lck(mtx_allocExecutableMemory);
 	if( codeMemoryBlockIndex+size > codeMemoryBlockSize )
 	{
 		// allocate new block

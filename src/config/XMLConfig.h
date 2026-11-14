@@ -6,7 +6,8 @@
 #include "config/ConfigValue.h"
 
 #include <string>
-#include <mutex>
+#include <functional>
+#include <vector>
 
 template <typename T>
 concept HasConstCharConstructor = requires { T(std::declval<const char*>()); };
@@ -400,8 +401,6 @@ public:
 	[[nodiscard]] const std::wstring& GetFilename() const { return m_filename; }
 	void SetFilename(const std::wstring& filename) { m_filename = filename; }
 
-	std::unique_lock<std::mutex> Lock() { return std::unique_lock(m_mutex); }
-
 	void AddChildConfig(ChildXMLConfigParser childConfigParser)
 	{
 		m_childConfigParsers.push_back(childConfigParser);
@@ -411,70 +410,6 @@ public:
 	std::vector<ChildXMLConfigParser> m_childConfigParsers;
 	T& m_instance;
 	std::wstring m_filename;
-	std::mutex m_mutex;
-};
-
-template<typename T>
-concept XMLConfigProvider = requires(T t, ChildXMLConfigParser& configParser) {
-	{ t().Save() } -> std::same_as<bool>;
-	{ t().Load() } -> std::same_as<bool>;
-	{ t().Lock() } -> std::same_as<std::unique_lock<std::mutex>>;
-	{ t().AddChildConfig(configParser) } -> std::same_as<void>;
-};
-
-template<typename T, void (T::*L)(XMLConfigParser&), void (T::*S)(XMLConfigParser&)>
-class XMLChildConfig
-{
-  public:
-	XMLChildConfig(XMLConfigProvider auto getParentConfig)
-	{
-		m_parentConfig = {
-			.lock = [getParentConfig]() { return getParentConfig().Lock(); },
-			.save = [getParentConfig]() { return getParentConfig().Save(); },
-			.load = [getParentConfig]() { return getParentConfig().Load(); },
-		};
-
-		auto configParser = std::make_pair(
-			[this](XMLConfigParser& parser) {
-				(m_data.*S)(parser);
-			},
-			[this](XMLConfigParser& parser) {
-				(m_data.*L)(parser);
-			});
-
-		getParentConfig().AddChildConfig(configParser);
-	}
-
-	bool Save()
-	{
-		return m_parentConfig.save();
-	}
-
-	bool Load()
-	{
-		return m_parentConfig.load();
-	}
-
-	T& Data()
-	{
-		return m_data;
-	}
-
-	std::unique_lock<std::mutex> Lock()
-	{
-		return m_parentConfig.lock();
-	}
-
-	virtual ~XMLChildConfig() = default;
-
-  private:
-	T m_data;
-	struct
-	{
-		std::function<std::unique_lock<std::mutex>()> lock;
-		std::function<bool()> save;
-		std::function<bool()> load;
-	} m_parentConfig;
 };
 
 template<typename T>

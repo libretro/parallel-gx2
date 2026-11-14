@@ -292,7 +292,9 @@ private:
 	
 	std::vector<std::pair<MPTR, GPCallbackType>> m_callbacks;
 
-	static std::recursive_mutex mtx_patches;
+	// The RPL loader's modules, kept by it as it links and unloads them; the
+	// packs read the list when they are activated, at a title's start, on the
+	// thread that loaded it - so no lock
 	static std::vector<const RPLModule*> list_modules;
 
 public:

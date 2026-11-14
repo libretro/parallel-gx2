@@ -2,9 +2,8 @@
 
 #include "Common/enumFlags.h"
 
-#include <mutex>
 #include <atomic>
-#include <shared_mutex>
+#include "util/helpers/RcuCell.h"
 #include <cassert>
 #include <string>
 
@@ -53,18 +52,20 @@ private:
 	const TType m_init_value;
 };
 
+// A value too big to be atomic (a string, a list), read from any thread
+// with no lock: replaced whole, through an RcuCell, when it is set
 template<typename TType>
 class ConfigValueNoneAtomic
 {
 public:
-	constexpr ConfigValueNoneAtomic()
-		: m_value({}), m_init_value({}) {}
+	ConfigValueNoneAtomic()
+		: m_value(TType()), m_init_value({}) {}
 
-	constexpr ConfigValueNoneAtomic(const TType& init_value)
+	ConfigValueNoneAtomic(const TType& init_value)
 		: m_value(init_value), m_init_value(init_value) {}
 
-	constexpr ConfigValueNoneAtomic(TType&& init_value)
-		: m_value(init_value), m_init_value(init_value) {}
+	ConfigValueNoneAtomic(TType&& init_value)
+		: m_value(TType(init_value)), m_init_value(init_value) {}
 
 	ConfigValueNoneAtomic(const ConfigValueNoneAtomic& v)
 		: m_value(v.GetValue()), m_init_value(v.GetInitValue()) {}
@@ -89,28 +90,24 @@ public:
 
 	[[nodiscard]] TType GetValue() const
 	{
-		std::shared_lock lock(m_mutex);
-		return m_value;
+		return *m_value.Read();
 	}
 
 	void SetValue(const TType& v)
 	{
-		std::lock_guard lock(m_mutex);
-		m_value = v;
+		m_value.Write([&] { return v; });
 	}
 
 	void SetValue(std::string_view v)
 		requires std::is_same_v<TType, std::string>
 	{
-		std::lock_guard lock(m_mutex);
-		m_value = v;
+		m_value.Write([&] { return TType(v); });
 	}
 
 	void SetValue(std::wstring_view v)
 		requires std::is_same_v<TType, std::string>
 	{
-		std::lock_guard lock(m_mutex);
-		m_value = v;
+		m_value.Write([&] { return TType(v.begin(), v.end()); });
 	}
 
 	[[nodiscard]] const TType& GetInitValue() const { return m_init_value; }
@@ -121,8 +118,7 @@ public:
 	}
 
 protected:
-	mutable std::shared_mutex m_mutex;
-	TType m_value;
+	RcuCell<TType> m_value;
 	const TType m_init_value;
 };
 

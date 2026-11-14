@@ -76,6 +76,9 @@
 #include "Common/ExceptionHandler/ExceptionHandler.h"
 #include "Common/cpu_features.h"
 #include "Common/FileStream.h"
+#include "util/helpers/FixedQueue.h"
+#include "util/helpers/MpscList.h"
+#include "util/helpers/RcuCell.h"
 #include "util/helpers/MappedFile.h"
 #include <vfs/vfs_hybrid.h>
 
@@ -366,11 +369,16 @@ static std::atomic_bool s_convert_mode{false};
 static std::atomic_bool s_convert_cancel{false};
 static std::atomic_bool s_convert_finished{false};
 static std::thread s_convert_thread;
-static std::mutex s_convert_mutex;
-static std::string s_convert_status;
-// -1 means "no figure to show": the frontend draws an indeterminate bar for it,
-// which is what counting files and the final message want.
-static int s_convert_progress = -1;
+// Where the conversion has got to: set by its thread, read by retro_run, with
+// no lock (a fresh copy replaces the last). A progress of -1 means "no figure
+// to show": the frontend draws an indeterminate bar for it, which is what
+// counting files and the final message want.
+struct LibretroConvertStatus
+{
+	std::string text;
+	int progress = -1;
+};
+static RcuCell<LibretroConvertStatus> s_convert_status;
 static std::unique_ptr<GameInfo2> s_convert_game_info;
 
 // Where a conversion is allowed to write. The frontend decides that - on
@@ -4434,9 +4442,7 @@ static void libretro_setup_controllers()
 
 static void libretro_set_convert_status(std::string text, int progress)
 {
-	std::lock_guard lock(s_convert_mutex);
-	s_convert_status = std::move(text);
-	s_convert_progress = progress;
+	s_convert_status.Write([&] { return LibretroConvertStatus{std::move(text), progress}; });
 }
 
 // Everything the title is made of - base, update, DLC - written into the folder
@@ -4560,23 +4566,21 @@ static void libretro_start_wua_conversion(TitleId baseTitleId, const fs::path& g
 // Files the running title had in use when they were to be removed or
 // uninstalled: deleted once the title has stopped, at a close in
 // retro_unload_game and at a reset before the title starts again.
-static std::mutex s_remove_on_unload_mutex;
-static std::vector<fs::path> s_remove_on_unload;
+// Queued by the install's thread with no lock, taken by the frontend's.
+static MpscList<fs::path> s_remove_on_unload;
 
 static void libretro_remove_on_unload(const fs::path& path)
 {
-	std::lock_guard lock(s_remove_on_unload_mutex);
-	if (std::find(s_remove_on_unload.begin(), s_remove_on_unload.end(), path) == s_remove_on_unload.end())
-		s_remove_on_unload.push_back(path);
+	s_remove_on_unload.Push(path);
 }
 
 static void libretro_run_removals()
 {
 	std::vector<fs::path> paths;
-	{
-		std::lock_guard lock(s_remove_on_unload_mutex);
-		paths.swap(s_remove_on_unload);
-	}
+	s_remove_on_unload.TakeAll([&](fs::path&& path) {
+		if (std::find(paths.begin(), paths.end(), path) == paths.end())
+			paths.push_back(std::move(path));
+	});
 	for (const fs::path& path : paths)
 	{
 		const bool removed = FileStream::RemoveAll(path);
@@ -6292,13 +6296,14 @@ static void libretro_update_software_keyboard()
 // (Shoegzer, #28). Nothing of the core's is drawn over the picture, so the
 // name so far is shown as the frontend's notification. A pad picks it a character at a time, the way an
 // arcade's initials are entered; a keyboard types it, through the frontend's
-// keyboard callback. The game gets no input while the entry is open.
+// keyboard callback. The game gets no input while the entry is open. All of it
+// is retro_run's: the keyboard callback, which may come on another thread,
+// only queues the key.
 static struct
 {
 	bool active = false;
 	uint32 persistentId = 0;
 	std::wstring text;
-	std::recursive_mutex mutex; // the keyboard callback may come from another thread
 	bool accept = false, cancel = false, changed = false;
 	bool held[16]{};
 	int repeat = 0, shown = 0;
@@ -6328,14 +6333,29 @@ static void libretro_show_status(unsigned durationMs, const std::string& text)
 static const std::wstring kNameEntryCharacters =
 	L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_.!?&+";
 
+struct LibretroKeyEvent
+{
+	unsigned keycode;
+	uint32_t character;
+};
+
+// Keys pressed, from the frontend's keyboard callback to retro_run, with no
+// lock and nothing allocated; a burst past the ring's size loses its tail
+static FixedQueue<LibretroKeyEvent, 64> s_key_events;
+
 static void RETRO_CALLCONV libretro_keyboard_event(bool down, unsigned keycode, uint32_t character, uint16_t /*modifiers*/)
 {
-	if (!down)
-		return;
-	std::lock_guard lock(s_name_entry.mutex);
+	if (down)
+		s_key_events.push(LibretroKeyEvent{keycode, character});
+}
+
+// A key, in retro_run: the name entry's while it is open, else the software
+// keyboard's
+static void libretro_name_entry_key(unsigned keycode, uint32_t character)
+{
 	if (!s_name_entry.active)
 	{
-		libretro_software_keyboard_key(down, keycode, character);
+		libretro_software_keyboard_key(true, keycode, character);
 		return;
 	}
 	if (keycode == RETROK_BACKSPACE)
@@ -6356,7 +6376,6 @@ static void RETRO_CALLCONV libretro_keyboard_event(bool down, unsigned keycode, 
 
 static void libretro_update_name_entry()
 {
-	std::lock_guard lock(s_name_entry.mutex);
 	if (s_name_entry_requested.exchange(false) && !s_name_entry.active)
 	{
 		const uint32 persistentId = s_pending_account ? s_pending_account : GetConfig().account.m_persistent_id;
@@ -6376,6 +6395,9 @@ static void libretro_update_name_entry()
 		for (int i = 0; i < 16; i++)
 			s_name_entry.held[i] = s_port_state[0].buttons[i] != 0;
 	}
+	// what was typed since the last frame
+	for (LibretroKeyEvent key; s_key_events.peek2(key);)
+		libretro_name_entry_key(key.keycode, key.character);
 	if (!s_name_entry.active)
 		return;
 
@@ -7216,9 +7238,9 @@ RETRO_API void retro_run()
 		std::string text;
 		int progress = -1;
 		{
-			std::lock_guard lock(s_convert_mutex);
-			text = s_convert_status;
-			progress = s_convert_progress;
+			const auto status = s_convert_status.Read();
+			text = status->text;
+			progress = status->progress;
 		}
 		if (!text.empty() && environ_cb)
 		{

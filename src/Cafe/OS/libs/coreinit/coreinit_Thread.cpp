@@ -48,9 +48,7 @@ static void ConfigureHostFloatingPointEnvironment()
 #endif
 }
 
-SlimRWLock srwlock_activeThreadList;
-
-// public list of active threads
+// public list of active threads; changed only with the scheduler lock held
 MPTR activeThread[256];
 sint32 activeThreadCount = 0;
 
@@ -173,7 +171,6 @@ namespace coreinit
 
 		MPTR threadMPTR = memory_getVirtualOffsetFromPointer(thread);
 
-		srwlock_activeThreadList.LockWrite();
 		bool alreadyActive = false;
 		for (sint32 i = 0; i < activeThreadCount; i++)
 		{
@@ -190,8 +187,6 @@ namespace coreinit
 		}
 
 		__OSCreateHostThread(thread);
-
-		srwlock_activeThreadList.UnlockWrite();
 	}
 
 	// remove thread from active queue. Reset id and state
@@ -201,7 +196,6 @@ namespace coreinit
 
 		// remove thread from active thread list
 		MPTR t = memory_getVirtualOffsetFromPointer(thread);
-		srwlock_activeThreadList.LockWrite();
 		bool noHit = true;
 		for (sint32 i = 0; i < activeThreadCount; i++)
 		{
@@ -214,8 +208,7 @@ namespace coreinit
 			}
 		}
 		cemu_assert_debug(noHit == false);
-		srwlock_activeThreadList.UnlockWrite();
-		
+
 		g_activeThreadQueue->removeThread(thread, &thread->activeThreadChain); // todo - check if thread in queue
 		
 		cemu_assert_debug(thread->state == OSThread_t::THREAD_STATE::STATE_NONE);
@@ -228,17 +221,14 @@ namespace coreinit
 	{
 		cemu_assert_debug(__OSHasSchedulerLock());
 		MPTR threadMPTR = memory_getVirtualOffsetFromPointer(thread);
-		srwlock_activeThreadList.LockWrite();
 		bool isRunable = false;
 		for (sint32 i = 0; i < activeThreadCount; i++)
 		{
 			if (activeThread[i] == threadMPTR)
 			{
-				srwlock_activeThreadList.UnlockWrite();
 				return true;
 			}
 		}
-		srwlock_activeThreadList.UnlockWrite();
 		return false;
 	}
 

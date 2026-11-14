@@ -210,7 +210,7 @@ need $L 'sGpuPauseRequested.store(false' LatteGpuWake_Notify
 need src/Cafe/GraphicPack/GraphicPack2.cpp 's_isReady = true;' LatteGpuWake_Notify
 need src/Cafe/OS/libs/gx2/GX2_Misc.cpp 'gx2InitCalled++;' LatteGpuWake_Notify
 need src/Cafe/OS/libs/coreinit/coreinit_OSScreen.cpp 'flipRequestCount++;' LatteGpuWake_Notify
-need src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp 'LatteAsyncCommandQueue.push' LatteGpuWake_Notify
+need src/Cafe/HW/Latte/Core/LatteAsyncCommands.cpp 'if (!s_asyncCommands.TryPush' LatteGpuWake_Notify
 need $L 'sGpuAtPauseGate.store(true' LatteGpuWake_Notify
 need $L 'sGpuParked.store(true' LatteGpuWake_Notify
 need $L 'sGpuHandingContextBack.store(false' LatteGpuWake_Notify

@@ -29,7 +29,7 @@ HDRS := $(SRC)/libretro/LibretroAudioRing.h $(SRC)/Cafe/HW/Latte/Core/LatteGpuWa
 	$(SRC)/Cafe/HW/Espresso/PPCTimerClock.h $(SRC)/util/helpers/AtomicPtrBag.h \
 	$(SRC)/util/helpers/FixedQueue.h $(SRC)/util/helpers/lf_ring.h $(SRC)/util/helpers/PoolNew.h $(SRC)/util/helpers/obj_pool.h $(SRC)/util/helpers/SmallVec.h $(SRC)/util/helpers/MpmcQueue.h \
 	$(SRC)/util/helpers/ClaimTicket.h $(SRC)/Cemu/nex/nexWait.h \
-	$(SRC)/util/helpers/RcuCell.h $(SRC)/util/helpers/rcu_cell.h $(SRC)/util/helpers/Semaphore.h $(SRC)/util/helpers/IdleWait.h \
+	$(SRC)/util/helpers/RcuCell.h $(SRC)/util/helpers/rcu_cell.h $(SRC)/util/helpers/DoneQueue.h $(SRC)/config/ConfigValue.h $(SRC)/util/helpers/Semaphore.h $(SRC)/util/helpers/IdleWait.h \
 	$(SRC)/Cafe/HW/Latte/Core/FetchShaderRegistry.h $(SRC)/util/helpers/u64_map.h
 
 handoff_test$(EXE): $(CXX_SRCS) $(C_SRCS) $(HDRS)

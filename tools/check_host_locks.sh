@@ -1,15 +1,12 @@
 #!/bin/sh
-# Fails if a host lock (a mutex, a condition variable, a lock guard) is in a
+# Fails if a host lock (a mutex, a condition variable, a lock guard, a
+# platform's own: pthreads', a Windows critical section or SRW lock) is in a
 # source file of the core that is not on the list below, or a file on it
 # has none left. The list only shrinks: what comes off it has been made
 # lock-free, and a lock must not come back there or anywhere else.
 cd "$(dirname "$0")/.." || exit 2
 
-allowed='src/Cafe/GraphicPack/GraphicPack2.h
-src/Cafe/GraphicPack/GraphicPack2Patches.cpp
-src/Cafe/GraphicPack/GraphicPack2PatchesApply.cpp
-src/Cafe/HW/Espresso/Recompiler/BackendX64/BackendX64.cpp
-src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
+allowed='src/Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
 src/Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.cpp
 src/Cafe/IOSU/nn/boss/boss_service.cpp
 src/Cafe/OS/libs/coreinit/coreinit_Scheduler.cpp
@@ -18,15 +15,9 @@ src/Cafe/OS/libs/nsyshid/BackendLibusb.h
 src/Cemu/napi/napi_act.cpp
 src/Cemu/nex/nexFriends.cpp
 src/Cemu/nex/nexFriends.h
-src/Common/unix/platform.h
-src/config/ConfigValue.h
-src/config/XMLConfig.h
-src/gui/interface/WindowSystem.h
-src/libretro/CemuLibretro.cpp
-src/util/helpers/ClassWrapper.h
 src/util/helpers/ConcurrentQueue.h'
 
-pattern='std::(recursive_|shared_|timed_)?mutex|std::condition_variable|std::(lock_guard|unique_lock|scoped_lock|shared_lock)|slock_new|scond_new|pthread_mutex_lock'
+pattern='std::(recursive_|shared_|timed_)?mutex|std::condition_variable|std::(lock_guard|unique_lock|scoped_lock|shared_lock)|slock_(new|lock)|scond_(new|wait)|pthread_(mutex|rwlock|cond)_|AcquireSRWLock|EnterCriticalSection'
 
 # code only: comment lines out
 found=$(grep -rlE "$pattern" src --include='*.c' --include='*.cpp' --include='*.h' 2>/dev/null | sort | while read -r f; do

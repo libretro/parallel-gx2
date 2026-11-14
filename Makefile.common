@@ -383,7 +383,6 @@ CORE_SOURCES_CXX += $(GRAPHIC_PACKS_C)
 
 ifeq ($(OS_WIN),1)
    CORE_SOURCES_CXX += \
-	$(SRC_DIR)/Common/windows/platform.cpp \
 	$(SRC_DIR)/Common/ExceptionHandler/ExceptionHandler_win32.cpp \
 	$(SRC_DIR)/util/Fiber/FiberWin.cpp \
 	$(SRC_DIR)/util/MemMapper/MemMapperWin.cpp

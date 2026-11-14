@@ -645,5 +645,3 @@ namespace coreinit
 // deprecated / clean up required
 extern MPTR activeThread[256];
 extern sint32 activeThreadCount;
-
-extern SlimRWLock srwlock_activeThreadList;

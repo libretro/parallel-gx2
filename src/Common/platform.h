@@ -17,8 +17,8 @@
 // alone, and BOOST_OS_IOS does not answer for tvOS either (boost.predef keys it
 // off __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__, which a tvOS build does
 // not define), so an iOS or tvOS build fell through every branch here and got
-// no platform header at all - which surfaces a few hundred includes later as
-// "unknown type name 'SlimRWLock'".
+// no platform header at all - which surfaced a few hundred includes later as
+// an unknown type.
 #include <libkern/OSByteOrder.h>
 #include "Common/unix/platform.h"
 #endif

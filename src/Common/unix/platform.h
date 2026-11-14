@@ -1,4 +1,4 @@
-#include <shared_mutex>
+#include <cerrno>
 
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -13,33 +13,6 @@ inline pid_t cemu_gettid()
 	return static_cast<pid_t>(syscall(SYS_gettid));
 }
 #endif
-
-class SlimRWLock
-{
-public:
-	void LockRead()
-	{
-		m_sm.lock_shared();
-	}
-
-	void UnlockRead()
-	{
-		m_sm.unlock_shared();
-	}
-
-	void LockWrite()
-	{
-		m_sm.lock();
-	}
-
-	void UnlockWrite()
-	{
-		m_sm.unlock();
-	}
-
-private:
-	std::shared_mutex m_sm;
-};
 
 inline uint32_t GetExceptionError() 
 {

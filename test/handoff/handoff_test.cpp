@@ -64,6 +64,9 @@
 //  - nexWait (the nex thread and the online logins): a wait ends when a packet
 //    arrives or the wake is signalled from another thread, well before its
 //    timeout, and runs to the timeout otherwise;
+//  - ConfigValue of a string: a reader never sees one half replaced;
+//  - DoneQueue (GX2's surface copies to the GPU thread): what a thread pushed
+//    has run, not only been taken, once it sees all done;
 //  - RcuCell (the emulated controllers and their mappings): readers never see
 //    a value freed or half-built, however many are inside when a writer
 //    replaces it, and a writer is never held up by readers that came after
@@ -102,6 +105,8 @@
 #include "util/helpers/ClaimTicket.h"
 #include "Cemu/nex/nexWait.h"
 #include "util/helpers/RcuCell.h"
+#include "util/helpers/DoneQueue.h"
+#include "config/ConfigValue.h"
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/IdleWait.h"
 #include "Cafe/HW/Espresso/PPCTimerClock.h"
@@ -2048,6 +2053,101 @@ static void TestFetchShaderRegistry()
 	CHECK(reg->Count() == 0 && reg->Find(200) == nullptr);
 }
 
+// ConfigValue of a type too big to be atomic (a path, a name): a reader on
+// another thread never sees a string half replaced, while the frontend's
+// thread sets it over and over - one of two whole values each time
+static void TestConfigValueString()
+{
+	const std::string a(200, 'a'), b(300, 'b');
+	ConfigValue<std::string> value(a);
+	CHECK(value.GetValue() == a && value.GetInitValue() == a);
+	std::atomic<bool> stop{false};
+	std::atomic<int> torn{0};
+	std::vector<std::thread> readers;
+	for (int t = 0; t < 3; t++)
+		readers.emplace_back([&] {
+			while (!stop.load())
+			{
+				const std::string v = value;
+				if (v != a && v != b)
+					torn++;
+			}
+		});
+	for (int i = 0; i < 20000; i++)
+		value = (i & 1) ? b : a;
+	stop = true;
+	for (auto& r : readers)
+		r.join();
+	CHECK(torn.load() == 0);
+	CHECK(value.GetValue() == b); // the last set
+	CHECK(value.GetInitValue() == a);
+	ConfigValue<std::string> copy(value);
+	value = a;
+	CHECK(copy.GetValue() == b && value.GetValue() == a);
+}
+
+// DoneQueue (GX2's surface copies, CPU threads to the GPU thread): AllDone is
+// false from a push until the worker has run that item, not merely taken it;
+// a full queue refuses, uncounted; with pushers on several threads, each one
+// waiting for AllDone after its push only ever sees its own item run.
+static void TestDoneQueue()
+{
+	DoneQueue<int, 4> q;
+	CHECK(q.AllDone());
+	CHECK(q.TryPush(1));
+	CHECK(!q.AllDone());
+	int item = 0;
+	CHECK(q.Take(item) && item == 1);
+	CHECK(!q.AllDone());                     // taken, not yet run
+	q.Done();
+	CHECK(q.AllDone());
+	for (int i = 0; i < 4; i++)
+		CHECK(q.TryPush(i));
+	CHECK(!q.TryPush(9));                    // full: refused
+	for (int i = 0; i < 4; i++)
+	{
+		CHECK(q.Take(item) && item == i);
+		q.Done();
+	}
+	CHECK(q.AllDone());                      // the refused one not counted
+
+	static DoneQueue<int, 16> work;
+	static std::atomic<int> ran[3 * 2000];
+	for (auto& r : ran)
+		r = 0;
+	std::atomic<bool> stop{false};
+	std::atomic<int> early{0};
+	std::thread worker([&] {
+		int v;
+		while (!stop.load())
+			while (work.Take(v))
+			{
+				ran[v].store(1, std::memory_order_release);
+				work.Done();
+			}
+	});
+	std::vector<std::thread> pushers;
+	for (int t = 0; t < 3; t++)
+		pushers.emplace_back([&, t] {
+			for (int i = 0; i < 2000; i++)
+			{
+				const int v = t * 2000 + i;
+				while (!work.TryPush(v))
+					std::this_thread::yield();
+				while (!work.AllDone())
+					std::this_thread::yield();
+				if (!ran[v].load(std::memory_order_acquire))
+					early++;
+			}
+		});
+	for (auto& p : pushers)
+		p.join();
+	stop = true;
+	worker.join();
+	CHECK(early.load() == 0);
+	CHECK(work.AllDone());
+}
+
 int main()
 {
 	TestWorkQueueStream();
@@ -2075,6 +2175,8 @@ int main()
 	TestClaimTicket();
 	TestNexWait();
 	TestRcuCell();
+	TestConfigValueString();
+	TestDoneQueue();
 	TestFetchShaderRegistry();
 	TestSemaphores();
 	TestIdleWait();
