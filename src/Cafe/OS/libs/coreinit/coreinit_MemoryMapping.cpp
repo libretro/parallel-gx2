@@ -1,5 +1,6 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "util/MemMapper/MemMapper.h"
+#include "virt_range.h"
 
 #define OS_MAP_READ_ONLY		(1)
 #define OS_MAP_READ_WRITE		(2)
@@ -12,77 +13,19 @@
 
 namespace coreinit
 {
-	std::mutex s_memMappingMtx;
-
-	struct OSVirtMemoryEntry
-	{
-		OSVirtMemoryEntry(MPTR virtualAddress, uint32 size, uint32 alignment) : virtualAddress(virtualAddress), size(size), alignment(alignment) {};
-
-		MPTR virtualAddress;
-		uint32 size;
-		uint32 alignment;
-	};
-
-	std::vector<OSVirtMemoryEntry> s_allocatedVirtMemory;
+	virt_range_t s_virtRange;
 
 	MPTR _OSAllocVirtAddr(uint32 size, uint32 alignment)
 	{
-		std::lock_guard _l(s_memMappingMtx);
-		uint32 currentAddress = VIRT_RANGE_ADDR;
-		uint32 endAddress = VIRT_RANGE_ADDR + VIRT_RANGE_SIZE;
-		uint32 pageSize = (uint32)MemMapper::GetPageSize();
-		pageSize = std::max<uint32>(pageSize, Espresso::MEM_PAGE_SIZE);
-		while (true)
-		{
-			// calculated aligned start and end address for current region
-			currentAddress = (currentAddress + alignment - 1) & ~(alignment - 1);
-			currentAddress = (currentAddress + pageSize - 1) & ~(pageSize - 1);
-			uint32 currentEndAddress = currentAddress + size;
-			currentEndAddress = (currentEndAddress + pageSize - 1) & ~(pageSize - 1);
-			// check if out of available space
-			if (currentEndAddress > endAddress)
-			{
-				cemuLog_log(LogType::APIErrors, "_OSAllocVirtAddr(): Unable to allocate memory\n");
-				return MPTR_NULL;
-			}
-			// check for overlapping regions
-			bool emptySpaceFound = true;
-			for(auto& virtMemIt : s_allocatedVirtMemory)
-			{
-				// check for range collision
-				if (currentAddress < (virtMemIt.virtualAddress + virtMemIt.size) && currentEndAddress > virtMemIt.virtualAddress)
-				{
-					// regions overlap
-					// adjust current address and keep looking
-					currentAddress = virtMemIt.virtualAddress + virtMemIt.size;
-					emptySpaceFound = false;
-					break;
-				}
-			}
-			if (emptySpaceFound)
-			{
-				// add entry
-				s_allocatedVirtMemory.emplace_back(currentAddress, currentEndAddress - currentAddress, alignment);
-				return currentAddress;
-			}
-		}
-		return MPTR_NULL;
+		MPTR addr = virt_range_alloc(&s_virtRange, size, alignment);
+		if (!addr)
+			cemuLog_log(LogType::APIErrors, "_OSAllocVirtAddr(): Unable to allocate memory\n");
+		return addr;
 	}
 
 	bool _OSFreeVirtAddr(MPTR virtAddr)
 	{
-		std::lock_guard _l(s_memMappingMtx);
-		auto it = s_allocatedVirtMemory.begin();
-		while (it != s_allocatedVirtMemory.end())
-		{
-			if (it->virtualAddress == virtAddr)
-			{
-				s_allocatedVirtMemory.erase(it);
-				return true;
-			}
-			++it;
-		}
-		return false;
+		return virt_range_free(&s_virtRange, virtAddr);
 	}
 
 	void OSGetAvailPhysAddrRange(uint32be* physRangeStart, uint32be* physRangeSize)
@@ -153,7 +96,8 @@ namespace coreinit
 
 	void InitializeMemoryMapping()
 	{
-		s_allocatedVirtMemory.clear();
+		virt_range_init(&s_virtRange, VIRT_RANGE_ADDR, VIRT_RANGE_SIZE,
+			std::max<uint32>((uint32)MemMapper::GetPageSize(), Espresso::MEM_PAGE_SIZE));
 		cafeExportRegister("coreinit", OSGetAvailPhysAddrRange, LogType::CoreinitMemoryMapping);
 		cafeExportRegister("coreinit", OSAllocVirtAddr, LogType::CoreinitMemoryMapping);
 		cafeExportRegister("coreinit", OSFreeVirtAddr, LogType::CoreinitMemoryMapping);

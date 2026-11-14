@@ -12,6 +12,7 @@
 #include "coreinit_IPC.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "coreinit_IPCBuf.h"
+#include "fsa_clients.h"
 #include "Cafe/CafeSystem.h"
 #include "Cafe/TitleList/TitleInfo.h"
 
@@ -1969,9 +1970,6 @@ namespace coreinit
 		return 0; // no error
 	}
 
-	std::vector<FSAClientHandle> s_fsa_activeClients;
-	std::mutex s_fsa_activeClientsMutex;
-
 	FSAClientHandle FSAAddClientEx(void* data)
 	{
 		if (data != NULL)
@@ -1986,10 +1984,11 @@ namespace coreinit
 			return (FSAClientHandle)FSA_RESULT::PERMISSION_ERROR;
 		}
 
-		s_fsa_activeClientsMutex.lock();
-		s_fsa_activeClients.push_back((FSAClientHandle)handle);
-		s_fsa_activeClientsMutex.unlock();
-
+		if (!fsa_clients_add((uint32)handle))
+		{
+			IOS_Close(handle);
+			return (FSAClientHandle)FSA_RESULT::OUT_OF_RESOURCES;
+		}
 		return (FSAClientHandle)handle;
 	}
 
@@ -2004,17 +2003,9 @@ namespace coreinit
 		{
 			return FSA_RESULT::INVALID_CLIENT_HANDLE;
 		}
-		s_fsa_activeClientsMutex.lock();
-
-		auto it = std::find(s_fsa_activeClients.begin(), s_fsa_activeClients.end(), clientHandle);
-		if (it != s_fsa_activeClients.end())
-		{
+		// closed once, by whichever call takes it out
+		if (fsa_clients_remove(clientHandle))
 			IOS_Close(clientHandle);
-			s_fsa_activeClients.erase(it);
-		}
-
-		s_fsa_activeClientsMutex.unlock();
-
 		return FSA_RESULT::OK;
 	}
 
@@ -2022,36 +2013,31 @@ namespace coreinit
 	SysAllocator<uint8, 0x37500> s_fsaIpcPoolBuffer;
 	SysAllocator<uint32be> s_fsaIpcPoolBufferNumItems;
 
-	std::mutex sFSAIPCBufferLock;
-	bool s_fsaInitDone = false;
+	// 0 not made, 1 being made, 2 made
+	std::atomic<int> s_fsaInitState{0};
 
 	void FSAInit()
 	{
-		if (!s_fsaInitDone)
+		int expected = 0;
+		if (s_fsaInitState.compare_exchange_strong(expected, 1, std::memory_order_acquire))
 		{
 			s_fsaIpcPool = IPCBufPoolCreate(s_fsaIpcPoolBuffer.GetPtr(), s_fsaIpcPoolBuffer.GetByteSize(), sizeof(iosu::fsa::FSAShimBuffer), &s_fsaIpcPoolBufferNumItems, 0);
-			s_fsaInitDone = true;
+			s_fsaInitState.store(2, std::memory_order_release);
 		}
 	}
 
 	bool FSAShimCheckClientHandle(FSAClientHandle clientHandle)
 	{
-		std::scoped_lock lock(s_fsa_activeClientsMutex);
-		if (std::find(s_fsa_activeClients.begin(), s_fsa_activeClients.end(), clientHandle) != s_fsa_activeClients.end())
-		{
-			return true;
-		}
-		return false;
+		return fsa_clients_has(clientHandle);
 	}
 
 	FSA_RESULT FSAShimAllocateBuffer(MEMPTR<MEMPTR<iosu::fsa::FSAShimBuffer>> outBuffer)
 	{
-		if (!s_fsaInitDone)
+		if (s_fsaInitState.load(std::memory_order_acquire) != 2)
 			return FSA_RESULT::NOT_INIT;
 
-		sFSAIPCBufferLock.lock();
+		// the pool takes its own guest mutex
 		auto ptr = IPCBufPoolAllocate(s_fsaIpcPool, sizeof(iosu::fsa::FSAShimBuffer));
-		sFSAIPCBufferLock.unlock();
 
 		if (!ptr)
 			return FSA_RESULT::OUT_OF_RESOURCES;
@@ -2063,9 +2049,7 @@ namespace coreinit
 
 	FSA_RESULT FSAShimFreeBuffer(iosu::fsa::FSAShimBuffer* buffer)
 	{
-		sFSAIPCBufferLock.lock();
 		IPCBufPoolFree(s_fsaIpcPool, (uint8_t*)buffer);
-		sFSAIPCBufferLock.unlock();
 		return FSA_RESULT::OK;
 	}
 
@@ -2647,6 +2631,9 @@ namespace coreinit
 	void InitializeFS()
 	{
 		OSInitMutex(&s_fsGlobalMutex);
+		// a title starts with no FSA clients and its own IPC pool
+		fsa_clients_reset();
+		s_fsaInitState.store(0, std::memory_order_relaxed);
 
 		cafeExportRegister("coreinit", FSInit, LogType::CoreinitFile);
 		cafeExportRegister("coreinit", FSShutdown, LogType::CoreinitFile);
