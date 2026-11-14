@@ -1,6 +1,7 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "input/InputManager.h"
 #include "config/CemuConfig.h"
+#include "libretro/libretro_mic.h"
 
 enum class MIC_RESULT
 {
@@ -13,6 +14,8 @@ enum class MIC_RESULT
 };
 
 #define MIC_SAMPLERATE				32000
+// an AX frame is 3 ms
+#define AX_MIC_SAMPLES_PER_FRAME	(MIC_SAMPLERATE * 3 / 1000)
 
 
 enum class MIC_STATUS_FLAGS : uint32
@@ -172,6 +175,7 @@ void micExport_MICOpen(PPCInterpreter_t* hCPU)
 	}
 	// success
 	MICStatus.drc[drcIndex].isOpen = true;
+	libretro_mic_want(true);
 	osLib_returnFromFunction(hCPU, (uint32)MIC_RESULT::SUCCESS);
 }
 
@@ -198,6 +202,7 @@ void micExport_MICClose(PPCInterpreter_t* hCPU)
 	}
 	// success
 	MICStatus.drc[drcIndex].isOpen = false;
+	libretro_mic_want(false);
 	osLib_returnFromFunction(hCPU, (uint32)MIC_RESULT::SUCCESS);
 }
 
@@ -371,8 +376,19 @@ void mic_updateOnAXFrame()
 			return;
 	}
 
-	// no microphone in the core: a tone while the GamePad's mic button is
-	// held, silence otherwise
+	// the frontend's microphone: 3 ms of it, silence where it has not
+	// caught up
+	if (libretro_mic_live())
+	{
+		sint16 micSampleData[AX_MIC_SAMPLES_PER_FRAME];
+		const size_t got = libretro_mic_take((int16_t*)micSampleData, AX_MIC_SAMPLES_PER_FRAME);
+		memset(micSampleData + got, 0, (AX_MIC_SAMPLES_PER_FRAME - got) * sizeof(sint16));
+		mic_feedSamples(0, micSampleData, AX_MIC_SAMPLES_PER_FRAME);
+		return;
+	}
+
+	// none from the frontend: a tone while the GamePad's mic button is held,
+	// silence otherwise
 	{
 		const sint32 micSampleCount = 32000 / 32;
 		sint16 micSampleData[micSampleCount];
@@ -405,6 +421,9 @@ namespace mic
 
 		void RPLMapped() override
 		{
+			// a title starts with the microphone neither set up nor open
+			memset(&MICStatus, 0, sizeof(MICStatus));
+			libretro_mic_want(false);
 			osLib_addFunction("mic", "MICInit", micExport_MICInit);
 			osLib_addFunction("mic", "MICOpen", micExport_MICOpen);
 			osLib_addFunction("mic", "MICClose", micExport_MICClose);

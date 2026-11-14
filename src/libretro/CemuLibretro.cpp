@@ -716,6 +716,7 @@ static SelectedGraphicsAPI s_graphics_api = SelectedGraphicsAPI::OpenGL;
 
 // DRC layout state is shared with VulkanRenderer via LibretroDRC.h.
 #include "LibretroDRC.h"
+#include "libretro_mic.h"
 std::atomic<uint32> g_libretroScreenState{(uint32)LibretroScreenLayout::Tv};
 
 // One writer thread: retro_run's, which also takes the options
@@ -5595,6 +5596,17 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 		environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &keyboard);
 	}
 
+	// The frontend's microphone for the GamePad's: opened only when the
+	// title opens the GamePad's, on only while it has it open
+	{
+		struct retro_microphone_interface mic{};
+		mic.interface_version = RETRO_MICROPHONE_INTERFACE_VERSION;
+		const bool got = environ_cb(RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE, &mic) &&
+			mic.interface_version == RETRO_MICROPHONE_INTERFACE_VERSION;
+		libretro_mic_init(got ? &mic : nullptr);
+		libretro_log(RETRO_LOG_INFO, "microphone: %s\n", got ? "the frontend's" : "none from the frontend");
+	}
+
 	// Re-decided below for this load; a stale value from a previous one would
 	// hide a frontend that cannot give this core a context the second time.
 	s_use_hw_render = false;
@@ -6123,6 +6135,8 @@ RETRO_API void retro_unload_game()
 	s_wua_unavailable_reason.clear();
 	s_wua_convert_help.clear();
 	s_gl_frame_fbo = 0; // went with the context
+	// the title and its AX thread are down: nothing reads the microphone
+	libretro_mic_deinit();
 
 	libretro_log(RETRO_LOG_INFO, "content closed, core unloaded\n");
 }
@@ -7370,6 +7384,8 @@ RETRO_API void retro_run()
 	// upstream's input thread did every millisecond (InputManager)
 	InputManager::instance().update_controllers();
 	libretro_update_rumble();
+	// what the frontend's microphone captured this frame, for the title's
+	libretro_mic_run(s_output_fps);
 	libretro_update_software_keyboard();
 	// Before the GPU thread is let go: the frontend's views decide the layout
 	// the next frame is drawn with

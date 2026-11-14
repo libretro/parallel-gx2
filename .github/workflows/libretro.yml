@@ -596,6 +596,15 @@ jobs:
           SANITIZER=address,undefined ./test/mailbox/run_tests.sh
           make -C test/mailbox clean
           SANITIZER=thread ./test/mailbox/run_tests.sh
+      - name: "Microphone"
+        # the frontend's microphone to the GamePad's, against a stand-in
+        # frontend; plain, under ASan + UBSan and under TSan
+        run: |
+          ./test/libretro_mic/run_tests.sh
+          make -C test/libretro_mic clean
+          SANITIZER=address,undefined ./test/libretro_mic/run_tests.sh
+          make -C test/libretro_mic clean
+          SANITIZER=thread ./test/libretro_mic/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
