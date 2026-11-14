@@ -6,10 +6,12 @@
 #include "Cafe/OS/RPL/rpl.h"
 #include "Cafe/OS/libs/coreinit/coreinit_MEM_FrmHeap.h"
 #include "coreinit_DynLoad.h"
+#include "os_claims.h"
 
 // the system area is a block of memory that exists only in the emulator. It is used to simplify dynamic memory allocation for system data
 // this partially overlaps with the system heap from coreinit_SysHeap.cpp -> Use SysHeap for everything
-MPTR sysAreaAllocatorOffset = 0;
+// bumped with a compare-and-swap, from any thread
+static retro_atomic_int_t sysAreaAllocatorOffset;
 // Where the allocator stood once the allocations that outlive a title had been
 // made (the SysAllocators, which hand out their addresses for the life of the
 // process). Everything above this line belongs to the title that is running.
@@ -22,30 +24,25 @@ static MPTR sysAreaPersistentOffset = 0;
 // what a reset, or a second game in one session, is.
 void coreinit_markSysAreaPersistent()
 {
-	sysAreaPersistentOffset = sysAreaAllocatorOffset;
+	sysAreaPersistentOffset = (MPTR)retro_atomic_load_acquire_int(&sysAreaAllocatorOffset);
 }
 
 void coreinit_releaseSysAreaForTitle()
 {
-	sysAreaAllocatorOffset = sysAreaPersistentOffset;
+	retro_atomic_store_release_int(&sysAreaAllocatorOffset, (int)sysAreaPersistentOffset);
 }
 
 MPTR coreinit_allocFromSysArea(uint32 size, uint32 alignment)
 {
 	cemu_assert_debug(mmuRange_CEMU_AREA.isMapped());
 	// deprecated, use OSAllocFromSystem instead (for everything but SysAllocator which probably should use its own allocator?)
-	static std::mutex s_allocator_mutex;
-	s_allocator_mutex.lock();
-	sysAreaAllocatorOffset = (sysAreaAllocatorOffset+alignment-1);
-	sysAreaAllocatorOffset -= (sysAreaAllocatorOffset%alignment);
-	uint32 newMemOffset =  mmuRange_CEMU_AREA.getBase() + sysAreaAllocatorOffset;
-	sysAreaAllocatorOffset += (size+3)&~3;
-	if( sysAreaAllocatorOffset >= mmuRange_CEMU_AREA.getSize() )
+	const uint32 offset = os_bump_alloc(&sysAreaAllocatorOffset, size, alignment, mmuRange_CEMU_AREA.getSize());
+	if (offset == 0xFFFFFFFF)
 	{
 		cemuLog_log(LogType::Force, "Ran out of system memory");
 		cemu_assert(false); // out of bounds
 	}
-	s_allocator_mutex.unlock();
+	uint32 newMemOffset = mmuRange_CEMU_AREA.getBase() + offset;
 	// The area is handed back when a title stops, so the second title to run in
 	// a process gets memory the first one wrote in. A fresh mapping would have
 	// been zero, and some of what is allocated here is read before it is

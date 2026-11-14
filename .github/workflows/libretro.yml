@@ -578,6 +578,15 @@ jobs:
           SANITIZER=address,undefined ./test/os_tables/run_tests.sh
           make -C test/os_tables clean
           SANITIZER=thread ./test/os_tables/run_tests.sh
+      - name: "coreinit claims"
+        # GHS's file locks and the system area, with no lock; plain, under
+        # ASan + UBSan and under TSan
+        run: |
+          ./test/os_claims/run_tests.sh
+          make -C test/os_claims clean
+          SANITIZER=address,undefined ./test/os_claims/run_tests.sh
+          make -C test/os_claims clean
+          SANITIZER=thread ./test/os_claims/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:

@@ -87,8 +87,8 @@ namespace coreinit
 	static std::atomic<uint32> sSchedulerPpcFiberLastIP[3]{};
 	static std::atomic<uint32> sSchedulerPpcFiberLastLR[3]{};
 	static std::atomic<uint64> sSchedulerPpcFiberInstructionHeartbeatCount[3]{};
+	// started and stopped by the frontend's thread alone (load, unload)
 	std::vector<std::thread> sSchedulerThreads;
-	std::mutex sSchedulerStateMtx;
 
 	SysAllocator<OSThreadQueue> g_activeThreadQueue; // list of all threads (can include non-detached inactive threads)
 
@@ -1546,13 +1546,19 @@ namespace coreinit
 #if BOOST_OS_LINUX
 	#include <unistd.h>
 
-	std::vector<pid_t> g_schedulerThreadIds;
-	std::mutex g_schedulerThreadIdsLock;
+	// each core's thread stores its own, 0 until it has started
+	std::atomic<pid_t> g_schedulerThreadIds[3]{};
 
-	std::vector<pid_t>& OSGetSchedulerThreadIds()
+	size_t OSGetSchedulerThreadIds(pid_t out[3])
 	{
-		std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);
-		return g_schedulerThreadIds;
+		size_t n = 0;
+		for (auto& id : g_schedulerThreadIds)
+		{
+			const pid_t tid = id.load(std::memory_order_acquire);
+			if (tid)
+				out[n++] = tid;
+		}
+		return n;
 	}
 #endif
 
@@ -1569,11 +1575,8 @@ namespace coreinit
 		ConfigureHostFloatingPointEnvironment();
 
 #if BOOST_OS_LINUX
-		pid_t tid = cemu_gettid();
-		{
-			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);
-			g_schedulerThreadIds.emplace_back(tid);
-		}
+		if (t_assignedCoreIndex >= 0 && t_assignedCoreIndex < 3)
+			g_schedulerThreadIds[t_assignedCoreIndex].store(cemu_gettid(), std::memory_order_release);
 #endif
 
 		t_schedulerFiber = Fiber::PrepareCurrentThread();
@@ -1590,17 +1593,21 @@ namespace coreinit
 			sSchedulerHostAlive[t_assignedCoreIndex].store(0, std::memory_order_relaxed);
 	}
 
-	std::vector<std::thread::native_handle_type> g_schedulerThreadHandles;
+	// set and cleared by the thread that starts and stops the scheduler, the
+	// one that reads them
+	std::thread::native_handle_type g_schedulerThreadHandles[3]{};
+	size_t g_schedulerThreadHandleCount = 0;
 
-	std::vector<std::thread::native_handle_type>& OSGetSchedulerThreads()
+	size_t OSGetSchedulerThreads(std::thread::native_handle_type out[3])
 	{
-		return g_schedulerThreadHandles;
+		for (size_t i = 0; i < g_schedulerThreadHandleCount; i++)
+			out[i] = g_schedulerThreadHandles[i];
+		return g_schedulerThreadHandleCount;
 	}
 
 	// starts PPC core emulation
 	void OSSchedulerBegin(sint32 numCPUEmulationThreads)
 	{
-		std::unique_lock _lock(sSchedulerStateMtx);
 		if (sSchedulerActive.exchange(true))
 			return;
 		for (auto& hb : sSchedulerHeartbeat)
@@ -1644,8 +1651,9 @@ namespace coreinit
 		}
 		else
 			cemu_assert_debug(false);
+		g_schedulerThreadHandleCount = 0;
 		for (auto& it : sSchedulerThreads)
-			g_schedulerThreadHandles.emplace_back(it.native_handle());
+			g_schedulerThreadHandles[g_schedulerThreadHandleCount++] = it.native_handle();
 	}
 
     // shuts down all scheduler host threads and deletes all fibers and ppc threads
@@ -1684,7 +1692,6 @@ namespace coreinit
 
 	void OSSchedulerEnd()
 	{
-		std::unique_lock _lock(sSchedulerStateMtx);
 		sSchedulerActive.store(false);
 		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
 			g_coreRunQueueThreadCount[i].increment(); // make sure to wake up cores if they are paused and waiting for runnable threads
@@ -1777,12 +1784,10 @@ namespace coreinit
 		joinsFinishedWake.Notify();
 		joinWatchdog.join();
 		sSchedulerThreads.clear();
-		g_schedulerThreadHandles.clear();
+		g_schedulerThreadHandleCount = 0;
 #if BOOST_OS_LINUX
-		{
-			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);
-			g_schedulerThreadIds.clear();
-		}
+		for (auto& id : g_schedulerThreadIds)
+			id.store(0, std::memory_order_relaxed);
 #endif
 		// clean up all fibers
 		for (auto& it : g_idleLoopFiber)

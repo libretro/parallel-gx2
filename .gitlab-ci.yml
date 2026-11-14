@@ -786,6 +786,20 @@ test-os-tables:
     - make -C test/os_tables clean
     - SANITIZER=thread ./test/os_tables/run_tests.sh
 
+test-os-claims:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/os_claims/run_tests.sh
+    - make -C test/os_claims clean
+    - SANITIZER=address,undefined ./test/os_claims/run_tests.sh
+    - make -C test/os_claims clean
+    - SANITIZER=thread ./test/os_claims/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.

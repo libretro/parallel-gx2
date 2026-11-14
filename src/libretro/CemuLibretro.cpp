@@ -6937,7 +6937,7 @@ static void libretro_report_game_fps(std::chrono::steady_clock::time_point now)
 
 namespace coreinit
 {
-	std::vector<std::thread::native_handle_type>& OSGetSchedulerThreads();
+	size_t OSGetSchedulerThreads(std::thread::native_handle_type out[3]);
 }
 extern std::thread sLatteThread;
 
@@ -6948,7 +6948,7 @@ extern std::thread sLatteThread;
 // clock now, and which core each PPC thread last ran on, from /sys and /proc
 namespace coreinit
 {
-	std::vector<pid_t>& OSGetSchedulerThreadIds();
+	size_t OSGetSchedulerThreadIds(pid_t out[3]);
 }
 
 static long libretro_read_long(const std::string& path)
@@ -7000,8 +7000,9 @@ static std::string libretro_cpu_clocks()
 			line += fmt::format(" {}:{}", i, cur / 1000);
 	}
 	line += "; PPC cores last ran on cpu";
-	const auto& ids = coreinit::OSGetSchedulerThreadIds();
-	for (size_t i = 0; i < ids.size(); i++)
+	pid_t ids[3];
+	const size_t idCount = coreinit::OSGetSchedulerThreadIds(ids);
+	for (size_t i = 0; i < idCount; i++)
 		line += fmt::format("{}{}", i ? ", " : " ", libretro_thread_last_cpu(ids[i]));
 	return line;
 }
@@ -7044,30 +7045,35 @@ static int64_t libretro_thread_cpu_us(std::thread::native_handle_type h)
 
 static void libretro_log_thread_time(std::chrono::steady_clock::time_point now)
 {
+	// every frame while the option is on: nothing allocated until the line
+	// a second is written
 	static std::chrono::steady_clock::time_point s_since{};
-	static std::vector<int64_t> s_last;
+	static int64_t s_last[5];
+	static size_t s_lastCount = 0;
 	if (!s_log_thread_time || !s_game_loaded)
 	{
 		s_since = {};
 		return;
 	}
 
-	std::vector<std::thread::native_handle_type> threads = coreinit::OSGetSchedulerThreads();
-	const size_t cores = threads.size();
-	threads.push_back(sLatteThread.native_handle());
+	std::thread::native_handle_type threads[5];
+	const size_t cores = coreinit::OSGetSchedulerThreads(threads);
+	size_t count = cores;
+	threads[count++] = sLatteThread.native_handle();
 #if BOOST_OS_WINDOWS && !defined(__MINGW32__)
-	threads.push_back(GetCurrentThread());
+	threads[count++] = GetCurrentThread();
 #else
-	threads.push_back(pthread_self());
+	threads[count++] = pthread_self();
 #endif
-	std::vector<int64_t> cpu(threads.size());
-	for (size_t i = 0; i < threads.size(); i++)
+	int64_t cpu[5];
+	for (size_t i = 0; i < count; i++)
 		cpu[i] = libretro_thread_cpu_us(threads[i]);
 
-	if (s_since == std::chrono::steady_clock::time_point{} || s_last.size() != cpu.size())
+	if (s_since == std::chrono::steady_clock::time_point{} || s_lastCount != count)
 	{
 		s_since = now;
-		s_last = cpu;
+		memcpy(s_last, cpu, sizeof(cpu));
+		s_lastCount = count;
 		return;
 	}
 	const int64_t wall = std::chrono::duration_cast<std::chrono::microseconds>(now - s_since).count();
@@ -7091,7 +7097,7 @@ static void libretro_log_thread_time(std::chrono::steady_clock::time_point now)
 	cemuLog_log(LogType::Force, "{}", libretro_cpu_clocks());
 #endif
 	s_since = now;
-	s_last = cpu;
+	memcpy(s_last, cpu, sizeof(cpu));
 }
 
 static void libretro_finish_run(std::chrono::steady_clock::time_point start,

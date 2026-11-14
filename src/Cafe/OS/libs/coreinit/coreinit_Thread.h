@@ -580,6 +580,7 @@ namespace coreinit
 	bool OSTryLockMutex(OSMutex* mutex);
 	void OSUnlockMutex(OSMutex* mutex);
 	void OSUnlockMutexInternal(OSMutex* mutex);
+	void OSLockMutexInternal(OSMutex* mutex); // with the scheduler lock held
 
 	// OSCond
 	void OSInitCond(OSCond* cond);

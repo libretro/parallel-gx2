@@ -3,6 +3,8 @@
 #include "Cafe/OS/libs/coreinit/coreinit_MEM.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/RPL/rpl.h"
+#include "Cafe/OS/libs/coreinit/coreinit_Scheduler.h"
+#include "os_claims.h"
 
 // MinGW's CRT spells its own stdin/stdout/stderr table as
 // "#define _iob __iob_func()", which turns the GHS runtime's unrelated _iob
@@ -43,11 +45,12 @@ namespace coreinit
 	void __ghs_flock_create(ghs_flock* flock);
 	ghs_flock* __ghs_flock_ptr(iobbuf* iob);
 
-	std::recursive_mutex g_ghsLock;
-	std::recursive_mutex g_ghsLockFlock;
+	// the C runtime's lock: a guest mutex, held by the guest thread - which
+	// may move between host threads, and share one with others - not the host
+	SysAllocator<coreinit::OSMutex> g_ghsMutex;
 
 	SysAllocator<coreinit::OSMutex, GHS_FOPEN_MAX> _flockMutexArray;
-	bool _flockMutexMask[GHS_FOPEN_MAX]; // if set, mutex in _flockMutexArray is reserved
+	retro_atomic_int_t _flockMutexMask[GHS_FOPEN_MAX]; // 1 if the mutex in _flockMutexArray is reserved
 
 	#define IOB_FLAG_IN				(0x1)
 	#define IOB_FLAG_OUT			(0x2)
@@ -61,7 +64,8 @@ namespace coreinit
 		g_ghs_data->ghs_Errno = 0;
 
 		for (sint32 i = 0; i < GHS_FOPEN_MAX; i++)
-			_flockMutexMask[i] = false;
+			retro_atomic_int_init(&_flockMutexMask[i], 0);
+		coreinit::OSInitMutex(g_ghsMutex.GetPtr());
 		// init stdin/stdout/stderr
 		g_ghs_data->_iob[0].flags = IOB_FLAG_IN;
 		g_ghs_data->_iob[1].flags = IOB_FLAG_OUT;
@@ -81,39 +85,25 @@ namespace coreinit
 
 	void __ghs_flock_create(ghs_flock* flock)
 	{
-		g_ghsLockFlock.lock();
-		// find available mutex
-		sint32 mutexIndex = -1;
-		for (sint32 i = 0; i < GHS_FOPEN_MAX; i++)
-		{
-			if (!_flockMutexMask[i])
-			{
-				mutexIndex = i;
-				break;
-			}
-		}
+		// reserve the first free mutex
+		sint32 mutexIndex = os_claim_first(_flockMutexMask, GHS_FOPEN_MAX);
 		if (mutexIndex == -1)
 		{
 			cemuLog_log(LogType::Force, "__ghs_flock_create(): No flock available");
 			cemu_assert(false); // no available mutex
 		}
-		// mark mutex as reserved
-		_flockMutexMask[mutexIndex] = true;
-		// init mutex
 		coreinit::OSInitMutexEx(_flockMutexArray.GetPtr() + mutexIndex, NULL);
 		// update flock to point to the reserved mutex
 		flock->mutexIndex = mutexIndex;
-		g_ghsLockFlock.unlock();
 	}
 
 	void __ghs_flock_destroy(uint32 index)
 	{
-		g_ghsLockFlock.lock();
 		cemu_assert_debug(index > 2); // stdin/stdout/stderr should never be released?
 		cemu_assert(index < GHS_FOPEN_MAX);
-		cemu_assert_debug(_flockMutexMask[index]);
-		_flockMutexMask[index] = false;
-		g_ghsLockFlock.unlock();
+		const bool wasReserved = os_claim_release(_flockMutexMask, GHS_FOPEN_MAX, (int)index);
+		cemu_assert_debug(wasReserved);
+		(void)wasReserved;
 	}
 
 	ghs_flock* __ghs_flock_ptr(iobbuf* iob)
@@ -136,15 +126,15 @@ namespace coreinit
 
 	void __ghsLock()
 	{
-		while (!g_ghsLock.try_lock())
-		{
-			PPCCore_switchToScheduler();
-		}
+		// as OSLockMutex, but not a point where the thread may be cancelled
+		__OSLockScheduler();
+		OSLockMutexInternal(g_ghsMutex.GetPtr());
+		__OSUnlockScheduler();
 	}
 
 	void __ghsUnlock()
 	{
-		g_ghsLock.unlock();
+		OSUnlockMutex(g_ghsMutex.GetPtr());
 	}
 
 	void* __get_eh_init_block()
