@@ -856,6 +856,22 @@ test-fast-mutex:
     - make -C test/fast_mutex clean
     - SANITIZER=thread ./test/fast_mutex/run_tests.sh
 
+# The emulated toy portals' commands run one at a time with no lock, and a
+# read waiting for an answer is woken by one or by the title's exit
+test-hid-portal:
+  stage: test
+  image: $CI_SERVER_HOST:5050/libretro-infrastructure/libretro-build-amd64-ubuntu:backports
+  needs: []
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CC: gcc-12
+  script:
+    - ./test/hid_portal/run_tests.sh
+    - make -C test/hid_portal clean
+    - SANITIZER=address,undefined ./test/hid_portal/run_tests.sh
+    - make -C test/hid_portal clean
+    - SANITIZER=thread ./test/hid_portal/run_tests.sh
+
 # tw run through the interpreter goes on to the next instruction: it once
 # called a GDB stub the core never makes, or ran forever. The core's
 # precompiled header wants fmt and glm.

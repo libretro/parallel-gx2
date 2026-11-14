@@ -5,6 +5,9 @@
 #include "Backend.h"
 #include "Whitelist.h"
 #include "hid_core.h"
+#include "Skylander.h"
+#include "Infinity.h"
+#include "Dimensions.h"
 
 namespace nsyshid
 {
@@ -742,13 +745,25 @@ namespace nsyshid
 				Whitelist::GetInstance();
 				hid_core_set_release(ReleaseDeviceHolder);
 				hid_core_clients_reset();
+				// the emulated portals' queues before any transfer can reach them
+				g_skyportal.Start();
+				g_infinitybase.Start();
+				g_dimensionstoypad.Start();
 				hid_core_start(RunRequest);
 				AttachDefaultBackends();
 			}
 			else if (reason == coreinit::RplEntryReason::Unloaded)
 			{
-				// the next title starts with no devices and no transfers
+				// the next title starts with no devices and no transfers; a
+				// read waiting on an emulated portal returns before its worker
+				// is joined
+				g_skyportal.Close();
+				g_infinitybase.Close();
+				g_dimensionstoypad.Close();
 				hid_core_stop();
+				g_skyportal.Stop();
+				g_infinitybase.Stop();
+				g_dimensionstoypad.Stop();
 				DetachAllBackends();
 				hid_core_clients_reset();
 			}

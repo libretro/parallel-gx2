@@ -1,11 +1,11 @@
 #pragma once
 
-#include <mutex>
+#include <array>
 
 #include "nsyshid.h"
 #include "Backend.h"
 
-#include "Common/FileStream.h"
+#include "hid_portal.h"
 
 namespace nsyshid
 {
@@ -46,20 +46,33 @@ namespace nsyshid
 	constexpr uint16 INF_BLOCK_SIZE = 0x10;
 	constexpr uint16 INF_FIGURE_SIZE = INF_BLOCK_COUNT * INF_BLOCK_SIZE;
 	constexpr uint8 MAX_FIGURES = 9;
+	// The emulated base. Commands run one at a time on whichever transfer
+	// worker hid_portal hands them to, so the state below is the runner's
+	// alone; each answer is queued for an interrupt read, which waits for one.
+	// No figure is placed on it in this core.
 	class InfinityUSB {
 	  public:
 		struct InfinityFigure final
 		{
-			std::unique_ptr<FileStream> infFile;
 			std::array<uint8, INF_FIGURE_SIZE> data{};
 			bool present = false;
 			uint8 orderAdded = 255;
-			void Save();
 		};
 
-		void SendCommand(uint8* buf, uint32 length);
-		std::array<uint8, 32> GetStatus();
+		// for each title, before its transfers start
+		void Start();
+		// wakes the reads still waiting, before the transfer workers stop
+		void Close();
+		// once they have
+		void Stop();
 
+		void Submit(const uint8* buf, uint32 length);
+		// false once closed
+		bool GetStatus(std::array<uint8, 32>& response);
+
+	  private:
+		static void RunCommand(void* ctx, const unsigned char* cmd, unsigned len);
+		void SendCommand(uint8* buf, uint32 length);
 		void GetBlankResponse(uint8 sequence, std::array<uint8, 32>& replyBuf);
 		void DescrambleAndSeed(uint8* buf, uint8 sequence,
 							   std::array<uint8, 32>& replyBuf);
@@ -71,19 +84,6 @@ namespace nsyshid
 						std::array<uint8, 32>& replyBuf, uint8 sequence);
 		void GetFigureIdentifier(uint8 figNum, uint8 sequence,
 								 std::array<uint8, 32>& replyBuf);
-
-		bool RemoveFigure(uint8 position);
-		uint32 LoadFigure(const std::array<uint8, INF_FIGURE_SIZE>& buf,
-						  std::unique_ptr<FileStream>, uint8 position);
-		bool CreateFigure(fs::path pathName, uint32 figureNum, uint8 series);
-		static std::map<const uint32, const std::pair<const uint8, const char*>> GetFigureList();
-		std::pair<uint8, std::string> FindFigure(uint32 figNum);
-
-	  protected:
-		std::shared_mutex m_infinityMutex;
-		std::array<InfinityFigure, 9> m_figures;
-
-	  private:
 		uint8 GenerateChecksum(const std::array<uint8, 32>& data,
 							   int numOfBytes) const;
 		uint32 Descramble(uint64 numToDescramble);
@@ -91,18 +91,14 @@ namespace nsyshid
 		void GenerateSeed(uint32 seed);
 		uint32 GetNext();
 		InfinityFigure& GetFigureByOrder(uint8 orderAdded);
-		uint8 DeriveFigurePosition(uint8 position);
-		std::array<uint8, 16> GenerateInfinityFigureKey(const std::vector<uint8>& sha1Data);
-		std::array<uint8, 16> GenerateBlankFigureData(uint32 figureNum, uint8 series);
 
-		uint32 m_randomA;
-		uint32 m_randomB;
-		uint32 m_randomC;
-		uint32 m_randomD;
-
-		uint8 m_figureOrder = 0;
-		std::queue<std::array<uint8, 32>> m_figureAddedRemovedResponses;
-		std::queue<std::array<uint8, 32>> m_queries;
+		hid_portal_t m_portal;
+		bool m_started = false;
+		std::array<InfinityFigure, MAX_FIGURES> m_figures;
+		uint32 m_randomA = 0;
+		uint32 m_randomB = 0;
+		uint32 m_randomC = 0;
+		uint32 m_randomD = 0;
 	};
 	extern InfinityUSB g_infinitybase;
 

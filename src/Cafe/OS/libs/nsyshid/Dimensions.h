@@ -1,9 +1,11 @@
-#include <mutex>
+#include <array>
+#include <optional>
+#include <span>
 
 #include "nsyshid.h"
 #include "Backend.h"
 
-#include "Common/FileStream.h"
+#include "hid_portal.h"
 
 namespace nsyshid
 {
@@ -41,22 +43,35 @@ namespace nsyshid
 		bool m_IsOpened;
 	};
 
+	// The emulated toypad. Commands run one at a time on whichever transfer
+	// worker hid_portal hands them to, so the state below is the runner's
+	// alone; each answer is queued for an interrupt read, which waits for one.
+	// No figure is placed on it in this core.
 	class DimensionsUSB
 	{
 	  public:
 		struct DimensionsMini final
 		{
-			std::unique_ptr<FileStream> dimFile;
 			std::array<uint8, 0x2D * 0x04> data{};
 			uint8 index = 255;
 			uint8 pad = 255;
 			uint32 id = 0;
-			void Save();
 		};
 
-		void SendCommand(std::span<const uint8, 32> buf);
-		std::array<uint8, 32> GetStatus();
+		// for each title, before its transfers start
+		void Start();
+		// wakes the reads still waiting, before the transfer workers stop
+		void Close();
+		// once they have
+		void Stop();
 
+		void Submit(const uint8* buf, uint32 length);
+		// false once closed
+		bool GetStatus(std::array<uint8, 32>& response);
+
+	  private:
+		static void RunCommand(void* ctx, const unsigned char* cmd, unsigned len);
+		void SendCommand(std::span<const uint8, 32> buf);
 		void GenerateRandomNumber(std::span<const uint8, 8> buf, uint8 sequence,
 								  std::array<uint8, 32>& replyBuf);
 		void InitializeRNG(uint32 seed);
@@ -68,44 +83,20 @@ namespace nsyshid
 						uint8 sequence);
 		void GetModel(std::span<const uint8, 8> buf, uint8 sequence,
 					  std::array<uint8, 32>& replyBuf);
-
-		bool RemoveFigure(uint8 pad, uint8 index, bool fullRemove);
-		bool TempRemove(uint8 index);
-		bool CancelRemove(uint8 index);
-		uint32 LoadFigure(const std::array<uint8, 0x2D * 0x04>& buf, std::unique_ptr<FileStream> file, uint8 pad, uint8 index);
-		bool CreateFigure(fs::path pathName, uint32 id);
-		bool MoveFigure(uint8 pad, uint8 index, uint8 oldPad, uint8 oldIndex);
-		static std::map<const uint32, const char*> GetListMinifigs();
-		static std::map<const uint32, const char*> GetListTokens();
-		std::string FindFigure(uint32 figNum);
-
-	  protected:
-		std::mutex m_dimensionsMutex;
-		std::array<DimensionsMini, 7> m_figures{};
-
-	  private:
-		void RandomUID(std::array<uint8, 0x2D * 0x04>& uidBuffer);
 		uint8 GenerateChecksum(const std::array<uint8, 32>& data,
 							   int numOfBytes) const;
 		std::array<uint8, 8> Decrypt(std::span<const uint8, 8> buf, std::optional<std::array<uint8, 16>> key);
 		std::array<uint8, 8> Encrypt(std::span<const uint8, 8> buf, std::optional<std::array<uint8, 16>> key);
-		std::array<uint8, 16> GenerateFigureKey(const std::array<uint8, 0x2D * 0x04>& uid);
-		std::array<uint8, 4> PWDGenerate(const std::array<uint8, 0x2D * 0x04>& uid);
-		std::array<uint8, 4> DimensionsRandomize(const std::vector<uint8> key, uint8 count);
-		uint32 GetFigureId(const std::array<uint8, 0x2D * 0x04>& buf);
-		uint32 Scramble(const std::array<uint8, 7>& uid, uint8 count);
 		uint32 GetNext();
 		DimensionsMini& GetFigureByIndex(uint8 index);
 
-		uint32 m_randomA;
-		uint32 m_randomB;
-		uint32 m_randomC;
-		uint32 m_randomD;
-
-		bool m_isAwake = false;
-
-		std::queue<std::array<uint8, 32>> m_figureAddedRemovedResponses;
-		std::queue<std::array<uint8, 32>> m_queries;
+		hid_portal_t m_portal;
+		bool m_started = false;
+		std::array<DimensionsMini, 7> m_figures{};
+		uint32 m_randomA = 0;
+		uint32 m_randomB = 0;
+		uint32 m_randomC = 0;
+		uint32 m_randomD = 0;
 	};
 	extern DimensionsUSB g_dimensionstoypad;
 

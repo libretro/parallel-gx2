@@ -1,11 +1,11 @@
 #pragma once
 
-#include <mutex>
+#include <array>
 
 #include "nsyshid.h"
 #include "Backend.h"
 
-#include "Common/FileStream.h"
+#include "hid_portal.h"
 
 namespace nsyshid
 {
@@ -47,16 +47,16 @@ namespace nsyshid
 	constexpr uint16 SKY_FIGURE_SIZE = SKY_BLOCK_COUNT * SKY_BLOCK_SIZE;
 	constexpr uint8 MAX_SKYLANDERS = 16;
 
+	// The emulated portal. Commands run one at a time on whichever transfer
+	// worker hid_portal hands them to, so the state below is the runner's
+	// alone; an interrupt read takes a queued answer, or else the status the
+	// last command published. No figure is placed on it in this core.
 	class SkylanderUSB {
 	  public:
 		struct Skylander final
 		{
-			std::unique_ptr<FileStream> skyFile;
 			uint8 status = 0;
-			std::queue<uint8> queuedStatus;
 			std::array<uint8, SKY_FIGURE_SIZE> data{};
-			uint32 lastId = 0;
-			void Save();
 
 			enum : uint8
 			{
@@ -74,33 +74,35 @@ namespace nsyshid
 			uint8 blue = 0;
 		};
 
-		void ControlTransfer(uint8* buf, uint32 length);
+		// for each title, before its transfers start
+		void Start();
+		// wakes the reads still waiting, before the transfer workers stop
+		void Close();
+		// once they have
+		void Stop();
 
-		void Activate();
-		void Deactivate();
-		void SetLeds(uint8 side, uint8 r, uint8 g, uint8 b);
-
+		void Submit(const uint8* buf, uint32 length);
 		std::array<uint8, 64> GetStatus();
+
+	  private:
+		static void RunCommand(void* ctx, const unsigned char* cmd, unsigned len);
+		void ControlTransfer(uint8* buf, uint32 length);
+		void PublishStatus();
+		void Activate();
+		void SetLeds(uint8 side, uint8 r, uint8 g, uint8 b);
 		void QueryBlock(uint8 skyNum, uint8 block, uint8* replyBuf);
 		void WriteBlock(uint8 skyNum, uint8 block, const uint8* toWriteBuf,
 						uint8* replyBuf);
 
-		uint8 LoadSkylander(uint8* buf, std::unique_ptr<FileStream> file);
-		bool RemoveSkylander(uint8 skyNum);
-		bool CreateSkylander(fs::path pathName, uint16 skyId, uint16 skyVar);
-		uint16 SkylanderCRC16(uint16 initValue, const uint8* buffer, uint32 size);
-		static std::map<const std::pair<const uint16, const uint16>, const char*> GetListSkylanders();
-		std::string FindSkylander(uint16 skyId, uint16 skyVar);
-
-	  protected:
-		std::mutex m_skyMutex;
-		std::mutex m_queryMutex;
+		hid_portal_t m_portal;
+		bool m_started = false;
+		// read by any transfer
+		retro_atomic_int_t m_statusWord;
+		retro_atomic_int_t m_active;
+		retro_atomic_int_t m_interruptCounter;
+		// the command runner's
 		std::array<Skylander, MAX_SKYLANDERS> m_skylanders;
-
-	  private:
-		std::queue<std::array<uint8, 64>> m_queries;
 		bool m_activated = true;
-		uint8 m_interruptCounter = 0;
 		SkylanderLEDColor m_colorRight = {};
 		SkylanderLEDColor m_colorLeft = {};
 		SkylanderLEDColor m_colorTrap = {};

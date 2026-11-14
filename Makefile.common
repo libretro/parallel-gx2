@@ -75,6 +75,7 @@ CORE_SOURCES_C := \
 	$(CORE_DIR)/src/input/rumble_queue.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/camera/cam_state.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nsyshid/hid_core.c \
+	$(CORE_DIR)/src/Cafe/OS/libs/nsyshid/hid_portal.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/coreinit/async_cb.c \
 	$(CORE_DIR)/src/Cafe/OS/libs/nlibcurl/curl_jobs.c \
 	$(CORE_DIR)/src/util/helpers/lf_ring.c \

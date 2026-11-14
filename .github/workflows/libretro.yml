@@ -629,6 +629,17 @@ jobs:
           SANITIZER=address,undefined ./test/fast_mutex/run_tests.sh
           make -C test/fast_mutex clean
           SANITIZER=thread ./test/fast_mutex/run_tests.sh
+      - name: "Emulated toy portals"
+        # the Skylanders portal's, Infinity base's and Dimensions toypad's
+        # commands run one at a time with no lock, and a read waiting for an
+        # answer is woken by one or by the title's exit; plain, under
+        # ASan + UBSan and under TSan
+        run: |
+          ./test/hid_portal/run_tests.sh
+          make -C test/hid_portal clean
+          SANITIZER=address,undefined ./test/hid_portal/run_tests.sh
+          make -C test/hid_portal clean
+          SANITIZER=thread ./test/hid_portal/run_tests.sh
 
       - name: "Trap instructions"
         # tw run through the interpreter goes on to the next instruction:
