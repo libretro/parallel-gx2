@@ -494,7 +494,13 @@ ahead then, before it is skipped or waits (`draw_awaitAsyncPipeline`), in
 place of the pipeline its own compile is still writing (let go once that
 compile lets go of it), and binds what its PipelineInfo then has. One
 crowded out unused, or left as the title stops, is destroyed, never bound
-(`tools/check_ahead_handover.sh`).
+(`tools/check_ahead_handover.sh`). Nor is anything made twice where the
+draw came first: a slot does not make a pipeline the GPU thread has noted
+by the time it starts, even one it was queued with (`LatteAhead_
+MakePipeline`) - the draw's own compile runs in the lane before the
+slot's, ahead of all it holds, and finishes first - and a decompile task
+does not decompile a variant the GPU thread has registered by the time it
+starts (the log counts these: "not made (their draw first)").
 `test/dynstate` makes such pipelines on a real driver as a read's slot
 does - compiled whole and linked optimized, with a render pass of its own
 that is compatible but not the same and layouts of its own - and draws

@@ -60,8 +60,8 @@
 //    to 63 buffers while they find nothing, at once none after a find, and
 //    never moved by a read of the guest's buffer; pipelines queued ahead for
 //    registered shaders only where unknown, for new ones only with the
-//    other shader there, and made only where nobody has them but their own
-//    key;
+//    other shader there, and made only where no read has them but their
+//    own key, and never once the GPU thread has them;
 //  - the pipelines made ahead the GPU thread keeps for their draws
 //    (KeptForDraws): taken once by key, a key kept already keeping its
 //    own, the oldest going for a newer one when full, all given up on
@@ -1091,11 +1091,12 @@ static void AheadRules()
 	CHECK(LatteAhead_QueuePipeline(true, true, false, false, false, false)); // both new
 	CHECK(!LatteAhead_QueuePipeline(true, false, false, false, false, false)); // the other nowhere
 	CHECK(!LatteAhead_QueuePipeline(false, true, false, false, false, false));
-	// made: its own key, or one nobody has
+	// made: its own key, or one nobody has - never one the GPU thread has
 	CHECK(LatteAhead_MakePipeline(0, 77, false, false));
 	CHECK(!LatteAhead_MakePipeline(0, 77, true, false));
 	CHECK(!LatteAhead_MakePipeline(0, 77, false, true));
-	CHECK(LatteAhead_MakePipeline(77, 77, true, true)); // queued with it (and so noted ahead)
+	CHECK(LatteAhead_MakePipeline(77, 77, false, true)); // queued with it (and so noted ahead)
+	CHECK(!LatteAhead_MakePipeline(77, 77, true, true)); // its draw came first: compiling it already
 	CHECK(!LatteAhead_MakePipeline(76, 77, false, true));
 }
 

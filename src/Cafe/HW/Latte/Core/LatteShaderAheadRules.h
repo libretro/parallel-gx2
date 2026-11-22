@@ -73,10 +73,12 @@ inline bool LatteAhead_QueuePipeline(bool vsNew, bool psNew, bool vsRegistered, 
 	return (vsNew || vsRegistered) && (psNew || psRegistered);
 }
 
-// Whether a pipeline set up from shaders made ahead, its key worked out only
-// then, is made: not where the GPU thread or another read has it, unless it
-// is the key this one was queued with
+// Whether a pipeline is made as its read's slot starts, its key worked out
+// then: not where another read has it, unless it is the key this one was
+// queued with - and never where the GPU thread has it (known), queued with
+// it or not: its draw came first and compiles it in the lane before the
+// slot's, ahead of all it holds, so the slot's would come after, made again
 inline bool LatteAhead_MakePipeline(uint64_t queuedHash, uint64_t hash, bool known, bool ahead)
 {
-	return queuedHash == hash || (!known && !ahead);
+	return !known && (queuedHash == hash || !ahead);
 }

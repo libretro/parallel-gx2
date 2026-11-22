@@ -52,6 +52,8 @@ namespace
 	{
 		const char* kind;
 		std::atomic<uint64> made{0}, taken{0}, unusable{0}, late{0}, none{0}, letGo{0};
+		// claimed, and not made: its draw decompiled it first
+		std::atomic<uint64> drawnFirst{0};
 	};
 	Counts s_countsVertex{"vertex"}, s_countsPixel{"pixel"}, s_countsGeometry{"geometry"};
 	LatteDrawPathCounts s_drawPath;
@@ -350,9 +352,21 @@ namespace
 		return nullptr;
 	}
 
+	LatteDecompilerShader* Registered(LatteConst::ShaderType type, uint64 base, uint32* regs);
+
 	void RunTask(Task* t)
 	{
 		t->ran = true;
+		// its draw came first and the GPU thread decompiled this variant
+		// itself since the read claimed it: nothing to make (a geometry
+		// shader's draw goes on, for the geometry shader)
+		if (!t->src.gs && Registered(t->vertex ? LatteConst::ShaderType::Vertex : LatteConst::ShaderType::Pixel, t->baseHash, t->regs))
+		{
+			(t->vertex ? s_vertex : s_pixel).Abandon(t->held);
+			(t->vertex ? s_countsVertex : s_countsPixel).drawnFirst.fetch_add(1, std::memory_order_relaxed);
+			t->busy.store(false, std::memory_order_release);
+			return;
+		}
 		if (t->vertex)
 		{
 			t->fetchShader.Reset();
@@ -933,14 +947,15 @@ void LatteShaderAhead_Shutdown()
 	for (Counts* c : {&s_countsVertex, &s_countsPixel, &s_countsGeometry})
 	{
 		if (c->made.load(std::memory_order_relaxed) || c->none.load(std::memory_order_relaxed))
-			cemuLog_log(LogType::Force, "[ShaderAhead] {} shaders: {} decompiled ahead, {} taken by their draw, {} not usable there, {} drawn while being made, {} drawn with none made, {} let go unused",
-				c->kind, c->made.load(), c->taken.load(), c->unusable.load(), c->late.load(), c->none.load(), c->letGo.load());
+			cemuLog_log(LogType::Force, "[ShaderAhead] {} shaders: {} decompiled ahead, {} taken by their draw, {} not usable there, {} drawn while being made, {} drawn with none made, {} let go unused, {} not made (their draw first)",
+				c->kind, c->made.load(), c->taken.load(), c->unusable.load(), c->late.load(), c->none.load(), c->letGo.load(), c->drawnFirst.load());
 		c->made = 0;
 		c->taken = 0;
 		c->unusable = 0;
 		c->late = 0;
 		c->none = 0;
 		c->letGo = 0;
+		c->drawnFirst = 0;
 	}
 	if (const uint64 reads = s_guestReads.exchange(0, std::memory_order_relaxed))
 		cemuLog_log(LogType::Force, "[ShaderAhead] {} reads of command buffers before their submission", reads);
