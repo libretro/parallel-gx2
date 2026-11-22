@@ -201,6 +201,8 @@ void VulkanPipelineStableCache::Close()
 	// already accounted for and never writes them again.
 	TakeLoadedHashes();
 	m_pipelineIsCached.Clear();
+	// and the pipelines made through the driver's cache this title
+	PipelineCompiler::ForgetMade();
 	// The cache file is deliberately not freed here: retro_unload_game does it
 	// once the GPU thread is gone (ReleaseCacheFile), or else BeginLoading for
 	// the next title. See the note there.
@@ -373,6 +375,10 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 	// No lock: what it shares with the other compile threads is the shaders'
 	// lists of the pipelines using them, which are lock-free (AtomicPtrBag.h)
 	auto pipelineInfo = std::make_unique<PipelineInfo>(0, 0, vertexShader->compatibleFetchShader, vertexShader, pixelShader, geometryShader);
+	// the key its draws will look it up by, noted with it once made
+	// (PipelineCompiler::MadeBefore)
+	uint64 pipelineBaseHash = vertexShader->baseHash;
+	uint64 pipelineStateHash = VulkanRenderer::draw_calculateGraphicsPipelineHash(vertexShader->compatibleFetchShader, vertexShader, geometryShader, pixelShader, renderPass, *lcr);
 	// compile
 	{
 		PipelineCompiler pipelineCompiler;
@@ -382,11 +388,9 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 			VulkanRenderer::GetInstance()->ReleaseDestructibleObject(renderPass);
 			return;
 		}
+		pipelineCompiler.m_pipelineHash = pipelineStateHash;
 		pipelineCompiler.Compile(true, true, false);
 	}
-	// on success, calculate pipeline hash and flag as present in cache
-	uint64 pipelineBaseHash = vertexShader->baseHash;
-	uint64 pipelineStateHash = VulkanRenderer::draw_calculateGraphicsPipelineHash(vertexShader->compatibleFetchShader, vertexShader, geometryShader, pixelShader, renderPass, *lcr);
 	// for the GPU thread to take into m_pipelineIsCached (TakeLoadedHashes)
 	m_pipelinesLoaded.Push(PipelineHash(pipelineBaseHash, pipelineStateHash));
 	// clean up

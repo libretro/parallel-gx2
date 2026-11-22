@@ -120,13 +120,14 @@ Where the core still does, as of `204bbde5`:
   compile thread lands the pipeline, as on a device that has the extension
   for one its cache does not hold (`VulkanPipeline_Try`; `test/pipeline_key`,
   and `tools/check_compile_try.sh` against upstream's forcing coming back).
-  A pipeline known to be in the driver's cache - the pipeline cache loaded
-  it at boot, or it was made before (`VulkanPipelineStableCache::
-  HasPipelineCached`, asked before the draw's state is added) - is made by
-  the try all the same, its shaders compiled: a hit in that cache, the
-  lookup a device with the extension makes, rather than a skipped draw
-  until a compile thread made the same lookup, at every pipeline's first
-  draw with a warm cache.
+  A pipeline known to be in the driver's cache - made through it this
+  title, by the pipeline cache's load at boot or on any thread since
+  (`PipelineCompiler::MadeBefore`, noted where a compile succeeds; a
+  pipeline whose recipe was recorded but whose compile never finished is
+  not) - is made by the try all the same, its shaders compiled: a hit in
+  that cache, the lookup a device with the extension makes, rather than a
+  skipped draw until a compile thread made the same lookup, at every
+  pipeline's first draw with a warm cache.
 - **Rect emulation geometry shaders** (RECTS where the device has no
   `VK_NV_fill_rectangle`): no longer. Each pipeline compiled its own on the
   thread making it, the GPU thread included, before its draw. One is now
@@ -148,11 +149,12 @@ Where the core still does, as of `204bbde5`:
   thread; racing them, each is built once.
 
 M2 removes them; it comes before anything else in this document. What is
-left with graphics pipeline libraries is the first pipeline for each new
-shader and render pass compatibility class, or new baked state of a part:
-the parts are made when a pipeline first needs them, and only from the
-second pipeline on is there nothing to compile. Making them earlier is the
-next step (M2, below).
+left is what no read ahead reaches in time: the reads make shaders, their
+parts and whole pipelines before their draws (M2, below) and hand the
+pipelines to them, and a draw that comes first is skipped (or, essential,
+compiles) until then. How often each happens in a game is in its log at
+title stop (`[ShaderAhead]`: shaders taken, pipelines ready, made by the
+read, skipped, waited for), which decides what to work on next.
 
 ## Milestones
 

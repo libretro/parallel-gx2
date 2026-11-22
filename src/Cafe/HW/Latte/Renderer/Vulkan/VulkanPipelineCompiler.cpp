@@ -514,6 +514,7 @@ bool PipelineCompiler::InitFromCurrentGPUState(PipelineInfo* pipelineInfo, const
 	m_vkPixelShader = pipelineInfo->pixelShaderVk;
 	m_vkGeometryShader = pipelineInfo->geometryShaderVk;
 	m_vkrObjPipeline = pipelineInfo->m_vkrObjPipeline;
+	m_pipelineHash = pipelineInfo->stateHash;
 	m_renderPassObj = renderPassObj;
 	m_requestRobustBufferAccess = requireRobustBufferAccess;
 	const bool perPipeline = vkRenderer->m_featureControl.deviceExtensions.pipeline_robustness;
@@ -652,6 +653,8 @@ struct ShaderCompileTogether
 	}, this};
 };
 
+static void NoteMade(uint64 pipelineHash); // below, with the table it notes in
+
 bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool showInOverlay)
 {
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
@@ -775,6 +778,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	else if (result == VK_SUCCESS)
 	{
 		m_vkrObjPipeline->SetPipeline(pipeline);
+		NoteMade(m_pipelineHash);
 	}
 	else
 	{
@@ -790,6 +794,25 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 // pipelines the compile threads linked optimized, for the GPU thread to put
 // in the fast-linked ones' place
 static MpmcQueue<PipelineCompiler::OptimizedPipeline> s_optimizedPipelines;
+
+// the pipelines made through the driver's cache this title (MadeBefore)
+static SeenKeys<1u << 16> s_pipelinesMade;
+
+static void NoteMade(uint64 pipelineHash)
+{
+	if (pipelineHash)
+		s_pipelinesMade.Insert(pipelineHash);
+}
+
+bool PipelineCompiler::MadeBefore(uint64 pipelineHash)
+{
+	return pipelineHash && s_pipelinesMade.Contains(pipelineHash);
+}
+
+void PipelineCompiler::ForgetMade()
+{
+	s_pipelinesMade.Clear();
+}
 
 // pipelines made ahead: handed over by the compile threads, kept by the GPU
 // thread for their draws. Never bound until a draw takes one, so one given
@@ -1098,6 +1121,7 @@ bool PipelineCompiler::CompileFromLibraries(const VkGraphicsPipelineCreateInfo& 
 	if (pipeline == VK_NULL_HANDLE)
 		return true;
 	m_vkrObjPipeline->SetPipeline(pipeline);
+	NoteMade(m_pipelineHash);
 	vkRenderer->m_pipeline_cache_semaphore.notify();
 	if (queueOptimized)
 	{

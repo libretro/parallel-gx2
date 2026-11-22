@@ -95,6 +95,9 @@ public:
 	bool m_madeAhead{false};
 	// a try's pipeline known to be in the driver's cache (VulkanPipeline_Try)
 	bool m_driverCached{false};
+	// the key its draw looks the pipeline up by, noted once it is made
+	// (MadeBefore); 0 where not known
+	uint64 m_pipelineHash{0};
 
 	/* shader stages */
 	VkPipelineShaderStageCreateInfo shaderStages[3]{};
@@ -167,6 +170,13 @@ public:
 	// unused once newer ones crowd it out, or as the title stops (DropAhead,
 	// the GPU thread, no read running)
 	static void HandOverAhead(uint64 pipelineHash, VKRObjectPipeline* pipeline);
+	// Whether a pipeline was made through the driver's cache this title, on
+	// any thread (the pipeline cache's load at boot, a draw, a compile
+	// thread, a read ahead): one made since is in that cache. Never wrong
+	// the other way - a key the full table cannot hold reads as not made
+	// (SeenKeys) - and forgotten as the title's pipeline cache closes
+	static bool MadeBefore(uint64 pipelineHash);
+	static void ForgetMade();
 	static VKRObjectPipeline* TakeAhead(uint64 pipelineHash);
 	static void DropAhead();
 

@@ -16,6 +16,17 @@ if ! awk '/^bool PipelineCompiler::Compile\(/ { inside = 1 }
 	wrong="$wrong
 $f: PipelineCompiler::Compile does not decide by VulkanPipeline_Try"
 fi
+# a pipeline taken for one in the driver's cache only where it was made
+# through it: noted where either compile succeeds (whole, and linked from
+# parts), the pipeline cache's boot load giving its compiler the key, and
+# asked by the draw - not the pipeline cache's recipes, recorded before a
+# compile that may never finish
+[ "$(grep -c 'NoteMade(m_pipelineHash);' "$f")" = 2 ] || wrong="$wrong
+$f: a pipeline made not noted where both compiles succeed (NoteMade)"
+grep -q 'pipelineCompiler.m_pipelineHash = pipelineStateHash;' src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.cpp || wrong="$wrong
+VulkanPipelineStableCache.cpp: the boot load's pipelines not noted as made"
+grep -q 'm_driverCached = PipelineCompiler::MadeBefore(' src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp || wrong="$wrong
+VulkanRendererCore.cpp: the try not told whether its pipeline was made through the driver's cache"
 if [ -n "$wrong" ]; then
 	echo "a try at a pipeline that can compile on the draw path:"
 	printf '%s\n' "$wrong"
