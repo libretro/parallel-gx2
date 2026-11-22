@@ -487,8 +487,14 @@ of the driver's cache on the GPU thread, and no relink later. It comes
 with the layouts it was made with, which the draw's PipelineInfo takes in
 place of the ones it had just set up - defined the same, and a layout must
 outlive its pipelines without `VK_KHR_maintenance4` - and its render pass
-was compatible with the draw's. One crowded out unused, or left as the
-title stops, is destroyed, never bound (`tools/check_ahead_handover.sh`).
+was compatible with the draw's. A read's lead is short, so the pipeline
+often lands after its first draw, which was skipped (or, essential, would
+wait) for a compile of its own: a later draw of it takes the one made
+ahead then, before it is skipped or waits (`draw_awaitAsyncPipeline`), in
+place of the pipeline its own compile is still writing (let go once that
+compile lets go of it), and binds what its PipelineInfo then has. One
+crowded out unused, or left as the title stops, is destroyed, never bound
+(`tools/check_ahead_handover.sh`).
 `test/dynstate` makes such pipelines on a real driver as a read's slot
 does - compiled whole and linked optimized, with a render pass of its own
 that is compatible but not the same and layouts of its own - and draws

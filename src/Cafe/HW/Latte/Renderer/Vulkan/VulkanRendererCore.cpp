@@ -199,13 +199,24 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 // essential (IsAsyncPipelineAllowed), or with Async Shader Compile turned off
 // since - compiles it here when no compile thread has started on it, as it
 // would a new pipeline, or waits for the one that has: skipping it could
-// leave the result wrong for good, and compiling it twice gains nothing
+// leave the result wrong for good, and compiling it twice gains nothing.
+// Either takes the pipeline a read made ahead for it where that has landed
+// since its first draw, in place of its own (the compile under way writes
+// into the one let go, which goes once the compile lets go of it): the
+// caller reads the PipelineInfo's pipeline again
 bool VulkanRenderer::draw_awaitAsyncPipeline(PipelineInfo* pipelineInfo, uint32 indexCount)
 {
 	LatteDrawPathCounts& counts = LatteShaderAhead_DrawPathCounts();
 	AsyncPipelineCompile* async = pipelineInfo->m_asyncCompile;
 	if (async && !async->prepared.IsBuilt())
 	{
+		if (VKRObjectPipeline* ahead = PipelineCompiler::TakeAhead(pipelineInfo->stateHash))
+		{
+			ReleaseDestructibleObject(pipelineInfo->m_vkrObjPipeline);
+			pipelineInfo->m_vkrObjPipeline = ahead;
+			counts.NoteHandedOverLate();
+			return true;
+		}
 		if (GetConfig().async_compile && IsAsyncPipelineAllowed(indexCount))
 		{
 			counts.NoteSkippedDraw();
@@ -1613,6 +1624,8 @@ void VulkanRenderer::draw_execute_first(uint32 baseVertex, uint32 baseInstance, 
 		m_state.activeVertexDS = nullptr;
 		return;
 	}
+	// a pipeline made ahead may have taken its own's place (draw_awaitAsyncPipeline)
+	vkObjPipeline = pipeline_info->m_vkrObjPipeline;
 
 	VkDescriptorSetInfo *vertexDS = nullptr, *pixelDS = nullptr, *geometryDS = nullptr;
 	draw_prepareDescriptorSets(pipeline_info, vertexDS, pixelDS, geometryDS);
@@ -1817,6 +1830,8 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 		//m_state.activeVertexDS = nullptr;
 		return;
 	}
+	// a pipeline made ahead may have taken its own's place (draw_awaitAsyncPipeline)
+	vkObjPipeline = pipeline_info->m_vkrObjPipeline;
 
 	// The first draw of the run found the pipeline still compiling (async shader compile) and
 	// skipped, leaving no descriptor sets; it has finished since, so they are made here, as the

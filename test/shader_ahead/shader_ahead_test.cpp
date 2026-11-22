@@ -1109,6 +1109,7 @@ static void DrawPathCounts()
 	c.NoteHandedOver();
 	c.NotePipeline(LatteDrawPathCounts::Ready, false, 0);
 	c.NotePipeline(LatteDrawPathCounts::Skipped, false, 0);
+	c.NoteHandedOverLate();
 	c.NotePipeline(LatteDrawPathCounts::Waited, true, 2500);
 	c.NoteAwait(4000);
 	c.NotePipeline(LatteDrawPathCounts::Waited, false, 700); // shorter, after
@@ -1120,8 +1121,8 @@ static void DrawPathCounts()
 	CHECK(c.skippedDraws == 3 && c.awaited == 1);
 	CHECK(c.waitedUs == 7200 && c.longestUs == 4000);
 	CHECK(c.Describe(line, sizeof(line)));
-	CHECK(c.handedOver == 1);
-	CHECK(std::strcmp(line, "new pipelines at their first draw: 2 ready (1 queued ahead, 1 of them made by the read), 1 skipped until made (0 queued ahead), "
+	CHECK(c.handedOver == 1 && c.handedOverLate == 1);
+	CHECK(std::strcmp(line, "new pipelines at their first draw: 2 ready (1 queued ahead, 1 of them made by the read), 1 skipped until made (0 queued ahead, 1 of them then made by the read), "
 		"2 made while their draw waited (1 queued ahead); 3 draws skipped, 1 waited for a compile thread; "
 		"7.200 ms waited, the longest 4.000 ms") == 0);
 	// cut to its room, nothing written past it
@@ -1137,7 +1138,7 @@ static void DrawPathCounts()
 	awaitOnly.NoteAwait(1);
 	CHECK(awaitOnly.Any() && awaitOnly.longestUs == 1);
 	c.Reset();
-	CHECK(!c.Any() && c.waitedUs == 0 && c.longestUs == 0 && c.handedOver == 0);
+	CHECK(!c.Any() && c.waitedUs == 0 && c.longestUs == 0 && c.handedOver == 0 && c.handedOverLate == 0);
 }
 
 int main()

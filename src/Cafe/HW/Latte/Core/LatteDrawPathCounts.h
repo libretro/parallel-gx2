@@ -26,6 +26,7 @@ struct LatteDrawPathCounts
 	uint64_t pipelines[kOutcomes]{};
 	uint64_t ahead[kOutcomes]{}; // of those, the ones a read queued ahead
 	uint64_t handedOver{}; // ready ones a read made, taken whole
+	uint64_t handedOverLate{}; // skipped ones a read made, taken whole after
 	uint64_t skippedDraws{};
 	uint64_t awaited{};
 	uint64_t waitedUs{}, longestUs{}; // every wait above, made or awaited
@@ -49,6 +50,8 @@ struct LatteDrawPathCounts
 
 	void NoteHandedOver() { handedOver++; }
 
+	void NoteHandedOverLate() { handedOverLate++; }
+
 	bool Any() const
 	{
 		return pipelines[Ready] || pipelines[Skipped] || pipelines[Waited] || skippedDraws || awaited;
@@ -60,10 +63,10 @@ struct LatteDrawPathCounts
 		if (!Any() || room == 0)
 			return false;
 		snprintf(to, room,
-			"new pipelines at their first draw: %llu ready (%llu queued ahead, %llu of them made by the read), %llu skipped until made (%llu queued ahead), "
+			"new pipelines at their first draw: %llu ready (%llu queued ahead, %llu of them made by the read), %llu skipped until made (%llu queued ahead, %llu of them then made by the read), "
 			"%llu made while their draw waited (%llu queued ahead); %llu draws skipped, %llu waited for a compile thread; "
 			"%llu.%03llu ms waited, the longest %llu.%03llu ms",
-			ULL(pipelines[Ready]), ULL(ahead[Ready]), ULL(handedOver), ULL(pipelines[Skipped]), ULL(ahead[Skipped]),
+			ULL(pipelines[Ready]), ULL(ahead[Ready]), ULL(handedOver), ULL(pipelines[Skipped]), ULL(ahead[Skipped]), ULL(handedOverLate),
 			ULL(pipelines[Waited]), ULL(ahead[Waited]), ULL(skippedDraws), ULL(awaited),
 			ULL(waitedUs / 1000), ULL(waitedUs % 1000), ULL(longestUs / 1000), ULL(longestUs % 1000));
 		return true;
