@@ -488,7 +488,13 @@ with the layouts it was made with, which the draw's PipelineInfo takes in
 place of the ones it had just set up - defined the same, and a layout must
 outlive its pipelines without `VK_KHR_maintenance4` - and its render pass
 was compatible with the draw's. One crowded out unused, or left as the
-title stops, is destroyed, never bound (`tools/check_ahead_handover.sh`). Before, the slot made only the parts
+title stops, is destroyed, never bound (`tools/check_ahead_handover.sh`).
+`test/dynstate` makes such pipelines on a real driver as a read's slot
+does - compiled whole and linked optimized, with a render pass of its own
+that is compatible but not the same and layouts of its own - and draws
+them in the draw's render pass through the layouts they came with: they
+draw what the draw's own pipeline draws, and the validation layer reports
+nothing (it reports an incompatible render pass). Before, the slot made only the parts
 and let the pipeline go, and the draw linked it fast on the GPU thread,
 or - on a device without libraries and without cache control - was
 skipped until a compile thread made it again. Four at a time,

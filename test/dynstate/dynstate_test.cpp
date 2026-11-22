@@ -11,7 +11,10 @@
 // with the state left to the draw linked from graphics pipeline libraries
 // (VK_EXT_graphics_pipeline_library) as the renderer links them
 // (VulkanPipelineLibrary.h): its four parts kept in the renderer's cache and
-// shared by every state, linked as they are and optimized. Both take their values from the functions the pipeline
+// shared by every state, linked as they are and optimized. And a pipeline
+// made ahead and handed to its draw (PipelineCompiler::HandOverAhead), with
+// a compatible render pass and identically defined layouts of its own, draws
+// the same in the draw's render pass with the layouts it came with. Both take their values from the functions the pipeline
 // compiler and the draw use (VulkanPipelineKey.h). Skipped, said so,
 // without a device that has the extensions - a failure with
 // VN_REQUIRE_DEVICE set, as the CIs set it.
@@ -590,6 +593,44 @@ static int MakeAhead(const Context& c, VulkanPipelineLibraryCache& cache, const 
 	return made;
 }
 
+// A render pass compatible with the context's but not the same - its load
+// and store ops and final layouts differ, as those of the renderer's
+// temporary ones may (VulkanPipelineStableCache_Attachments) - as a read
+// makes a pipeline ahead in
+static VkRenderPass MakeCompatibleRenderPass(const Context& c)
+{
+	VkAttachmentDescription att[2]{};
+	att[0].format = VK_FORMAT_R8G8B8A8_UNORM;
+	att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	att[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	att[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	att[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	att[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	att[1] = att[0];
+	att[1].format = c.depthFormat;
+	att[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+	att[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	VkAttachmentReference cref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+	VkAttachmentReference dref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+	VkSubpassDescription sub{};
+	sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	sub.colorAttachmentCount = 1;
+	sub.pColorAttachments = &cref;
+	sub.pDepthStencilAttachment = &dref;
+	VkRenderPassCreateInfo rpi{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+	rpi.attachmentCount = 2;
+	rpi.pAttachments = att;
+	rpi.subpassCount = 1;
+	rpi.pSubpasses = &sub;
+	VkRenderPass rp;
+	VKCHECK(vkCreateRenderPass(c.device, &rpi, nullptr, &rp));
+	return rp;
+}
+
 // four overlapping triangles over a cleared depth and stencil, drawn with
 // the pipeline; the picture
 static std::vector<uint8_t> Draw(const Context& c, VkPipeline p, const LatteContextRegister& lcr, const VertexLayout& layout,
@@ -910,6 +951,65 @@ int main()
 		CHECK(aheadMade == 2 * aheadStates);
 		CHECK(madeAtDraw == 0);
 		s_failures += aheadDiffering;
+
+		// Pipelines made ahead and handed to their draw whole
+		// (PipelineCompiler::HandOverAhead): made as a read's slot makes them,
+		// compiled whole and linked optimized from parts of its own, with a
+		// render pass of its own compatible with the draw's (let go once
+		// made) and layouts of its own defined as the draw's (kept with the
+		// pipeline, which the draw takes in place of its own); drawn in the
+		// draw's render pass, the constants pushed with the layouts it came
+		// with. They draw what the draw's own pipeline draws, and the
+		// validation layer (VN_VALIDATE) reports nothing - it does where the
+		// render pass is not compatible.
+		int handed = 0, handedDiffering = 0;
+		Context slot = c;
+		{
+			VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
+			VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+			pli.pushConstantRangeCount = 1;
+			pli.pPushConstantRanges = &pcr;
+			VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &slot.layout));
+			pli.flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT;
+			VKCHECK(vkCreatePipelineLayout(c.device, &pli, nullptr, &slot.libraryLayout));
+		}
+		CHECK(slot.layout != c.layout && slot.libraryLayout != c.libraryLayout);
+		auto slotParts = std::make_unique<VulkanPipelineLibraryCache>();
+		const Libraries slotLinked{slotParts.get(), true, false};
+		for (int i = 0; i < 24; i++)
+		{
+			std::memset(lcr.get(), 0, sizeof(LatteContextRegister));
+			RandomState(rng, *lcr);
+			const bool dynamicState = i % 2 == 0;
+			auto layout = std::make_unique<VertexLayout>();
+			RandomLayout(rng, *lcr, *layout, c.vertexData);
+			slot.renderPass = MakeCompatibleRenderPass(c);
+			VkPipeline whole = MakePipeline(slot, *lcr, *layout, dynamicState);
+			VkPipeline linked = MakePipeline(slot, *lcr, *layout, true, &slotLinked);
+			vkDestroyRenderPass(c.device, slot.renderPass, nullptr);
+			// the draw's render pass and framebuffer, the slot's layouts
+			slot.renderPass = c.renderPass;
+			VkPipeline own = MakePipeline(c, *lcr, *layout, false);
+			const std::vector<uint8_t> expected = Draw(c, own, *lcr, *layout, false);
+			const bool wholeSame = Draw(slot, whole, *lcr, *layout, dynamicState) == expected;
+			const bool linkedSame = Draw(slot, linked, *lcr, *layout, true, true) == expected;
+			if (!wholeSame || !linkedSame)
+			{
+				if (handedDiffering++ < 5)
+					std::printf("FAIL: state %d draws differently handed over (%s)\n", i, !wholeSame ? "compiled whole" : "linked optimized");
+			}
+			vkDestroyPipeline(c.device, whole, nullptr);
+			vkDestroyPipeline(c.device, linked, nullptr);
+			vkDestroyPipeline(c.device, own, nullptr);
+			handed += 2;
+		}
+		std::printf("pipelines made ahead and handed over: %d drawn, %d states draw differently\n", handed, handedDiffering);
+		CHECK(handed == 48);
+		s_failures += handedDiffering;
+		// the slot's layouts last but for the parts made with them
+		slotParts->DestroyAll(c.device);
+		vkDestroyPipelineLayout(c.device, slot.layout, nullptr);
+		vkDestroyPipelineLayout(c.device, slot.libraryLayout, nullptr);
 
 		// the parts last, every pipeline linked from them gone
 		cache->DestroyAll(c.device);
