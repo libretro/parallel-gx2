@@ -82,3 +82,26 @@ inline bool LatteAhead_MakePipeline(uint64_t queuedHash, uint64_t hash, bool kno
 {
 	return !known && (queuedHash == hash || !ahead);
 }
+
+// A shader program a read copied from guest memory for a draw, as the draw
+// before it had it: the same address and size are the same program - the
+// copy still in the read's buffer, its hash the one worked out then - as
+// the GPU thread takes them (_calculateShaderProgramHash); forgotten as
+// each read starts, and where a copy fails
+struct LatteAheadProgramMemo
+{
+	uint32_t addr = 0, size = 0;
+	uint64_t h1 = 0, h2 = 0;
+	bool valid = false;
+
+	bool Same(uint32_t a, uint32_t s) const { return valid && a == addr && s == size; }
+	void Note(uint32_t a, uint32_t s, uint64_t x1, uint64_t x2)
+	{
+		addr = a;
+		size = s;
+		h1 = x1;
+		h2 = x2;
+		valid = true;
+	}
+	void Forget() { valid = false; }
+};

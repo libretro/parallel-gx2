@@ -61,7 +61,8 @@
 //    never moved by a read of the guest's buffer; pipelines queued ahead for
 //    registered shaders only where unknown, for new ones only with the
 //    other shader there, and made only where no read has them but their
-//    own key, and never once the GPU thread has them;
+//    own key, and never once the GPU thread has them; a program the same
+//    as the draw before's only at the same address and size;
 //  - the pipelines made ahead the GPU thread keeps for their draws
 //    (KeptForDraws): taken once by key, a key kept already keeping its
 //    own, the oldest going for a newer one when full, all given up on
@@ -1098,6 +1099,20 @@ static void AheadRules()
 	CHECK(LatteAhead_MakePipeline(77, 77, false, true)); // queued with it (and so noted ahead)
 	CHECK(!LatteAhead_MakePipeline(77, 77, true, true)); // its draw came first: compiling it already
 	CHECK(!LatteAhead_MakePipeline(76, 77, false, true));
+
+	// a program as the draw before had it: the same only at the same
+	// address and size, its hashes kept; nothing before the first, nor once
+	// forgotten
+	LatteAheadProgramMemo memo;
+	CHECK(!memo.Same(0, 0));
+	memo.Note(0x10000, 256, 11, 22);
+	CHECK(memo.Same(0x10000, 256) && memo.h1 == 11 && memo.h2 == 22);
+	CHECK(!memo.Same(0x10100, 256)); // another program
+	CHECK(!memo.Same(0x10000, 264)); // grown in place
+	memo.Note(0x10100, 128, 33, 44);
+	CHECK(!memo.Same(0x10000, 256) && memo.Same(0x10100, 128) && memo.h1 == 33 && memo.h2 == 44);
+	memo.Forget();
+	CHECK(!memo.Same(0x10100, 128));
 }
 
 static void DrawPathCounts()

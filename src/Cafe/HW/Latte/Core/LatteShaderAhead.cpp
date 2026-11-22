@@ -91,6 +91,8 @@ namespace
 		uint8 fsProgram[kMaxFetchProgram];
 		uint8 gsProgram[kMaxProgram];
 		uint8 copyProgram[kMaxProgram]; // the geometry shader's copy shader
+		// each buffer's program, as the draw before had it (ReadProgram)
+		LatteAheadProgramMemo psMemo, vsMemo, fsMemo, gsMemo, copyMemo;
 		// the vertex shader's fetch shader, parsed here, never registered
 		LatteFetchShader fetchShader;
 		LatteShaderPSInputTable inputs;
@@ -151,6 +153,28 @@ namespace
 			return false;
 		if (size)
 			memcpy(to, memory_getPointerFromPhysicalOffset(addr), size);
+		return true;
+	}
+
+	// A draw's program into to, its hash in h1/h2 where hashed: copied and
+	// hashed only where it is not the one the draw before had (memo); false
+	// where it cannot be read (CopyGuest)
+	bool ReadProgram(LatteAheadProgramMemo& memo, uint8* to, uint32 addr, uint32 size, uint32 max, bool hashed, uint64& h1, uint64& h2)
+	{
+		if (!memo.Same(addr, size))
+		{
+			if (!CopyGuest(to, addr, size, max))
+			{
+				memo.Forget();
+				return false;
+			}
+			uint64 x1 = 0, x2 = 0;
+			if (hashed)
+				_calcShaderHashGeneric(reinterpret_cast<uint32*>(to), size, x1, x2);
+			memo.Note(addr, size, x1, x2);
+		}
+		h1 = memo.h1;
+		h2 = memo.h2;
 		return true;
 	}
 
@@ -457,10 +481,9 @@ namespace
 	uint64 PixelAhead(Job* job, uint32* regs, bool gs, uint64 gsHash1, bool& made)
 	{
 		const uint32 size = regs[mmSQ_PGM_START_PS + 1] << 3;
-		if (size == 0 || !CopyGuest(job->psProgram, regs[mmSQ_PGM_START_PS] << 8, size, kMaxProgram))
-			return 0;
 		uint64 h1, h2;
-		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->psProgram), size, h1, h2);
+		if (size == 0 || !ReadProgram(job->psMemo, job->psProgram, regs[mmSQ_PGM_START_PS] << 8, size, kMaxProgram, true, h1, h2))
+			return 0;
 		const uint64 baseHash = LatteSHRC_PixelBaseHash(h1, h2, job->inputs.key, gs, gsHash1);
 		Slots::Held held = ClaimAhead(s_pixel, s_seenPixel, s_countsPixel, baseHash, job->scan);
 		if (!held)
@@ -478,8 +501,9 @@ namespace
 		const uint32 program = gs ? mmSQ_PGM_START_ES : mmSQ_PGM_START_VS;
 		const uint32 size = regs[program + 1] << 3;
 		const uint32 fsSize = regs[mmSQ_PGM_START_FS + 1] << 3;
-		if (size == 0 || !CopyGuest(job->vsProgram, regs[program] << 8, size, kMaxProgram) ||
-			!CopyGuest(job->fsProgram, regs[mmSQ_PGM_START_FS] << 8, fsSize, kMaxFetchProgram))
+		uint64 h1, h2, f1, f2;
+		if (size == 0 || !ReadProgram(job->vsMemo, job->vsProgram, regs[program] << 8, size, kMaxProgram, true, h1, h2) ||
+			!ReadProgram(job->fsMemo, job->fsProgram, regs[mmSQ_PGM_START_FS] << 8, fsSize, kMaxFetchProgram, false, f1, f2))
 			return 0;
 		// the fetch shader parsed as LatteFetchShader::FindByGPUState would parse it
 		// for these registers; the draw's own, which may have been parsed for
@@ -487,8 +511,6 @@ namespace
 		job->fetchShader.Reset();
 		LatteFetchShader_Parse(&job->fetchShader, LatteFetchShader::CalculateCacheHash(job->fsProgram, fsSize), regs,
 			reinterpret_cast<uint32*>(job->fsProgram), fsSize);
-		uint64 h1, h2;
-		_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->vsProgram), size, h1, h2);
 		const uint64 baseHash = LatteSHRC_VertexBaseHash(h1, h2, &job->fetchShader, job->inputs.key, gs, regs);
 		Slots::Held held = ClaimAhead(s_vertex, s_seenVertex, s_countsVertex, baseHash, job->scan);
 		if (!held)
@@ -786,10 +808,10 @@ namespace
 		uint64 gsHash1 = 0, gsHash2 = 0;
 		if (gs)
 		{
-			if (gsSize == 0 || copySize == 0 || !CopyGuest(job->gsProgram, regs[mmSQ_PGM_START_GS] << 8, gsSize, kMaxProgram) ||
-				!CopyGuest(job->copyProgram, regs[mmSQ_PGM_START_VS] << 8, copySize, kMaxProgram))
+			uint64 c1, c2;
+			if (gsSize == 0 || copySize == 0 || !ReadProgram(job->gsMemo, job->gsProgram, regs[mmSQ_PGM_START_GS] << 8, gsSize, kMaxProgram, true, gsHash1, gsHash2) ||
+				!ReadProgram(job->copyMemo, job->copyProgram, regs[mmSQ_PGM_START_VS] << 8, copySize, kMaxProgram, false, c1, c2))
 				return true;
-			_calcShaderHashGeneric(reinterpret_cast<uint32*>(job->gsProgram), gsSize, gsHash1, gsHash2);
 		}
 		bool psNew = false, vsNew = false;
 		const uint64 psBase = PixelAhead(job, regs, gs, gsHash1, psNew);
@@ -819,6 +841,9 @@ namespace
 	void RunJob(Job* job)
 	{
 		job->found = 0;
+		// the guest's memory may have changed since the last read
+		for (LatteAheadProgramMemo* memo : {&job->psMemo, &job->vsMemo, &job->fsMemo, &job->gsMemo, &job->copyMemo})
+			memo->Forget();
 		if (const uint32be* buf = MapGuest(nullptr, job->physAddr, job->words))
 		{
 			LattePM4Scan scan{};

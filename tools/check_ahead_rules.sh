@@ -9,6 +9,13 @@ missing=
 for rule in $(grep -oE '^inline [a-zA-Z0-9_]+ (LatteAhead_[A-Za-z]+)\(' src/Cafe/HW/Latte/Core/LatteShaderAheadRules.h | sed 's/.* //; s/($//'); do
 	grep -q "$rule(" "$f" || missing="$missing $rule"
 done
+# the programs as the draw before had them, forgotten as each read starts:
+# kept from the last read, a program rewritten in place since would read
+# as the one copied then
+awk '/^	void RunJob\(Job\* job\)/ { inside = 1 }
+	inside && /memo->Forget\(\)/ { found = 1 }
+	inside && /^	}$/ { inside = 0 }
+	END { exit !found }' "$f" || missing="$missing (the programs' memos not forgotten as a read starts)"
 if [ -n "$missing" ]; then
 	echo "the read ahead no longer decides by:$missing"
 	exit 1

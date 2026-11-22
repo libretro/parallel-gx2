@@ -563,7 +563,11 @@ are offered for the guest's buffer, how many buffers the ring's reads pass
 over, which pipelines are made ahead - are in `LatteShaderAheadRules.h`,
 apart from the reads and the GPU, and `test/shader_ahead` checks each
 (`tools/check_ahead_rules.sh`: `LatteShaderAhead.cpp`, which no test links,
-decides by every one).
+decides by every one). A read copies and hashes a draw's programs only
+where they are not those the draw before it had - the same address and
+size, as the GPU thread takes them (`LatteAheadProgramMemo`), forgotten as
+each read starts - so the draws of a material cost the read no copy and no
+hash (about half a microsecond for a 4 KiB program each, each draw).
 As a title stops, the log has, for vertex, pixel and geometry shaders, how many were
 made ahead, taken by their draw, not usable there, drawn while still being
 made, drawn with none made, and let go unused (`[ShaderAhead]`): the
