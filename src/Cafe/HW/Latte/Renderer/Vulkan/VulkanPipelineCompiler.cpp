@@ -657,8 +657,9 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	VulkanRenderer* vkRenderer = VulkanRenderer::GetInstance();
 
 	// a try where the driver's cache cannot be asked without compiling takes
-	// only parts already made: never a compile on the draw path
-	const VulkanPipelineTry mode = VulkanPipeline_Try(forceCompile, vkRenderer->m_featureControl.deviceExtensions.pipeline_creation_cache_control);
+	// only parts already made - or the pipeline, known to be in that cache:
+	// never a compile on the draw path
+	const VulkanPipelineTry mode = VulkanPipeline_Try(forceCompile, vkRenderer->m_featureControl.deviceExtensions.pipeline_creation_cache_control, m_driverCached);
 	if (mode == VulkanPipelineTry::Made && !vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library)
 		return false;
 
@@ -729,7 +730,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = nullptr;
 	pipelineInfo.flags = 0;
-	if (!forceCompile)
+	if (mode == VulkanPipelineTry::FromCache)
 		pipelineInfo.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
 
 	void* prevStruct = nullptr;
@@ -750,7 +751,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	pipelineInfo.pNext = prevStruct;
 
 	if (vkRenderer->m_featureControl.deviceExtensions.graphics_pipeline_library)
-		return CompileFromLibraries(pipelineInfo, forceCompile, mode == VulkanPipelineTry::Made, isRenderThread);
+		return CompileFromLibraries(pipelineInfo, mode == VulkanPipelineTry::Compile, mode == VulkanPipelineTry::Made, isRenderThread);
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
 	VkResult result;

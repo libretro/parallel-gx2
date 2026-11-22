@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineKey.h"
 
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
@@ -142,6 +143,9 @@ PipelineInfo* VulkanRenderer::draw_createGraphicsPipeline(uint32 indexCount)
 
 	bool requiresRobustBufferAccess = PipelineCompiler::CalcRobustBufferAccessRequirement(vertexShader, pixelShader, geometryShader);
 	pipelineCompiler->InitFromCurrentGPUState(pipelineInfo, LatteGPUState.contextNew, vkFBO->GetRenderPassObj(), requiresRobustBufferAccess);
+	// in the driver's cache already, asked before this state is added: the
+	// pipeline cache loaded it at boot, or it was made before
+	pipelineCompiler->m_driverCached = VulkanPipelineStableCache::GetInstance().HasPipelineCached(vsBaseHash, pipelineHash);
 	pipelineCompiler->TrackAsCached(vsBaseHash, pipelineHash);
 	if (m_partTemplates && pipelineCompiler->m_renderPassObj)
 		pipelineCompiler->PrepareAheadParts(pipelineInfo);

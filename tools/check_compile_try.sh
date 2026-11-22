@@ -4,11 +4,11 @@
 # every compile where the device has no VK_EXT_pipeline_creation_cache_control
 # ("forceCompile = true"), which compiled each new pipeline on the draw path
 # on those devices with Async Shader Compile on; a try there takes only what
-# is made (VulkanPipeline_Try), and a merge from upstream must not bring the
-# forcing back.
+# is made, or a pipeline known to be in the driver's cache (VulkanPipeline_
+# Try), and a merge from upstream must not bring the forcing back.
 cd "$(dirname "$0")/.." || exit 2
 f=src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp
-wrong=$(grep -n 'forceCompile[[:space:]]*=[^=]' "$f" | grep -v ':[0-9]*:[[:space:]]*//')
+wrong=$(grep -n 'forceCompile[[:space:]]*=[[:space:]]*true' "$f" | grep -v ':[0-9]*:[[:space:]]*//')
 if ! awk '/^bool PipelineCompiler::Compile\(/ { inside = 1 }
 	inside && /VulkanPipeline_Try\(/ { found = 1 }
 	inside && /^}/ { inside = 0 }

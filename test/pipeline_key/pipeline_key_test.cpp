@@ -28,7 +28,8 @@
 //    for is linked fast with the optimized link queued, one nothing waits
 //    for optimized at once; a try on a device without
 //    VK_EXT_pipeline_creation_cache_control takes only what is made rather
-//    than compiling (VulkanPipeline_Try);
+//    than compiling, unless the pipeline is known to be in the driver's
+//    cache (VulkanPipeline_Try);
 //  - parts made ahead (docs/SHADER-STUTTER.md M2): a shader part's template
 //    taken from a pipeline makes, with another shader, the very key that
 //    shader's pipeline with the same state looks its part up by, for random
@@ -261,10 +262,14 @@ static void TestWaitFor()
 	// a compile forced compiles; a try asks the driver's cache only where it
 	// can without compiling, and otherwise takes only what is made - never a
 	// compile on the draw path for a device without cache control
-	CHECK(VulkanPipeline_Try(true, true) == VulkanPipelineTry::Compile);
-	CHECK(VulkanPipeline_Try(true, false) == VulkanPipelineTry::Compile);
-	CHECK(VulkanPipeline_Try(false, true) == VulkanPipelineTry::FromCache);
-	CHECK(VulkanPipeline_Try(false, false) == VulkanPipelineTry::Made);
+	CHECK(VulkanPipeline_Try(true, true, false) == VulkanPipelineTry::Compile);
+	CHECK(VulkanPipeline_Try(true, false, false) == VulkanPipelineTry::Compile);
+	CHECK(VulkanPipeline_Try(false, true, false) == VulkanPipelineTry::FromCache);
+	CHECK(VulkanPipeline_Try(false, true, true) == VulkanPipelineTry::FromCache); // asked the cache all the same
+	CHECK(VulkanPipeline_Try(false, false, false) == VulkanPipelineTry::Made);
+	// known to be in the driver's cache (loaded at boot): made, a hit there,
+	// rather than its draw skipped until a compile thread makes the same hit
+	CHECK(VulkanPipeline_Try(false, false, true) == VulkanPipelineTry::Compile);
 
 	// one thread claims keys and makes their parts while eight others,
 	// finding them pending, wait for them

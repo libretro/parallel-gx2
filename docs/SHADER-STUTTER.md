@@ -120,6 +120,13 @@ Where the core still does, as of `204bbde5`:
   compile thread lands the pipeline, as on a device that has the extension
   for one its cache does not hold (`VulkanPipeline_Try`; `test/pipeline_key`,
   and `tools/check_compile_try.sh` against upstream's forcing coming back).
+  A pipeline known to be in the driver's cache - the pipeline cache loaded
+  it at boot, or it was made before (`VulkanPipelineStableCache::
+  HasPipelineCached`, asked before the draw's state is added) - is made by
+  the try all the same, its shaders compiled: a hit in that cache, the
+  lookup a device with the extension makes, rather than a skipped draw
+  until a compile thread made the same lookup, at every pipeline's first
+  draw with a warm cache.
 - **Rect emulation geometry shaders** (RECTS where the device has no
   `VK_NV_fill_rectangle`): no longer. Each pipeline compiled its own on the
   thread making it, the GPU thread included, before its draw. One is now

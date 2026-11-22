@@ -93,6 +93,8 @@ public:
 	// makes together in the compile threads' lane of work made ahead, and the
 	// pipeline, linked optimized, handed to its draw (HandOverAhead)
 	bool m_madeAhead{false};
+	// a try's pipeline known to be in the driver's cache (VulkanPipeline_Try)
+	bool m_driverCached{false};
 
 	/* shader stages */
 	VkPipelineShaderStageCreateInfo shaderStages[3]{};

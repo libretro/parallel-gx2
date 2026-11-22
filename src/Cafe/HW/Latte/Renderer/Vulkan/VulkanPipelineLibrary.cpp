@@ -371,11 +371,13 @@ bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized)
 	return !drawWaits;
 }
 
-VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl)
+VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl, bool driverCached)
 {
 	if (forceCompile)
 		return VulkanPipelineTry::Compile;
-	return cacheControl ? VulkanPipelineTry::FromCache : VulkanPipelineTry::Made;
+	if (cacheControl)
+		return VulkanPipelineTry::FromCache;
+	return driverCached ? VulkanPipelineTry::Compile : VulkanPipelineTry::Made;
 }
 
 // --- the cache ---------------------------------------------------------------

@@ -71,14 +71,18 @@ bool VulkanPipelineLibrary_LinkOptimized(bool drawWaits, bool* queueOptimized);
 // parts already made, linked, and no pipeline otherwise - where the device
 // cannot ask its cache without compiling, which would compile on the draw
 // path: the draw is then skipped until a compile thread lands the pipeline,
-// as for one the cache does not have
+// as for one the cache does not have. A try at a pipeline known to be in
+// the driver's cache there (driverCached: the pipeline cache loaded it at
+// boot, or it was made before) makes it, its shaders compiled: a hit in
+// that cache, the lookup a device with cache control makes, rather than
+// skipping its draw until a compile thread makes the same lookup
 enum class VulkanPipelineTry
 {
 	Compile,
 	FromCache,
 	Made,
 };
-VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl);
+VulkanPipelineTry VulkanPipeline_Try(bool forceCompile, bool cacheControl, bool driverCached);
 
 // The parts made so far, found by key from any thread, without a lock: an
 // insert-only table per part. A thread claims a key before making its part
